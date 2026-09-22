@@ -114,7 +114,7 @@ export async function getResearchSession(id: string | null | undefined): Promise
     return stored.session;
   } catch {
     // Corrupt/unparseable file — self-heal by removing it so it doesn't keep failing on every read.
-    try { unlinkSync(file); } catch { /* ignore */ }
+    try { const { unlinkSync } = await fsApi(); unlinkSync(file); } catch { /* ignore */ }
     return null;
   }
 }
