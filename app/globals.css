@@ -1,8 +1,35 @@
 @import "tailwindcss";
 
 :root {
-  --background: #020617;
+  --se-bg: #050806;
+  --se-bg-elevated: #080c09;
+  --se-panel: rgba(10, 14, 12, 0.92);
+  --se-panel-hover: rgba(16, 23, 18, 0.96);
+  --se-panel-strong: #111813;
+  --se-border: rgba(255, 255, 255, 0.08);
+  --se-border-strong: rgba(57, 242, 127, 0.35);
+  --se-green: #39f27f;
+  --se-green-soft: rgba(57, 242, 127, 0.12);
+  --se-text: #f7faf8;
+  --se-muted: #91a097;
+  --se-yellow: #f5c451;
+  --se-red: #f47777;
+  --background: var(--se-bg);
+  --background-elevated: var(--se-bg-elevated);
+  --surface: var(--se-panel);
+  --surface-elevated: var(--se-panel-hover);
+  --surface-strong: var(--se-panel-strong);
+  --border: var(--se-border);
+  --border-strong: var(--se-border-strong);
   --foreground: #f8fafc;
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --primary: var(--se-green);
+  --primary-strong: #20d968;
+  --primary-soft: var(--se-green-soft);
+  --warning: var(--se-yellow);
+    --foreground: var(--se-text);
 }
 
 @theme inline {
@@ -16,18 +43,256 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+* {
+  scrollbar-width: thin !important;
+  scrollbar-color: #217a48 #050806 !important;
+}
+
+*::-webkit-scrollbar {
+  width: 5px !important;
+  height: 5px !important;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: #050806 !important;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: #217a48 !important;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--se-green) !important;
+}
+
+.news-alert-scroll {
+  scrollbar-color: #217a48 #050806 !important;
+}
+
+/** Visually hidden but still scrollable (mouse/trackpad/touch) horizontal strip. */
+.scrollbar-hidden {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.research-result-grid {
+  display: grid;
+  grid-template-columns: 16px minmax(135px, 1.35fr) minmax(70px, 0.8fr) 30px 44px 55px minmax(150px, 1.2fr) minmax(105px, auto);
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.research-result-grid > * {
+  min-width: 0;
+}
+
+.research-result-grid > :last-child {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1279px) {
+  .research-result-grid {
+    grid-template-columns: 16px minmax(175px, 1.3fr) minmax(90px, 0.8fr) 38px 52px 68px minmax(185px, 1.2fr) minmax(132px, auto);
+  }
+}
+
+@media (max-width: 900px) {
+  .research-result-grid {
+    grid-template-columns: 16px minmax(150px, 1fr) minmax(78px, 0.8fr) 34px 48px 60px minmax(150px, 1fr) auto;
+    gap: 0.5rem;
+  }
+}
+
 html {
   scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
-  background: var(--background);
+  background:
+    radial-gradient(circle at top left, rgba(57, 242, 127, 0.08), transparent 28%),
+    linear-gradient(135deg, var(--se-bg) 0%, #080d09 55%, var(--se-bg) 100%);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+input::placeholder {
+  color: rgba(148, 163, 184, 0.95);
 }
 
 ::selection {
   background: rgba(16, 185, 129, 0.35);
   color: white;
 }
+
+button,
+a,
+input,
+select,
+textarea {
+  transition: all 200ms ease;
+}
+
+.panel-surface {
+  border: 1px solid var(--se-border);
+  background: var(--se-panel);
+  box-shadow: 0 0 24px rgba(57, 242, 127, 0.04);
+  border-radius: 14px;
+}
+
+.theme-panel {
+  border: 1px solid var(--se-border);
+  background: var(--se-panel);
+  box-shadow: 0 0 24px rgba(57, 242, 127, 0.04);
+  border-radius: 14px;
+}
+
+.theme-control {
+  border: 1px solid var(--se-border);
+  background: rgba(10, 14, 12, 0.88);
+  color: var(--se-text);
+  border-radius: 10px;
+}
+
+.theme-control:focus {
+  border-color: var(--se-border-strong);
+  outline: 2px solid rgba(57, 242, 127, 0.12);
+  outline-offset: 1px;
+}
+
+.theme-button-primary {
+  border-radius: 10px;
+  background: var(--se-green);
+  color: #041008;
+  font-weight: 700;
+}
+
+.theme-button-primary:hover {
+  background: #63f99a;
+  box-shadow: 0 0 18px rgba(57, 242, 127, 0.16);
+}
+
+.theme-button-secondary {
+  border: 1px solid var(--se-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--se-text);
+}
+
+.theme-button-secondary:hover {
+  border-color: var(--se-border-strong);
+  background: var(--se-green-soft);
+}
+
+/* Keep existing page markup on the shared Prop Finder visual system. */
+[class~="bg-[#060d18]"],
+[class~="bg-[#060e1b]"],
+[class~="bg-[#0b1522]"],
+[class~="bg-slate-950/70"],
+[class~="bg-slate-950/60"],
+[class~="bg-slate-900"],
+[class~="bg-slate-900/70"],
+[class~="bg-slate-800"],
+[class~="bg-slate-800/50"],
+[class~="bg-slate-800/40"],
+[class~="bg-white/3"],
+[class~="bg-white/4"],
+[class~="bg-white/5"],
+[class~="bg-white/6"],
+[class~="bg-white/7"],
+[class~="bg-white/8"],
+[class~="bg-white/10"] {
+  background: var(--se-panel);
+}
+
+[class~="border-slate-800"],
+[class~="border-slate-800/70"],
+[class~="border-slate-700"],
+[class~="border-slate-700/50"],
+[class~="border-slate-600"],
+[class~="border-white/4"],
+[class~="border-white/5"],
+[class~="border-white/6"],
+[class~="border-white/8"],
+[class~="border-white/10"],
+[class~="border-white/20"] {
+  border-color: var(--se-border);
+}
+
+[class~="text-slate-600"],
+[class~="text-slate-500"],
+[class~="text-slate-400"] {
+  color: var(--se-muted);
+}
+
+[class~="text-slate-300"],
+[class~="text-slate-200"] {
+  color: var(--text-secondary);
+}
+
+[class~="text-emerald-400"],
+[class~="text-emerald-300"],
+[class~="text-emerald-200"] {
+  color: var(--se-green);
+}
+
+[class~="bg-emerald-500"] {
+  background: var(--se-green);
+}
+
+[class~="bg-emerald-500/5"],
+[class~="bg-emerald-500/8"],
+[class~="bg-emerald-500/10"],
+[class~="bg-emerald-500/15"],
+[class~="bg-emerald-500/20"] {
+  background: var(--se-green-soft);
+}
+
+[class~="border-emerald-500/15"],
+[class~="border-emerald-500/20"],
+[class~="border-emerald-500/25"],
+[class~="border-emerald-500/30"],
+[class~="border-emerald-500/40"] {
+  border-color: var(--se-border-strong);
+}
+
+[class~="hover:bg-white/4"]:hover,
+[class~="hover:bg-white/5"]:hover,
+[class~="hover:bg-white/7"]:hover,
+[class~="hover:bg-white/8"]:hover,
+[class~="hover:bg-slate-800"]:hover,
+[class~="hover:bg-slate-800/60"]:hover {
+  background: var(--se-panel-hover);
+}
+
+[class~="hover:border-white/10"]:hover,
+[class~="hover:border-white/12"]:hover,
+[class~="hover:border-white/15"]:hover,
+[class~="hover:border-white/20"]:hover {
+  border-color: var(--se-border-strong);
+}
+
+select,
+input,
+textarea {
+  border-radius: 10px;
+}
+
+select:not([class*="bg-"]),
+input:not([class*="bg-"]),
+textarea:not([class*="bg-"]) {
+  border-color: var(--se-border);
+  background: var(--se-panel);
+  color: var(--se-text);
+}
+
