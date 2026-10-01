@@ -15,9 +15,10 @@ import { getNFLWeatherContext } from '../../nfl/weather';
 import { searchNBAPlayers } from '../../nba/players';
 import { getNBAPlayerGameLogs } from '../../nba/stats';
 import { NFL_QB_MARKETS, NFL_RB_MARKETS, NFL_WR_TE_MARKETS, NFL_KICKER_MARKETS, NFL_DEFENSE_MARKETS } from '../../nfl/oddsTypes';
-import { SPORT_RESEARCH_ADAPTERS, normalizeSport, type SupportedSport } from '../sportResearchAdapters';
-import { OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withOneRunPaidRefresh } from '../../odds/client';
-import { addDaysToSlateDate, todaySlateDate, tomorrowSlateDate, type SlateDate } from '../../dateModel';
+import { SPORT_RESEARCH_ADAPTERS, detectSport, normalizeSport, type SupportedSport } from '../sportResearchAdapters';
+import { OddsBudgetGuardError, OddsRefreshNotAuthorizedError, isPaidRefreshAllowed, withOneRunPaidRefresh } from '../../odds/client';
+import { addDaysToSlateDate, todaySlateDate, type SlateDate } from '../../dateModel';
+import { resolveDateFromText, type ResolvedDate } from '../dateResolver';
 import { fail, ok, type ToolResult } from './status';
 import { buildResearchSession, buildResearchSessionFromCandidates, getClosestMisses, type ResearchCandidateRecord, type ResearchSession, type GenericResearchCandidate } from './session';
 import { saveResearchSession } from './sessionStore';
@@ -44,25 +45,37 @@ export interface AgentContext {
   pendingQueryIntent: string;
   /** One explicit UI approval; never persisted and never read from the environment. */
   refreshApproval: { sport: SupportedSport; date: string; maxCredits: number; maxGames?: number; selectedGameIds?: string[] } | null;
+  /** Resolved once from the user's message; overrides any date/sport the model passes. */
+  canonicalDate: ResolvedDate | null;
+  canonicalSport: SupportedSport | null;
 }
 
 export function createAgentContext(seed?: ResearchSession | null, seedId?: string | null, refreshApproval?: AgentContext['refreshApproval']): AgentContext {
-  return { runs: new Map(), researchSession: seed ?? null, researchSessionId: seedId ?? null, pendingQueryIntent: '', refreshApproval: refreshApproval ?? null };
+  return { runs: new Map(), researchSession: seed ?? null, researchSessionId: seedId ?? null, pendingQueryIntent: '', refreshApproval: refreshApproval ?? null, canonicalDate: null, canonicalSport: null };
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** Pins the request's date and sport from the user's own words before any tool runs. */
+export function applyRequestScope(context: AgentContext, query: string, today: SlateDate = todaySlateDate()) {
+  context.pendingQueryIntent = query;
+  context.canonicalDate = resolveDateFromText(query, today);
+  context.canonicalSport = detectSport(query);
+}
 
-function resolveDate(input?: string | null): { date: SlateDate } | { error: string } {
-  const value = (input ?? 'today').trim().toLowerCase();
-  if (value === 'today' || value === 'tonight') return { date: todaySlateDate() };
-  if (value === 'tomorrow') return { date: tomorrowSlateDate() };
-  if (value === 'yesterday') return { date: addDaysToSlateDate(todaySlateDate(), -1) };
-  if (DATE_RE.test(value)) {
-    const parsed = new Date(`${value}T12:00:00Z`);
-    if (Number.isNaN(parsed.getTime())) return { error: `"${input}" is not a valid calendar date.` };
-    return { date: value };
-  }
-  return { error: `Could not interpret "${input}". Use today, tonight, tomorrow, or YYYY-MM-DD.` };
+export { detectSport };
+
+function resolveDate(input?: string | null, context?: AgentContext): { date: SlateDate } | { error: string } {
+  if (context?.canonicalDate) return { date: context.canonicalDate.resolvedDate };
+  const today = todaySlateDate();
+  const resolved = resolveDateFromText((input ?? 'today').trim(), today)?.resolvedDate;
+  if (!resolved) return { error: 'Which day should DeepSide research?' };
+  // Model-chosen dates are untrusted (they can come from stale training knowledge).
+  const plausible = resolved === context?.researchSession?.date
+    || (resolved >= addDaysToSlateDate(today, -1) && resolved <= addDaysToSlateDate(today, 14));
+  return { date: plausible ? resolved : today };
+}
+
+function resolveSport(input: string | undefined, context?: AgentContext): SupportedSport | null {
+  return context?.canonicalSport ?? normalizeSport(input ?? 'mlb');
 }
 
 async function loadRun(context: AgentContext, sport: SupportedSport, date: string, options: FinderValidationOptions = {}): Promise<FinderRunSummary> {
@@ -96,10 +109,10 @@ async function getSportCapabilities(): Promise<ToolResult<unknown>> {
   );
 }
 
-async function getSlate(args: { sport?: string; date?: string }): Promise<ToolResult<unknown>> {
-  const sport = normalizeSport(args.sport ?? 'mlb');
+async function getSlate(context: AgentContext, args: { sport?: string; date?: string }): Promise<ToolResult<unknown>> {
+  const sport = resolveSport(args.sport, context);
   if (!sport) return fail('SPORT_UNAVAILABLE', `"${args.sport}" is not a supported sport.`);
-  const resolved = resolveDate(args.date);
+  const resolved = resolveDate(args.date, context);
   if ('error' in resolved) return fail('INVALID_DATE', resolved.error, { sport });
 
   const status = SPORT_STATUS[sport];
@@ -124,9 +137,9 @@ async function getSlate(args: { sport?: string; date?: string }): Promise<ToolRe
 }
 
 async function getSportsbookCandidates(context: AgentContext, args: { sport?: string; date?: string }): Promise<ToolResult<unknown>> {
-  const sport = normalizeSport(args.sport ?? 'mlb');
+  const sport = resolveSport(args.sport, context);
   if (!sport) return fail('SPORT_UNAVAILABLE', `"${args.sport}" is not a supported sport.`);
-  const resolved = resolveDate(args.date);
+  const resolved = resolveDate(args.date, context);
   if ('error' in resolved) return fail('INVALID_DATE', resolved.error, { sport });
 
   const status = SPORT_STATUS[sport];
@@ -139,56 +152,66 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   // Reuse first: a stored session for this exact sport+date already holds the full researched pool,
   // so a reworded question never re-runs the slate or risks a paid refresh.
   const existing = context.researchSession;
-  if (!deliberateRefresh && !approvedForRequest && existing && existing.sport === sport && existing.date === resolved.date && existing.candidates.length > 0) {
-    return ok(
-      { loaded: true, reusedExistingSession: true, candidatesFound: existing.candidates.length, nextStep: 'Call rank_candidates to filter and rank the already-researched pool.' },
-      { ...existing.toolMeta, sport, date: resolved.date, reusedExistingSession: true },
-    );
-  }
+  const sessionMatches = !deliberateRefresh && !approvedForRequest && existing != null && existing.sport === sport && existing.date === resolved.date && existing.candidates.length > 0;
+  const reuseSession = () => ok(
+    { loaded: true, reusedExistingSession: true, candidatesFound: existing!.candidates.length, nextStep: 'Call rank_candidates to filter and rank the already-researched pool.' },
+    { ...existing!.toolMeta, sport, date: resolved.date, reusedExistingSession: true },
+  );
+  if (sessionMatches && !existing.scopeGameIds?.length) return reuseSession();
 
   let preflight: FinderRunSummary;
   try {
     preflight = await runPreflight(sport, resolved.date, deliberateRefresh);
   } catch (error) {
-    return fail('PROVIDER_ERROR', error instanceof Error ? error.message : 'Sportsbook preflight failed.', { sport, date: resolved.date });
+    console.error('[deepside:odds] preflight failed', { sport, date: resolved.date, error: error instanceof Error ? error.message : error });
+    return fail('PROVIDER_ERROR', 'Sportsbook preflight failed.', { sport, date: resolved.date });
   }
 
   const preflightData = preflight.validationPreflight;
-  if (!approvedForRequest && preflightData && (preflightData.cacheMisses > 0 || (preflightData.eligibleGames > 0 && preflightData.matchedEvents === 0))) {
-    const eventListRequired = preflightData.preflightState === 'EVENT_LIST_REQUIRED';
-    return fail(eventListRequired ? 'EVENT_LIST_REQUIRED' : 'SPORTSBOOK_DATA_REQUIRED', eventListRequired
-      ? 'The free sportsbook event list does not contain this requested slate yet; paid player-prop research cannot start until the target events are discoverable.'
-      : 'Sportsbook data is required before DeepSide can research this slate.', {
-      sport,
-      date: resolved.date,
-      gamesScheduled: preflight.gamesScheduled,
-      gamesFound: preflight.gamesEligible,
-      cached: true,
-      budgetLimited: false,
-      sportsbookPreflight: preflightData,
-      oddsSpend: preflight.oddsSpend,
-    });
+  const requestedGameIds = detectRequestedGames(context.pendingQueryIntent, preflightData?.games ?? []);
+  if (sessionMatches && requestedGameIds.length > 0 && requestedGameIds.every((id) => existing.scopeGameIds!.includes(id))) return reuseSession();
+
+  const autoRefresh = approvedForRequest != null || isPaidRefreshAllowed();
+  const scopeGames = (preflightData?.games ?? []).filter((game) => requestedGameIds.length === 0 || requestedGameIds.includes(game.gameId));
+  const cachedGameIds = scopeGames
+    .filter((game) => game.eventId != null && game.marketsCacheState === 'CACHE_FRESH')
+    .map((game) => game.gameId);
+  if (preflightData?.preflightState === 'EVENT_LIST_REQUIRED') {
+    return fail('EVENT_LIST_REQUIRED', 'Sportsbook markets are not posted for this slate yet.', { sport, date: resolved.date, gamesScheduled: preflight.gamesScheduled, gamesFound: 0 });
+  }
+  // Without paid-refresh permission (local development default) only already-cached games can be researched.
+  if (!autoRefresh && cachedGameIds.length === 0 && (preflightData?.cacheMisses ?? 0) > 0) {
+    console.info('[deepside:odds] refresh needed but paid refresh disabled', { sport, date: resolved.date, cacheMisses: preflightData?.cacheMisses, estimatedCreditCostHigh: preflightData?.estimatedCreditCostHigh });
+    return fail('SPORTSBOOK_DATA_REQUIRED', 'Sportsbook data is temporarily unavailable.', { sport, date: resolved.date });
   }
 
   let summary: FinderRunSummary;
   try {
+    const scopedIds = requestedGameIds.length > 0
+      ? (autoRefresh ? requestedGameIds : requestedGameIds.filter((id) => cachedGameIds.includes(id)))
+      : (!autoRefresh && (preflightData?.cacheMisses ?? 0) > 0 ? cachedGameIds : undefined);
     const load = () => loadRun(context, sport, resolved.date, approvedForRequest ? {
       validationMaxGames: approvedForRequest.maxGames,
       validationGameIds: approvedForRequest.selectedGameIds,
       validationMaxCredits: approvedForRequest.maxCredits,
-    } : {});
-    summary = approvedForRequest
-      ? await withOneRunPaidRefresh(load)
-      : await load();
+    } : scopedIds ? { validationGameIds: scopedIds } : {});
+    // The odds client is cache-first per event: only missing/stale games are fetched, identical
+    // concurrent requests share one fetch, and the credit reserve guard still hard-stops spending.
+    summary = autoRefresh ? await withOneRunPaidRefresh(load, { forceFresh: deliberateRefresh }) : await load();
   } catch (error) {
+    console.error('[deepside:odds] research load failed', { sport, date: resolved.date, error: error instanceof Error ? error.message : error });
     if (error instanceof OddsBudgetGuardError) {
-      return fail('RESERVE_BLOCKED', 'The Odds API credit reserve blocked a refresh and no cached props were available.', { sport, date: resolved.date, budgetLimited: true });
+      return fail('RESERVE_BLOCKED', 'Sportsbook data is temporarily unavailable.', { sport, date: resolved.date, budgetLimited: true });
     }
     if (error instanceof OddsRefreshNotAuthorizedError) {
-      return fail('PAID_REFRESH_NOT_AUTHORIZED', 'Current sportsbook data is not cached for this slate, and a paid refresh has not been authorized in this environment.', { sport, date: resolved.date, budgetLimited: true });
+      return fail('PAID_REFRESH_NOT_AUTHORIZED', 'Sportsbook data is temporarily unavailable.', { sport, date: resolved.date, budgetLimited: true });
     }
-    return fail('PROVIDER_ERROR', error instanceof Error ? error.message : 'Sportsbook provider failed.', { sport, date: resolved.date });
+    return fail('PROVIDER_ERROR', 'Sportsbook provider failed.', { sport, date: resolved.date });
   }
+  console.info('[deepside:odds] research load', {
+    sport, date: resolved.date, scope: requestedGameIds.length ? requestedGameIds : 'full-slate',
+    gamesAnalyzed: summary.gamesAnalyzed, propsAnalyzed: summary.propsAnalyzed, oddsSpend: summary.oddsSpend, credits: summary.credits,
+  });
 
   // NFL/NBA don't yet have the MLB-only FinderResult signal modules, so their researched pool
   // lives on sport-specific candidate arrays (each carrying its own EliteResearchAnalysis) rather
@@ -290,7 +313,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     sport,
     date: resolved.date,
     gamesFound: summary.gamesAnalyzed,
-    gamesScheduled: summary.gamesScheduled,
+    gamesScheduled: requestedGameIds.length > 0 ? requestedGameIds.length : summary.gamesEligible,
     propsFound: summary.propsAnalyzed,
     booksFound: summary.booksAnalyzed,
     candidatesFound,
@@ -310,10 +333,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
       return fail('RESERVE_BLOCKED', 'No sportsbook player props are cached for this slate and the Odds API credit reserve blocked a refresh.', meta);
     }
     if (summary.blockReason === 'NOT_AUTHORIZED') {
-      return fail('SPORTSBOOK_DATA_REQUIRED', 'Sportsbook data is required before DeepSide can research this slate.', {
-        ...meta,
-        sportsbookPreflight: preflightData,
-      });
+      return fail('SPORTSBOOK_DATA_REQUIRED', 'Sportsbook data is temporarily unavailable.', meta);
     }
     return fail('NO_CACHED_SPORTSBOOK_DATA', 'No sportsbook player props are currently available or cached for this slate.', meta);
   }
@@ -335,6 +355,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
       results: summary.results,
       toolMeta: meta,
     });
+  if (requestedGameIds.length > 0) context.researchSession.scopeGameIds = requestedGameIds;
   // Persisted server-side only; the client gets back an opaque ID, never the (possibly hundreds-of-
   // candidates) session object. Replaces any previous session for this conversation.
   context.researchSessionId = await saveResearchSession(context.researchSession);
@@ -346,9 +367,9 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
 }
 
 async function runEliteFilter(context: AgentContext, args: { sport?: string; date?: string; candidateIds?: string[] }): Promise<ToolResult<unknown>> {
-  const sport = normalizeSport(args.sport ?? 'mlb');
+  const sport = resolveSport(args.sport, context);
   if (!sport) return fail('SPORT_UNAVAILABLE', `"${args.sport}" is not a supported sport.`);
-  const resolved = resolveDate(args.date);
+  const resolved = resolveDate(args.date, context);
   if ('error' in resolved) return fail('INVALID_DATE', resolved.error, { sport });
 
   const session = context.researchSession;
@@ -408,31 +429,59 @@ type CandidateRankArgs = {
 const MIN_OFFICIAL_ODDS = -900;
 const TARGET_ODDS_TOLERANCE = 50;
 
+function teamAliases(team: string): string[] {
+  const words = team.trim().split(/\s+/);
+  const last = words[words.length - 1] ?? '';
+  const nickname = last.length >= 4 ? last : words.slice(-2).join(' ');
+  return [...new Set([team, nickname])].filter(Boolean);
+}
+
+/** Games named in the request ("Colts vs Commanders", "Yankees props"); empty means the whole slate. */
+export function detectRequestedGames(query: string, games: Array<{ gameId: string; matchup: string }>): string[] {
+  const mentions = (team: string) => teamAliases(team).some((alias) => new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(query));
+  const scored = games.map((game) => {
+    const [away = '', home = ''] = game.matchup.split(/\s+@\s+/);
+    return { gameId: game.gameId, hits: Number(mentions(away)) + Number(mentions(home)) };
+  });
+  const both = scored.filter((game) => game.hits === 2);
+  return (both.length ? both : scored.filter((game) => game.hits === 1)).map((game) => game.gameId);
+}
+
 export function parseCandidateSearchConstraints(query: string, candidates: ResearchCandidateRecord[]): CandidateSearchConstraints {
   const normalized = query.toLowerCase();
   const range = normalized.match(/(?:between|from)\s*([+-]\d{2,4})\s*(?:and|to)\s*([+-]\d{2,4})/i);
-  const target = range ? null : normalized.match(/(?:around|near|at|priced?\s*(?:around|near|at)?)?\s*([+-]\d{2,4})\b/i);
+  const signedPrice = normalized.match(/\b(?:under|below)\s*([+-]\d{2,4})\b/i);
+  const overPrice = normalized.match(/\b(?:over|above)\s*([+-]\d{2,4})\b/i);
+  const target = range || signedPrice || overPrice ? null : normalized.match(/(?:around|near|at|priced?\s*(?:around|near|at)?)?\s*([+-]\d{2,4})\b/i);
   const requestedCount = normalized.match(/\b(\d{1,2})\b(?=[^.!?\n]{0,30}\b(?:plays?|picks?|props?)\b)/i);
   const player = candidates.find((candidate) => normalized.includes(candidate.player.toLowerCase()))?.player ?? null;
   const books = [...new Set(candidates.map((candidate) => candidate.book).filter((book): book is string => Boolean(book)))];
   const sportsbook = books.find((book) => normalized.includes(book.toLowerCase())) ?? null;
   const markets = [...new Set(candidates.flatMap((candidate) => [candidate.market, candidate.marketKey.replaceAll('_', ' ')]))]
     .sort((a, b) => b.length - a.length);
-  const market = markets.find((value) => normalized.includes(value.toLowerCase())) ?? null;
-  const mentionedTeams = [...new Set(candidates.flatMap((candidate) => [candidate.team, candidate.opponent]).filter((team): team is string => Boolean(team)))]
-    .filter((team) => normalized.includes(team.toLowerCase()));
+  const market = markets.find((value) => {
+    const label = value.toLowerCase();
+    const singular = label.replace(/s\b/g, '');
+    return normalized.includes(label) || normalized.includes(singular);
+  }) ?? null;
+  const teamNames = [...new Set(candidates.flatMap((candidate) => [candidate.team, candidate.opponent]).filter((team): team is string => Boolean(team)))];
+  const mentionedTeams = teamNames.filter((team) => {
+    const name = team.toLowerCase();
+    const words = name.split(/\s+/).filter((word) => word.length >= 4);
+    return normalized.includes(name) || words.some((word) => normalized.includes(word));
+  });
   const selectedGames = mentionedTeams.length >= 2
     ? candidates.filter((candidate) => mentionedTeams.some((team) => candidate.team?.toLowerCase() === team.toLowerCase())
       && mentionedTeams.some((team) => candidate.opponent?.toLowerCase().includes(team.toLowerCase()))).map((candidate) => candidate.candidateId)
     : null;
 
   return {
-    sport: /\bnfl\b/i.test(query) ? 'nfl' : /\bnba\b/i.test(query) ? 'nba' : /\bmlb|baseball\b/i.test(query) ? 'mlb' : null,
-    date: query.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0] ?? null,
-    side: /\bunders?\b/i.test(query) ? 'under' : /\bovers?\b/i.test(query) ? 'over' : null,
+    sport: detectSport(query),
+    date: resolveDateFromText(query)?.resolvedDate ?? null,
+    side: /\bunders?\b(?!\s*[+-]\d)/i.test(query) ? 'under' : /\bovers?\b(?!\s*[+-]\d)/i.test(query) ? 'over' : null,
     targetOdds: target ? Number(target[1]) : null,
-    minOdds: range ? Math.min(Number(range[1]), Number(range[2])) : null,
-    maxOdds: range ? Math.max(Number(range[1]), Number(range[2])) : null,
+    minOdds: range ? Math.min(Number(range[1]), Number(range[2])) : overPrice ? Number(overPrice[1]) : null,
+    maxOdds: range ? Math.max(Number(range[1]), Number(range[2])) : signedPrice ? Number(signedPrice[1]) : null,
     sort: /\bhigher value\b/i.test(query) ? 'value'
       : /\b(?:better payout|more upside|higher payout)\b/i.test(query) ? 'payout'
       : /\b(?:safer|lower risk|safest)\b/i.test(query) ? 'safety' : 'research',
@@ -485,9 +534,9 @@ export function selectRankedCandidates(candidates: ResearchCandidateRecord[], qu
 }
 
 async function rankCandidates(context: AgentContext, args: CandidateRankArgs): Promise<ToolResult<unknown>> {
-  const sport = normalizeSport(args.sport ?? 'mlb');
+  const sport = resolveSport(args.sport, context);
   if (!sport) return fail('SPORT_UNAVAILABLE', `"${args.sport}" is not a supported sport.`);
-  const resolved = resolveDate(args.date);
+  const resolved = resolveDate(args.date, context);
   if ('error' in resolved) return fail('INVALID_DATE', resolved.error, { sport });
 
   const session = context.researchSession;
@@ -765,7 +814,7 @@ export const TOOL_DEFINITIONS = [
 export async function executeTool(name: string, args: Record<string, unknown>, context: AgentContext): Promise<ToolResult<unknown>> {
   switch (name) {
     case 'get_sport_capabilities': return getSportCapabilities();
-    case 'get_slate': return getSlate(args as { sport?: string; date?: string });
+    case 'get_slate': return getSlate(context, args as { sport?: string; date?: string });
     case 'get_sportsbook_candidates': return getSportsbookCandidates(context, args as { sport?: string; date?: string });
     case 'run_elite_filter': return runEliteFilter(context, args as { sport?: string; date?: string; candidateIds?: string[] });
     case 'rank_candidates': return rankCandidates(context, args as Parameters<typeof rankCandidates>[1]);

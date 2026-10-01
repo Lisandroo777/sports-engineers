@@ -486,7 +486,7 @@ function AiFinderPageContent() {
         <header className="flex shrink-0 items-center gap-3 border-b border-white/5 bg-[#0b1522] px-4 py-2.5">
           <div className="flex max-w-sm flex-1 items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm text-slate-600">
             <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-            <span>AI Finder</span>
+            <span>DeepSide AI</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
             <div className="flex items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
@@ -497,7 +497,7 @@ function AiFinderPageContent() {
               <button onClick={() => setFinderDate(todaySlateDate())} className={`rounded-lg px-2.5 py-1 transition ${presetForSlateDate(finderDate) === 'today' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>Today</button>
               <button onClick={() => setFinderDate(tomorrowSlateDate())} className={`rounded-lg px-2.5 py-1 transition ${presetForSlateDate(finderDate) === 'tomorrow' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>Tomorrow</button>
             </div>
-            <button onClick={resetSearchSession} title="Clear the saved AI Finder session" className="rounded-xl border border-rose-500/20 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reset</button>
+            <button onClick={resetSearchSession} title="Clear the saved DeepSide AI session" className="rounded-xl border border-rose-500/20 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reset</button>
             <button disabled title="Notifications are not connected yet" className="relative flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-full border border-white/8 bg-white/5 text-slate-300 opacity-50">
               <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
             </button>
@@ -511,7 +511,7 @@ function AiFinderPageContent() {
             {/* ── Center column ── */}
             <div className="flex min-w-0 flex-1 flex-col gap-5">
 
-              {/* Prop Finder hero */}
+              {/* DeepSide AI hero */}
               {!criteria && !isSearching && (
                 <div className="mx-auto flex w-full max-w-[1000px] flex-1 flex-col justify-center pb-12 pt-16 text-center">
                   <p className="text-5xl font-black tracking-[-0.06em] text-white sm:text-7xl">Prop <span className="text-[#39f27f]">Finder</span></p>
@@ -546,7 +546,7 @@ function AiFinderPageContent() {
                     <button type="button" disabled title="Voice input isn't supported yet" aria-label="Use microphone" className="flex h-10 w-10 shrink-0 cursor-not-allowed items-center justify-center self-end rounded-xl border border-white/10 text-slate-600 opacity-40">
                       <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="10" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></svg>
                     </button>
-                    <button onClick={handlePrimarySearch} disabled={isSearching || deepLoading} aria-label="Search" title={query.trim() ? 'Search with AI Finder' : 'Run Deep Search for this sport and date'}
+                    <button onClick={handlePrimarySearch} disabled={isSearching || deepLoading} aria-label="Search" title={query.trim() ? 'Search with DeepSide AI' : 'Run Deep Search for this sport and date'}
                       className="flex h-10 shrink-0 items-center justify-center gap-2 self-end rounded-xl bg-[#39f27f] px-3 text-sm font-bold text-[#041008] transition hover:bg-[#63f99a] disabled:cursor-not-allowed disabled:opacity-40">
                       <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
                       <span>{query.trim() ? 'Search' : 'Deep Search'}</span>
@@ -557,7 +557,7 @@ function AiFinderPageContent() {
                     <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
-                          <h3 className="font-semibold text-white">AI Finder — {finderSport} {presetForSlateDate(finderDate) === 'tomorrow' ? 'Tomorrow' : 'Today'}</h3>
+                          <h3 className="font-semibold text-white">DeepSide AI — {finderSport} {presetForSlateDate(finderDate) === 'tomorrow' ? 'Tomorrow' : 'Today'}</h3>
                           <p className="text-xs text-slate-500">{finderSport === 'MLB' ? 'Analyzes the cached MLB slate using real MLB Stats API and Odds API data.' : 'Analyzes the real NFL schedule (ESPN); sportsbook props are not connected yet.'}</p>
                         </div>
                         <div className="flex items-center gap-2">
@@ -731,7 +731,7 @@ function AiFinderPageContent() {
                 <div className="overflow-hidden rounded-2xl border border-teal-500/20 bg-teal-500/5 p-5">
                   <div className="mb-3 flex items-center gap-2">
                     <div className="h-2 w-2 animate-pulse rounded-full bg-teal-500" />
-                    <p className="text-sm font-semibold text-teal-400">AI Finder is working…</p>
+                    <p className="text-sm font-semibold text-teal-400">DeepSide AI is researching…</p>
                   </div>
                   <div className="space-y-1.5">
                     {LOADING_STEPS.map((step, i) => (

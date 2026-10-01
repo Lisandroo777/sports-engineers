@@ -189,11 +189,11 @@ export default function PicksPage() {
               ))}
             </div>
 
-            {/* AI Finder Picks — real FinderScore output, reused from the cached Odds/MLB slate analysis */}
+              {/* DeepSide AI picks — real FinderScore output, reused from the cached Odds/MLB slate analysis */}
             <div className="rounded-2xl border border-[#39f27f]/25 bg-[#0c1410] p-4">
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div>
-                  <h2 className="font-semibold text-white">AI Finder Picks</h2>
+                  <h2 className="font-semibold text-white">DeepSide AI Picks</h2>
                   <p className="text-[11px] text-slate-500">Real FinderScores from MLB Stats API + Odds API, reused from the shared cache (no extra credits spent).</p>
                 </div>
                 {finderSummary && <p className="text-[10px] text-slate-500">Games: {finderSummary.gamesAnalyzed} • Props: {finderSummary.propsAnalyzed} • Books: {finderSummary.booksAnalyzed}</p>}
@@ -204,7 +204,7 @@ export default function PicksPage() {
                 </p>
               )}
               {finderLoading && <p className="text-sm text-slate-500">Loading real Finder results…</p>}
-              {!finderLoading && (!finderSummary || finderSummary.results.length === 0) && <p className="text-sm text-slate-500">No AI Finder picks currently meet the minimum criteria.</p>}
+              {!finderLoading && (!finderSummary || finderSummary.results.length === 0) && <p className="text-sm text-slate-500">No DeepSide AI picks currently meet the minimum criteria.</p>}
               {!finderLoading && finderSummary && finderSummary.results.length > 0 && (
                 <div className="flex gap-3 overflow-x-auto pb-1">
                   {finderSummary.results.slice(0, 8).map((result: FinderResult) => (

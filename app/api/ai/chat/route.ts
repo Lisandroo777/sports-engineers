@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { runAgentTurn, AIUnavailableError, type AgentRefreshApproval, type AgentTurnMessage } from '@/lib/ai/agent/runner';
+import { runAgentTurn, toClientResult, AIUnavailableError, type AgentRefreshApproval, type AgentTurnMessage } from '@/lib/ai/agent/runner';
 import { deleteResearchSession } from '@/lib/ai/agent/sessionStore';
 
 export const runtime = 'nodejs';
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
   try {
     // The client only persists/resends a small session ID; the full research session lives server-side.
     const result = await runAgentTurn(messages, body.researchSessionId ?? null, body.refreshApproval ?? null);
-    return NextResponse.json(result);
+    return NextResponse.json(toClientResult(result));
   } catch (error) {
     if (error instanceof AIUnavailableError) {
       return NextResponse.json({ error: error.message, code: 'AI_UNAVAILABLE' }, { status: 503 });

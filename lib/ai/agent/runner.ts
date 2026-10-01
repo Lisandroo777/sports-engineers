@@ -1,7 +1,9 @@
-import { createAgentContext, executeTool, selectRankedCandidates, TOOL_DEFINITIONS, MAX_RESULTS_CEILING } from './tools';
+import { applyRequestScope, createAgentContext, executeTool, selectRankedCandidates, TOOL_DEFINITIONS, MAX_RESULTS_CEILING } from './tools';
 import { getClosestMisses } from './session';
 import { getResearchSession } from './sessionStore';
 import type { ResearchSession } from './session';
+import { todaySlateDate } from '../../dateModel';
+import { formatDisplayDate } from '../dateResolver';
 
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
 const DEFAULT_MODEL = 'gpt-4.1';
@@ -34,18 +36,15 @@ RESEARCH PHILOSOPHY — season averages, L5/L10 hit rates, and basic opponent ra
 - playerEdgePercent vs priceEdgePercent: these are different things. A good player prediction (playerEdgePercent) can still be a bad bet at a bad price (negative priceEdgePercent) — distinguish them when both are present.
 
 DISTINGUISHING FAILURES — these are completely different and must never be conflated:
-- NO_CACHED_SPORTSBOOK_DATA: no props are cached or currently offered for this slate. Say sportsbook data is not cached for this slate. Do NOT say "no Elite picks found" and do NOT blame credits.
-- PAID_REFRESH_NOT_AUTHORIZED: current data is not cached and a paid refresh has not been authorized. Say exactly that — a fresh sportsbook refresh is required but is not authorized. Never attribute this to the credit reserve.
-- SPORTSBOOK_DATA_REQUIRED: the free preflight ran, sportsbook candidates are unavailable, and research did not run. Report the requested sport/date and preflight cost/cache fields. Never say "no Elite picks" or "0 matching opportunities" for this state.
-- EVENT_LIST_REQUIRED: the free Odds event list does not contain the requested slate. This is an event-discovery/cache state, not an Elite result and not a paid player-prop refresh; report estimated cost as unknown until events are available.
-- RESERVE_BLOCKED: the Odds API credit reserve genuinely blocked a refresh. Only use this wording when the tool returned this exact status.
+- NO_CACHED_SPORTSBOOK_DATA / SPORTSBOOK_DATA_REQUIRED / PAID_REFRESH_NOT_AUTHORIZED / RESERVE_BLOCKED: sportsbook data could not be loaded for this search. Say only that sportsbook data is temporarily unavailable. Never say "no Elite picks", and never mention credits, costs, budgets, refresh authorization or providers.
+- EVENT_LIST_REQUIRED: sportsbook markets are not posted for this slate yet. Say so plainly; never mention costs.
 - STALE_SPORTSBOOK_DATA: research ran on stale prices. Report findings but state that current EV is unavailable and nothing can qualify as official Elite.
 - SLATE_COMPLETE: every game already finished, so no props exist. Suggest the next slate.
 - NO_CANDIDATES: props loaded but produced no researchable candidates.
 - NO_ELITE_RESULTS: candidates were researched but none passed. Say how many were researched and give the main rejection reasons.
 - SPORT_UNAVAILABLE: that sport has no connected data. Say what is missing; never pretend.
 
-REUSING LOADED DATA — sportsbook refreshes cost real money, so never reload a slate you already have:
+REUSING LOADED DATA — never reload a slate you already have:
 - Once a research session exists for a sport+date, EVERY narrowing or rephrased question must be answered with rank_candidates (or get_closest_misses / get_last_research_session) against that stored pool.
 - "best pitcher strikeout spots" -> rank_candidates(marketContains:"strikeout"). "strongest overs" -> side:"over". "best Yankees props" -> team:"Yankees". "top 5 closest misses" -> get_closest_misses.
 - Only call get_sportsbook_candidates when the sport or date actually changes, or when no session exists yet. Different wording about the SAME slate is never a reason to reload.
@@ -62,7 +61,7 @@ You may call get_slate first if the user asks about games rather than props, and
 
 MAX RESULTS: default and ceiling is ${MAX_RESULTS_CEILING}. It is a maximum, never a quota. If only 3 qualify, present 3. If zero qualify, present zero and explain why — a slate returning no picks is a valid, expected outcome, not a failure. Never lower standards to fill slots.
 
-STYLE: Be concise and factual. Start with a short summary, separate sections with blank lines, use short paragraphs, and use headings or bullets for reasons and risks. Never return one giant paragraph. Report counts (games, props, books, candidates, qualified). When presenting picks include player, market, line, side, best book, odds, grade, and the research score, plus at least one real failure mode from howItLoses. Never use hype.`;
+STYLE: The app renders picks, coverage and empty/unavailable states as structured cards, so never restate them in prose. For pick/search requests reply with at most one short sentence. For explanation questions use a short ALL-CAPS heading per section (e.g. WHY THIS PLAY STANDS OUT, RISK) followed by "- " bullets; no paragraph longer than two sentences. Never mention tool names, status codes or internal steps. Cite only numbers returned by tools, and include at least one real failure mode from howItLoses when defending a pick. Never use hype.`;
 
 interface OpenAIFunctionCall {
   type: 'function_call';
@@ -115,6 +114,15 @@ export interface AgentTurnResult {
 
 type InputItem = Record<string, unknown>;
 
+const INTERNAL_META_KEYS = ['oddsSpend', 'credits', 'sportsbookPreflight', 'budgetLimited', 'blockReason', 'error'];
+
+/** Provider credit/cost data stays server-side (logged there); production clients only get research facts. */
+export function toClientResult(result: AgentTurnResult, production = process.env.NODE_ENV === 'production'): AgentTurnResult {
+  if (!production) return result;
+  const meta = result.meta ? Object.fromEntries(Object.entries(result.meta).filter(([key]) => !INTERNAL_META_KEYS.includes(key))) : null;
+  return { ...result, meta, toolTrace: result.toolTrace.map(({ name, status }) => ({ name, status, summary: {} })) };
+}
+
 export function resolveStructuredResults(results: unknown[], rankingAttempted: boolean, session: ResearchSession | null, query = ''): unknown[] {
   if (rankingAttempted) return results;
   if (!session) return [];
@@ -130,6 +138,7 @@ function isCachedRankingRequest(query: string) {
 export function rankCachedSession(session: ResearchSession, query: string, researchSessionId: string | null): AgentTurnResult | null {
   const { constraints, pool, selected } = selectRankedCandidates(session.candidates, query);
   if ((constraints.sport && constraints.sport !== session.sport) || (constraints.date && constraints.date !== session.date)) return null;
+  if (session.scopeGameIds?.length && !constraints.team && !constraints.selectedCandidateIds) return null;
   const eliteFound = pool.filter((candidate) => candidate.eliteQualified).length;
   const meta = { sport: session.sport, date: session.date, ...session.toolMeta, candidatesFound: pool.length, eliteFound, cached: true, reusedExistingSession: true };
   const toolTrace: AgentToolTrace[] = [
@@ -184,12 +193,18 @@ export async function runAgentTurn(history: AgentTurnMessage[], researchSessionI
 
   const context = createAgentContext(await getResearchSession(researchSessionId), researchSessionId, refreshApproval);
   const lastUserMessage = [...history].reverse().find((message) => message.role === 'user');
-  context.pendingQueryIntent = lastUserMessage?.content ?? '';
+  applyRequestScope(context, lastUserMessage?.content ?? '');
   if (!refreshApproval && context.researchSession && isCachedRankingRequest(context.pendingQueryIntent)) {
     const ranked = rankCachedSession(context.researchSession, context.pendingQueryIntent, context.researchSessionId);
     if (ranked) return ranked;
   }
   const input: InputItem[] = history.map((message) => ({ role: message.role, content: message.content }));
+  const scopeNote = [
+    `Today is ${formatDisplayDate(todaySlateDate())} (${todaySlateDate()}).`,
+    context.canonicalDate ? `This request's date is already resolved: "${context.canonicalDate.rawDateText}" = ${context.canonicalDate.displayDate} (${context.canonicalDate.resolvedDate}). Use exactly that date; never ask the user for a date format.` : null,
+    context.canonicalSport ? `This request's sport is ${context.canonicalSport.toUpperCase()}.` : null,
+  ].filter(Boolean).join(' ');
+  input.unshift({ role: 'developer', content: scopeNote });
   const toolTrace: AgentToolTrace[] = [];
   let results: unknown[] = [];
   let closestMisses: unknown[] = [];

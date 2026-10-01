@@ -1,9 +1,7 @@
 export const mainNavigation = [
+  { label: 'DeepSide AI', href: '/ai' },
   { label: 'Games', href: '/dashboard' },
-  { label: 'Prop Dive', href: '/research' },
-  { label: 'DeepSide AI', href: '/ai-finder' },
-  { label: 'Insights', href: '/insights' },
+  { label: 'Research Lab', href: '/research' },
   { label: 'Matchups', href: '/matchups' },
-  { label: '+EV', href: '/ev' },
   { label: 'Picks', href: '/picks' },
 ] as const;

@@ -14,9 +14,9 @@ export default function AiFinderError({ error, reset }: { error: Error & { diges
     <div className="flex min-h-screen items-center justify-center bg-[#050807] px-6">
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-8 text-center">
         <p className="text-3xl">⚠</p>
-        <h1 className="mt-3 text-lg font-bold text-white">AI Finder hit a problem</h1>
+        <h1 className="mt-3 text-lg font-bold text-white">DeepSide AI hit a problem</h1>
         <p className="mt-2 text-sm text-slate-400">
-          Something in the AI Finder view failed to render. Your research data is safe on the server — this only affects this browser tab.
+          Something in the DeepSide AI view failed to render. Your research data is safe on the server — this only affects this browser tab.
         </p>
         <div className="mt-6 flex justify-center gap-3">
           <button

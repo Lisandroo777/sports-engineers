@@ -136,6 +136,8 @@ export interface ResearchSession {
   toolMeta: ResearchSessionToolMeta;
   /** Every researched candidate (elite and non-elite), ranked by researchScore descending. */
   candidates: ResearchCandidateRecord[];
+  /** Set when only specific games were researched; absent means the complete slate. */
+  scopeGameIds?: string[] | null;
 }
 
 function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: number): ResearchCandidateRecord {

@@ -25,7 +25,8 @@ import { computeCrossBookThreshold, type CrossBookThresholdResult } from './cros
 import { computeMarketMovement, type MarketMovementSignal } from './marketMovement';
 import { todaySlateDate } from '../dateModel';
 import type { SportProjection } from '../projection/types';
-import type { FinderRunSummary, FinderValidationOptions, ValidationPreflight } from './engine';
+import type { NFLGame } from '../nfl/types';
+import type { FinderRunSummary, FinderValidationOptions, ResearchPriorityGame, ValidationPreflight } from './engine';
 import { VALIDATION_COST_PER_EVENT, canAffordNextValidationGame, classifyValidationPreflight } from './engine';
 
 export const NFL_ODDS_SPORT_KEY = 'americanfootball_nfl';
@@ -116,6 +117,50 @@ export async function matchNFLPlayer(
 }
 
 /**
+ * Ranks NFL slate games for research using only free signals (ESPN schedule + odds-cache state), so
+ * DeepSide can choose which games are worth a paid refresh *before* spending a single credit.
+ *
+ * Games whose props are already cached rank highest because researching them costs 0 credits, which
+ * is what lets a small authorized budget still produce research instead of blocking on the full slate.
+ */
+export function rankNFLResearchPriority(
+  entries: Array<{ game: NFLGame; eventId: string | null; propsCached: boolean }>,
+  selectedGameIds?: string[],
+): ResearchPriorityGame[] {
+  const selectedSet = selectedGameIds?.length ? new Set(selectedGameIds) : null;
+  return entries
+    .map(({ game, eventId, propsCached }) => {
+      let priority = 0;
+      const reasons: string[] = [];
+      const unavailableEvidence: string[] = [];
+      if (eventId) { priority += 40; reasons.push('Sportsbook event is matched, so this game can be researched.'); }
+      else unavailableEvidence.push('Matched sportsbook event');
+      if (propsCached) { priority += 30; reasons.push('Player props are already cached — researching this game costs 0 credits.'); }
+      else unavailableEvidence.push('Player props (a paid refresh is required)');
+      if (game.venue?.name) { priority += 10; reasons.push(`Venue context is available (${game.venue.indoor ? 'indoor' : 'outdoor'}).`); }
+      else unavailableEvidence.push('Venue and roof context');
+      if (game.homeTeam.id && game.awayTeam.id) { priority += 10; reasons.push('Both team IDs resolve for opponent-defense and injury context.'); }
+      else unavailableEvidence.push('Opponent and injury context');
+      if (game.gameTime) { priority += 10; reasons.push('Kickoff time is known for weather and price-freshness timing.'); }
+      else unavailableEvidence.push('Kickoff time');
+      unavailableEvidence.push('Live sportsbook lines', 'Snap-share confirmation');
+      const coverage: ResearchPriorityGame['coverage'] = priority >= 80 ? 'HIGH' : priority >= 50 ? 'MEDIUM' : 'LOW';
+      return {
+        gameId: game.id,
+        matchup: `${game.awayTeam.displayName} @ ${game.homeTeam.displayName}`,
+        gameTime: game.gameTime ?? null,
+        priority,
+        coverage,
+        selected: false,
+        reasons,
+        unavailableEvidence,
+      };
+    })
+    .sort((a, b) => b.priority - a.priority || (a.gameTime ?? '').localeCompare(b.gameTime ?? ''))
+    .map((game) => ({ ...game, selected: selectedSet ? selectedSet.has(game.gameId) : false }));
+}
+
+/**
  * Real NFL Finder run: schedule -> odds event match -> cached props -> normalization -> player
  * matching -> ESPN game-log history -> baseline projection.
  *
@@ -157,9 +202,12 @@ export async function runNFLFinderDeepSearch(
     : explicitlySelected;
 
   if (options.preflight) {
-    const needsPaid = (await Promise.all(games.map(async (entry) => ({ entry, state: await inspectEventPlayerPropsCacheState(entry.event.id, NFL_ODDS_SPORT_KEY) }))))
-      .filter(({ state }) => state.props !== 'CACHE_FRESH')
-      .map(({ entry }) => entry);
+    // Inspected once per matched game and reused everywhere below: the cache state drives the cost
+    // estimate, the per-game rows and the research-priority ranking, and it must not disagree.
+    const propsCacheStateByGameId = new Map(await Promise.all(selectable.map(async (entry) => (
+      [entry.game.id, (await inspectEventPlayerPropsCacheState(entry.event.id, NFL_ODDS_SPORT_KEY)).props] as const
+    ))));
+    const needsPaid = games.filter((entry) => propsCacheStateByGameId.get(entry.game.id) !== 'CACHE_FRESH');
     const eventListUnavailable = bettable.length > 0 && selectable.length === 0;
     const preflight: ValidationPreflight = {
       eligibleGames: bettable.length,
@@ -174,7 +222,17 @@ export async function runNFLFinderDeepSearch(
       estimatedCostStatus: eventListUnavailable ? 'UNKNOWN_UNTIL_EVENT_LIST' : 'KNOWN',
       preflightState: classifyValidationPreflight({ scheduledGames: bettable.length, matchedEvents: selectable.length, cacheMisses: needsPaid.length }),
       paidRefreshAuthorized: isPaidRefreshAllowed(),
-      games: await Promise.all(bettable.map(async (game) => {
+      // Lets the caller pick the minimum set of high-priority games to refresh instead of being
+      // forced to authorize the entire slate before any research can start.
+      researchPriorityGames: rankNFLResearchPriority(
+        bettable.map((game) => ({
+          game,
+          eventId: selectable.find((entry) => entry.game.id === game.id)?.event.id ?? null,
+          propsCached: propsCacheStateByGameId.get(game.id) === 'CACHE_FRESH',
+        })),
+        games.map((entry) => entry.game.id),
+      ),
+      games: bettable.map((game) => {
         const matched = selectable.find((entry) => entry.game.id === game.id);
         return {
           gameId: game.id,
@@ -182,10 +240,10 @@ export async function runNFLFinderDeepSearch(
           gameTime: game.gameTime ?? null,
           status: game.completed ? 'Final' : 'Scheduled',
           eventId: matched?.event.id ?? null,
-          marketsCacheState: matched ? (await inspectEventPlayerPropsCacheState(matched.event.id, NFL_ODDS_SPORT_KEY)).props : 'EVENT_UNAVAILABLE',
+          marketsCacheState: matched ? propsCacheStateByGameId.get(game.id)! : 'EVENT_UNAVAILABLE',
           selected: matched != null,
         };
-      })),
+      }),
     };
     return {
       results: [], nflCandidates: [], playerMatching: { matched: 0, ambiguous: 0, unmatched: 0 }, marketSupport: { full: 0, partial: 0, unsupported: 0 },

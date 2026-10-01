@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { VALIDATION_COST_PER_EVENT, canAffordNextValidationGame, classifyValidationPreflight, rankMLBResearchPriority, type FinderValidationOptions } from './engine';
+import { rankNFLResearchPriority } from './nflEngine';
 import type { MLBGame } from '../mlb/types';
 
 /**
@@ -192,5 +193,42 @@ describe('MLB smart partial-slate research priority', () => {
     expect(ranked[0].gameId).toBe('2');
     expect(ranked.find((entry) => entry.gameId === '1')?.selected).toBe(true);
     expect(ranked.find((entry) => entry.gameId === '2')?.selected).toBe(false);
+  });
+});
+
+describe('NFL research priority ranking', () => {
+  const nflGame = (id: string, away: string, home: string, withVenue: boolean) => ({
+    id,
+    week: 12,
+    gameTime: `2025-11-23T18:0${id}:00Z`,
+    homeTeam: { id: `${id}1`, displayName: home, abbreviation: home.slice(0, 3), name: home },
+    awayTeam: { id: `${id}2`, displayName: away, abbreviation: away.slice(0, 3), name: away },
+    homeScore: null,
+    awayScore: null,
+    completed: false,
+    venue: withVenue ? { id: id, name: `${home} Field`, indoor: false, city: null, state: null, country: null } : null,
+  } as unknown as Parameters<typeof rankNFLResearchPriority>[0][number]['game']);
+
+  it('ranks already-cached games first because researching them costs no credits', () => {
+    const ranked = rankNFLResearchPriority([
+      { game: nflGame('1', 'A Away', 'A Home', true), eventId: 'evt-1', propsCached: false },
+      { game: nflGame('2', 'B Away', 'B Home', true), eventId: 'evt-2', propsCached: true },
+    ]);
+    expect(ranked[0].gameId).toBe('2');
+    expect(ranked[0].coverage).toBe('HIGH');
+    expect(ranked[0].reasons.join(' ')).toMatch(/costs 0 credits/i);
+  });
+
+  it('still ranks uncached games so a slate with no cached data offers a path forward', () => {
+    const ranked = rankNFLResearchPriority([
+      { game: nflGame('1', 'A Away', 'A Home', true), eventId: 'evt-1', propsCached: false },
+      { game: nflGame('2', 'B Away', 'B Home', true), eventId: null, propsCached: false },
+    ], ['1']);
+    expect(ranked).toHaveLength(2);
+    // Matched sportsbook event outranks an unmatched one, and neither is dropped.
+    expect(ranked[0].gameId).toBe('1');
+    expect(ranked[0].selected).toBe(true);
+    expect(ranked[0].unavailableEvidence.join(' ')).toMatch(/paid refresh is required/i);
+    expect(ranked[1].unavailableEvidence.join(' ')).toMatch(/Matched sportsbook event/i);
   });
 });

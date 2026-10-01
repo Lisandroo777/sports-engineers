@@ -43,17 +43,20 @@ export { OddsBudgetGuardError } from './budget';
  * Set ODDS_ALLOW_PAID_REFRESH=true to explicitly opt in during local development.
  */
 export function isPaidRefreshAllowed(): boolean {
-  if (oneRunPaidRefreshAuthorization.getStore() === true) return true;
+  if (oneRunPaidRefreshAuthorization.getStore() != null) return true;
   if (process.env.ODDS_ALLOW_PAID_REFRESH === 'true') return true;
   if (process.env.ODDS_ALLOW_PAID_REFRESH === 'false') return false;
   return process.env.NODE_ENV === 'production';
 }
 
-const oneRunPaidRefreshAuthorization = new AsyncLocalStorage<boolean>();
+const oneRunPaidRefreshAuthorization = new AsyncLocalStorage<{ forceFresh: boolean }>();
 
-/** Authorizes paid Odds refreshes only for the awaited operation supplied by an explicit UI approval. */
-export function withOneRunPaidRefresh<T>(operation: () => Promise<T>): Promise<T> {
-  return oneRunPaidRefreshAuthorization.run(true, operation);
+/**
+ * Authorizes paid Odds refreshes for the awaited operation only. Fresh cache is still served unless
+ * `forceFresh` is set (an explicit user "refresh / check again" request).
+ */
+export function withOneRunPaidRefresh<T>(operation: () => Promise<T>, options: { forceFresh?: boolean } = {}): Promise<T> {
+  return oneRunPaidRefreshAuthorization.run({ forceFresh: options.forceFresh === true }, operation);
 }
 
 function getApiKey() {
@@ -147,7 +150,7 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   const cacheKey = url.toString();
   url.searchParams.set('apiKey', apiKey);
-  const forcePaidRefresh = oneRunPaidRefreshAuthorization.getStore() === true && !isFreePath(path);
+  const forcePaidRefresh = oneRunPaidRefreshAuthorization.getStore()?.forceFresh === true && !isFreePath(path);
 
   const memoryHit = cache.get(cacheKey);
   if (!forcePaidRefresh && memoryHit && memoryHit.expires > Date.now()) {
@@ -218,7 +221,6 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
     const used = response.headers.get('x-requests-used');
     const last = response.headers.get('x-requests-last');
     lastCreditInfo = { lastCost: last, used, remaining, path, cached: false, source: 'network', cacheState: isFreePath(path) ? 'FREE' : 'PAID', cacheAgeMs: null };
-    recordSpend(lastCreditInfo);
     recordSpend(lastCreditInfo);
     console.log(`[odds] path=${path} lastCost=${last ?? '0'} used=${used ?? '?'} remaining=${remaining ?? '?'}`);
     await writeCreditStatus({ lastCost: last, used, remaining, path, updatedAt: Date.now() });

@@ -101,8 +101,9 @@ export default function DashboardPage() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top nav */}
-        <header className="flex shrink-0 items-center gap-3 border-b border-white/5 bg-[#0b1522] px-4 py-2.5">
-          <label className="flex max-w-sm flex-1 items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm text-slate-400">
+        {/* Mobile: controls row beside the fixed menu button, full-width search below. */}
+        <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/5 bg-[#0b1522] py-2.5 pl-14 pr-3 md:gap-3 md:px-4">
+          <label className="order-last flex w-full min-w-0 items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-sm text-slate-400 md:order-none md:w-auto md:max-w-sm md:flex-1 md:py-1.5">
             <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24">
               <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
@@ -113,24 +114,24 @@ export default function DashboardPage() {
               onChange={(e) => setHeaderSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && headerSearch.trim()) router.push(`/research?q=${encodeURIComponent(headerSearch.trim())}`); }}
             />
-            <kbd className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-600">⌘K</kbd>
+            <kbd className="hidden rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-600 md:inline">⌘K</kbd>
           </label>
-          <div className="ml-auto flex items-center gap-2">
-            <button disabled title="Only MLB is supported today" className="flex cursor-not-allowed items-center gap-1.5 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm font-medium text-white opacity-50">
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <button disabled title="Only MLB is supported today" className="flex shrink-0 cursor-not-allowed items-center gap-1.5 whitespace-nowrap rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm font-medium text-white opacity-50">
               ⚾ MLB <span className="text-slate-500">▾</span>
             </button>
-            <button disabled title="Only today's schedule is supported right now" className="flex cursor-not-allowed items-center gap-1.5 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm font-medium text-white opacity-50">
-              📅 Today, {dateShort} <span className="text-slate-500">▾</span>
+            <button disabled title="Only today's schedule is supported right now" className="flex shrink-0 cursor-not-allowed items-center gap-1.5 whitespace-nowrap rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm font-medium text-white opacity-50">
+              📅 <span className="hidden sm:inline">Today,</span> {dateShort} <span className="text-slate-500">▾</span>
             </button>
-            <button disabled title="Notifications are not connected yet" className="relative flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-full border border-white/8 bg-white/5 text-slate-300 opacity-50">
+            <button disabled title="Notifications are not connected yet" className="relative hidden h-8 w-8 cursor-not-allowed items-center justify-center rounded-full border border-white/8 bg-white/5 text-slate-300 opacity-50 sm:flex">
               🔔
             </button>
-            <Link href="/account" className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/20 text-xs font-bold text-emerald-400 transition hover:bg-emerald-500/30">LR</Link>
+            <Link href="/account" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-xs font-bold text-emerald-400 transition hover:bg-emerald-500/30">LR</Link>
           </div>
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          <div className="flex gap-5 p-5 pb-10">
+          <div className="flex flex-col gap-6 p-4 pb-24 sm:p-5 sm:pb-10 xl:flex-row xl:gap-5">
 
             {/* Center column */}
             <div className="flex min-w-0 flex-1 flex-col gap-6">
@@ -141,21 +142,21 @@ export default function DashboardPage() {
                   <h1 className="text-2xl font-bold text-white">Good evening, Lisandro 👋</h1>
                   <p className="mt-1 text-sm text-slate-400">{"Here's your MLB overview for"} {today}</p>
                 </div>
-                <div className="flex shrink-0 items-center gap-3 rounded-2xl border border-white/8 bg-white/4 p-3 pr-4">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/20 text-base">⭐</div>
-                  <div>
+                <div className="flex w-full items-center gap-3 rounded-2xl border border-white/8 bg-white/4 p-3 pr-4 sm:w-auto sm:shrink-0">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-base">⭐</div>
+                  <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-white">Pro Plan</p>
                     <p className="text-xs text-slate-500">Next billing: Jun 30, 2026</p>
                   </div>
                   <button
                     onClick={() => router.push('/account')}
-                    className="rounded-xl bg-emerald-500 px-3 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-emerald-400"
+                    className="shrink-0 rounded-xl bg-emerald-500 px-3 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-emerald-400"
                   >View Plan</button>
                 </div>
               </div>
 
               {/* Daily Snapshot */}
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-white/5 bg-white/3 px-5 py-3.5">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-2xl border border-white/5 bg-white/3 px-4 py-3.5 sm:flex sm:flex-wrap sm:items-center sm:gap-x-6 sm:px-5">
                 {[
                   { value: selectedSport === 'MLB' ? liveGames?.length ?? '—' : data.summary.gamesToday, label: 'Games Today', icon: '🏟️', highlight: false, warn: false },
                   { value: data.summary.propsTracked, label: 'Props Tracked', icon: '📋', highlight: false, warn: false },
@@ -163,10 +164,10 @@ export default function DashboardPage() {
                   { value: data.summary.marketMovers, label: 'Market Movers', icon: '📈', highlight: false, warn: false },
                   { value: data.summary.importantAlerts, label: 'Alerts', icon: '🔔', highlight: false, warn: data.summary.importantAlerts > 0 },
                 ].map((s) => (
-                  <div key={s.label} className="flex items-center gap-2">
+                  <div key={s.label} className="flex min-w-0 items-center gap-2">
                     <span className="text-lg">{s.icon}</span>
                     <span className={`text-xl font-bold ${s.highlight ? 'text-emerald-400' : s.warn ? 'text-amber-400' : 'text-white'}`}>{s.value}</span>
-                    <span className="text-sm text-slate-500">{s.label}</span>
+                    <span className="text-xs leading-tight text-slate-500 sm:text-sm">{s.label}</span>
                   </div>
                 ))}
               </div>
@@ -203,12 +204,12 @@ export default function DashboardPage() {
               </div>
 
               {/* Sport Tabs */}
-              <div className="flex flex-wrap items-center gap-1">
+              <div className="-mx-4 flex items-center gap-1 overflow-x-auto px-4 scrollbar-hidden sm:mx-0 sm:flex-wrap sm:px-0">
                 {sportOptions.map((sport) => (
                   <button
                     key={sport}
                     onClick={() => setSelectedSport(sport)}
-                    className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${selectedSport === sport ? 'bg-emerald-500 text-slate-950' : 'text-slate-500 hover:text-white'}`}
+                    className={`shrink-0 rounded-full px-4 py-2 sm:py-1.5 text-sm font-medium transition-colors ${selectedSport === sport ? 'bg-emerald-500 text-slate-950' : 'text-slate-500 hover:text-white'}`}
                   >
                     {sport}
                   </button>

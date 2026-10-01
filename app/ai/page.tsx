@@ -5,19 +5,17 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppSidebar } from "../../components/AppSidebar";
 import { NewsUnavailablePanel } from "../../components/NewsUnavailablePanel";
-import { AddPickButton } from "../../components/AddPickButton";
 import { PlayerAvatar } from "../../components/PlayerAvatar";
 import { PlayerHeadshot } from "../../components/PlayerHeadshot";
 import { TeamLogo } from "../../components/TeamLogo";
 import { getResearchHref } from "../../lib/researchHref";
 import { resolveSlateDate, todaySlateDate, tomorrowSlateDate, presetForSlateDate } from "../../lib/dateModel";
 import { type AiResult, type AiSearchCriteria } from "../../lib/ai";
-import { finderResultToListItem } from "../../lib/finder/toPropResearchItem";
 import { analyzePickCandidate, finderResultToEliteCandidate } from "../../lib/ai/eliteResearchFilter";
-import { buildDeepResearchCard } from "../../lib/finder/deepResearchCard";
-import type { FinderResult, FinderRunSummary } from "../../lib/finder/engine";
-import type { NFLCandidate, NFLFinderSummary } from "../../lib/finder/nflEngine";
-import { canAuthorizeFullSlate, safelyResearchableGames } from "../../lib/ai/refreshBudget";
+import type { FinderRunSummary } from "../../lib/finder/engine";
+import type { NFLCandidate } from "../../lib/finder/nflEngine";
+import { formatDisplayDate, resolveDateFromText } from "../../lib/ai/dateResolver";
+import { detectSport } from "../../lib/ai/sportResearchAdapters";
 
 
 // ─── constants ────────────────────────────────────────────────────────────────
@@ -29,14 +27,6 @@ const SECONDARY_SUGGESTIONS = [
   { label: "Pitcher Strikeouts", query: "Find pitcher strikeout props with favorable matchups" },
 ];
 
-const LOADING_STEPS = [
-  "Analyzing player trends...",
-  "Checking matchup context...",
-  "Comparing opportunities...",
-  "Ranking matches...",
-  "Finalizing results...",
-];
-
 const RISK_STYLES = {
   LOW: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
   MEDIUM: "border-amber-500/40 bg-amber-500/10 text-amber-400",
@@ -44,7 +34,37 @@ const RISK_STYLES = {
 };
 
 type SearchMode = "quick" | "deep" | "builder";
-type FinderStatus = 'IDLE' | 'LOADING' | 'SLATE_COMPLETE' | 'EVENT_LIST_REQUIRED' | 'SPORTSBOOK_DATA_REQUIRED' | 'SPORTSBOOK_UNAVAILABLE' | 'RESEARCHING' | 'NO_ELITE_RESULTS' | 'RESULTS' | 'ERROR';
+type FinderStatus = 'IDLE' | 'LOADING' | 'SLATE_COMPLETE' | 'EVENT_LIST_REQUIRED' | 'SPORTSBOOK_DATA_REQUIRED' | 'SPORTSBOOK_UNAVAILABLE' | 'RESEARCHING' | 'NO_ELITE_RESULTS' | 'RESULTS' | 'ERROR'
+  | 'DATA_UNAVAILABLE' | 'TEMP_UNAVAILABLE' | 'CONNECTION_ERROR' | 'CLARIFY' | 'ANSWER';
+
+const SEARCH_TOOLS = new Set(['get_sportsbook_candidates', 'rank_candidates', 'run_elite_filter']);
+
+/** Maps an internal tool status to the user-facing state; raw codes never reach the UI. */
+function classifyLoadFailure(status: string): FinderStatus {
+  if (status === 'PROVIDER_ERROR') return 'CONNECTION_ERROR';
+  if (status === 'SLATE_COMPLETE') return 'SLATE_COMPLETE';
+  if (status === 'NO_CANDIDATES' || status === 'NO_ELITE_RESULTS') return 'NO_ELITE_RESULTS';
+  if (status === 'INVALID_DATE') return 'CLARIFY';
+  if (['SPORTSBOOK_DATA_REQUIRED', 'PAID_REFRESH_NOT_AUTHORIZED', 'RESERVE_BLOCKED', 'BUDGET_LIMITED'].includes(status)) return 'TEMP_UNAVAILABLE';
+  return 'DATA_UNAVAILABLE';
+}
+
+/** Renders model text as headings/bullets/short paragraphs instead of one block. */
+function StructuredAnswer({ text }: { text: string }) {
+  const blocks = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  return (
+    <div className="mt-2 space-y-2">
+      {blocks.map((line, index) => {
+        const bullet = line.match(/^(?:[-*•]|\d+\.)\s+(.*)$/);
+        const heading = line.match(/^#{1,4}\s+(.*)$/) ?? (line.length <= 48 && /^[A-Z0-9 /&'-]+:?$/.test(line) ? [line, line.replace(/:$/, '')] : null);
+        const clean = (value: string) => value.replace(/\*\*(.*?)\*\*/g, '$1');
+        if (heading) return <p key={index} className="pt-1 text-xs font-black uppercase tracking-[0.16em] text-slate-400">{clean(heading[1])}</p>;
+        if (bullet) return <p key={index} className="flex gap-2 text-sm text-slate-300"><span className="text-emerald-400">•</span><span>{clean(bullet[1])}</span></p>;
+        return <p key={index} className="text-sm leading-relaxed text-slate-300">{clean(line)}</p>;
+      })}
+    </div>
+  );
+}
 const AI_FINDER_SESSION_KEY = 'deepside.ai-finder.session.v1';
 /** Bump when PersistedAIFinderSession's shape changes so old/incompatible storage is safely ignored
  * instead of partially restored into a broken state. */
@@ -132,37 +152,6 @@ interface AgentChatResponse {
   /** Opaque ID for the server-side research session — never the full (possibly hundreds-of-candidates) object. */
   researchSessionId?: string | null;
   error?: string;
-}
-
-interface RefreshApprovalOffer {
-  sport: 'mlb' | 'nfl' | 'nba';
-  date: string;
-  maxCredits: number;
-  maxGames: number;
-  estimatedLow: number | null;
-  estimatedExpected: number | null;
-  estimatedHigh: number | null;
-  currentCredits: number | null;
-  selectedGameIds?: string[];
-  slateGames: Array<{
-    gameId: string;
-    matchup: string;
-    gameTime: string | null;
-    status: string;
-    eventId: string | null;
-    marketsCacheState: string;
-    selected: boolean;
-  }>;
-  researchPriorityGames: Array<{
-    gameId: string;
-    matchup: string;
-    gameTime: string | null;
-    priority: number;
-    coverage: 'HIGH' | 'MEDIUM' | 'LOW';
-    selected: boolean;
-    reasons: string[];
-    unavailableEvidence: string[];
-  }>;
 }
 
 interface PersistedAIFinderSession {
@@ -519,8 +508,8 @@ function StructuredPickCard({ result, index, expanded, selectedForCompare, onTog
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className={`text-[10px] font-bold uppercase tracking-[0.16em] ${result.closestMiss ? 'text-amber-300' : 'text-emerald-300'}`}>#{source?.rank ?? index + 1} · {result.closestMiss ? 'Closest Miss - Not an Official DeepSide Pick' : 'Elite Pick'}</p>
-              <h3 className="truncate text-lg font-black text-white">{prop.player}</h3>
-              <p className="truncate text-xs text-slate-400">{prop.team}{prop.opponent && prop.opponent !== 'Unavailable' ? ` vs ${prop.opponent}` : ''}</p>
+              <h3 className="text-lg font-black leading-tight text-white [overflow-wrap:anywhere]">{prop.player}</h3>
+              <p className="mt-0.5 text-xs leading-snug text-slate-400">{prop.team}{prop.opponent && prop.opponent !== 'Unavailable' ? ` vs ${prop.opponent}` : ''}</p>
             </div>
             <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[10px] font-bold text-emerald-300">{deepResearch?.grade ?? 'ELITE'}</span>
           </div>
@@ -866,7 +855,7 @@ function AiFinderPageContent() {
   const [mode, setMode] = useState<SearchMode>("quick");
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
-  const [loadingStep, setLoadingStep] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [criteria, setCriteria] = useState<AiSearchCriteria | null>(null);
   const [results, setResults] = useState<UiAiResult[]>([]);
   const [closestMisses, setClosestMisses] = useState<UiAiResult[]>([]);
@@ -878,31 +867,15 @@ function AiFinderPageContent() {
   const [agentMeta, setAgentMeta] = useState<Record<string, unknown> | null>(null);
   const [researchSessionId, setResearchSessionId] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
-  const [refreshApprovalOffer, setRefreshApprovalOffer] = useState<RefreshApprovalOffer | null>(null);
-  const [selectedRefreshBudget, setSelectedRefreshBudget] = useState(60);
-  const [customRefreshBudget, setCustomRefreshBudget] = useState('');
-  const [showGameSelection, setShowGameSelection] = useState(false);
-  const [manualSelectedGameIds, setManualSelectedGameIds] = useState<string[] | null>(null);
+  const [researchScope, setResearchScope] = useState<{ label: string; games: number | null } | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
-  const [savedSearches, setSavedSearches] = useState<Array<{ name: string; query: string }>>([]);
   const [restrictionMessage, setRestrictionMessage] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [saveName, setSaveName] = useState("");
-  // Builder state
-  const [bSport, setBSport] = useState("MLB");
-  const [bMarket, setBMarket] = useState("Any");
-  const [bSide, setBSide] = useState("Any");
-  const [bRisk, setBRisk] = useState("Any");
-  const [bConf, setBConf] = useState("Any");
-  const [bWindow, setBWindow] = useState("L10");
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const comparePanelRef = useRef<HTMLDivElement>(null);
-  const [deepLoading, setDeepLoading] = useState(false);
   const [deepSummary, setDeepSummary] = useState<FinderRunSummary | null>(null);
   const [deepSummarySport, setDeepSummarySport] = useState<string | null>(null);
-  const [deepError, setDeepError] = useState(false);
   const [finderStatus, setFinderStatus] = useState<FinderStatus>('IDLE');
   // Client-side filters/sort over the cached, already-fetched Finder results (no extra provider calls).
   const [minFinderScore, setMinFinderScore] = useState(0);
@@ -1031,117 +1004,28 @@ function AiFinderPageContent() {
     setSelectedPlayIndex(null);
   }, [results.length]);
 
-  // Re-fetching automatically on date change would silently refresh provider data behind the user's
-  // back; Finder only loads when the user explicitly starts Quick Find or Deep Search.
-  async function fetchDeepSearch(date: string, sport: string): Promise<FinderRunSummary | null> {
-    sessionClearedRef.current = false;
-    setFinderStatus('LOADING');
-    setDeepLoading(true);
-    setDeepError(false);
-    try {
-      const path = sport === 'NFL' ? '/api/finder/nfl/deep-search' : '/api/finder/mlb/deep-search';
-      const response = await fetch(`${path}?date=${encodeURIComponent(date)}`);
-      if (!response.ok) throw new Error('Finder unavailable');
-      const payload = await response.json() as { data: FinderRunSummary };
-      setDeepSummary(payload.data);
-      setDeepSummarySport(sport);
-      setFinderStatus(payload.data.slateComplete ? 'SLATE_COMPLETE' : payload.data.propsAnalyzed === 0 ? 'SPORTSBOOK_UNAVAILABLE' : 'RESEARCHING');
-      return payload.data;
-    } catch {
-      setDeepError(true);
-      setFinderStatus('ERROR');
-      return null;
-    } finally {
-      setDeepLoading(false);
-    }
-  }
-
-  function presentNFLResults(summary: FinderRunSummary) {
-    const candidates = ((summary as NFLFinderSummary).nflCandidates ?? [])
-      .map(nflCandidateToUiResult)
-      .filter((result): result is UiAiResult => result != null)
-      .sort((a, b) => b.matchScore - a.matchScore);
-    const structured = candidates.filter((result) => !result.closestMiss).slice(0, 15);
-    setResults(structured);
-    setClosestMisses(candidates.filter((result) => result.closestMiss).slice(0, 5));
-    setTotalMatched(structured.length);
-    setFinderStatus(structured.length > 0 ? 'RESULTS' : summary.slateComplete ? 'SLATE_COMPLETE' : summary.propsAnalyzed === 0 ? 'SPORTSBOOK_UNAVAILABLE' : 'NO_ELITE_RESULTS');
-  }
-
-  /** Deep Search always calls through (the server route itself is cache-first, so repeats cost nothing extra). */
-  async function runDeepSearch() {
-    const summary = await fetchDeepSearch(finderDate, finderSport);
-    if (summary && finderSport === 'NFL') presentNFLResults(summary);
-  }
-
-  /** Quick Find reuses whatever is already loaded for this exact date; only fetches if nothing is cached yet. */
-  async function runQuickFind() {
-    const summary = deepSummarySport === finderSport && deepSummary?.slateDate === finderDate
-      ? deepSummary
-      : await fetchDeepSearch(finderDate, finderSport);
-    if (summary && finderSport === 'NFL') presentNFLResults(summary);
-  }
-
-  const finderGameLabel = (result: FinderResult) => `${result.teamName ?? 'Data unavailable'} vs ${result.opponentName ?? 'Data unavailable'}`;
-  const visibleDeepSummary = deepSummarySport === finderSport && deepSummary?.slateDate === finderDate ? deepSummary : null;
-
-  const finderFilterOptions = useMemo(() => {
-    const results = visibleDeepSummary?.results ?? [];
-    return {
-      teams: Array.from(new Set(results.map((r) => r.teamName).filter((v): v is string => Boolean(v)))).sort(),
-      games: Array.from(new Set(results.map(finderGameLabel))).sort(),
-      markets: Array.from(new Set(results.map((r) => r.marketLabel))).sort(),
-      books: Array.from(new Set(results.map((r) => r.bestBook?.sportsbookName).filter((v): v is string => Boolean(v)))).sort(),
-    };
-  }, [visibleDeepSummary]);
-
-  const filteredDeepResults = useMemo(() => {
-    const results = visibleDeepSummary?.results ?? [];
-    const norm = finderPlayerFilter.trim().toLowerCase();
-    const filtered = results.filter((result) => {
-      if (result.bestBook?.odds == null || result.bestBook.odds < -900) return false;
-      if (!analyzePickCandidate(finderResultToEliteCandidate(result)).eliteQualified) return false;
-      if (result.finderScore < minFinderScore) return false;
-      if (minEv != null && (result.evPercent == null || result.evPercent < minEv)) return false;
-      if (result.availableBooks < minBooks) return false;
-      if (norm && !result.player.toLowerCase().includes(norm)) return false;
-      if (finderTeamFilter !== 'All' && result.teamName !== finderTeamFilter) return false;
-      if (finderGameFilter !== 'All' && finderGameLabel(result) !== finderGameFilter) return false;
-      if (finderMarketFilter !== 'All' && result.marketLabel !== finderMarketFilter) return false;
-      if (finderSideFilter !== 'All' && result.side !== finderSideFilter) return false;
-      if (finderBookFilter !== 'All' && result.bestBook?.sportsbookName !== finderBookFilter) return false;
-      if (finderAltFilter === 'Standard' && result.isAlternate) return false;
-      if (finderAltFilter === 'Alternate' && !result.isAlternate) return false;
-      return true;
-    });
-    return [...filtered].sort((a, b) => {
-      if (finderSortBy === 'ev') return (b.evPercent ?? -Infinity) - (a.evPercent ?? -Infinity);
-      if (finderSortBy === 'price') return (b.bestBook?.odds ?? -Infinity) - (a.bestBook?.odds ?? -Infinity);
-      if (finderSortBy === 'time') return (a.gameTimeIso ?? '').localeCompare(b.gameTimeIso ?? '');
-      return b.finderScore - a.finderScore;
-    });
-  }, [finderAltFilter, finderBookFilter, finderGameFilter, finderMarketFilter, finderPlayerFilter, finderSideFilter, finderSortBy, finderTeamFilter, minBooks, minEv, minFinderScore, visibleDeepSummary]);
+  useEffect(() => {
+    if (!isSearching) return;
+    const startedAt = Date.now();
+    const id = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, [isSearching]);
 
   // ── search ──────────────────────────────────────────────────────────────────
   // The OpenAI agent orchestrates the research server-side; the deterministic Elite Filter
   // still decides qualification, and results render through the existing DeepSide cards.
-  async function runSearch(q: string, approval: RefreshApprovalOffer | null = null, appendUser = true) {
+  async function runSearch(q: string, appendUser = true) {
     if (!q.trim()) return;
     sessionClearedRef.current = false;
     const trimmed = q.trim();
     setIsSearching(true);
-    setLoadingStep(0);
+    setElapsedSeconds(0);
     setShowCount(15);
     setSelectedIds(new Set());
+    void loadResearchScope(trimmed);
 
-    const lastConversationEntry = conversation[conversation.length - 1];
-    const sameBlockedRequest = appendUser
-      && ['SPORTSBOOK_DATA_REQUIRED', 'EVENT_LIST_REQUIRED'].includes(finderStatus)
-      && lastConversationEntry?.role === 'user'
-      && lastConversationEntry.text === trimmed;
-    const shouldAppendUser = appendUser && !sameBlockedRequest;
-    const history: ConversationEntry[] = shouldAppendUser ? [...conversation, { role: "user", text: trimmed }] : conversation;
-    if (shouldAppendUser) {
+    const history: ConversationEntry[] = appendUser ? [...conversation, { role: "user", text: trimmed }] : conversation.filter((entry, index) => !(index === conversation.length - 1 && entry.role === 'ai'));
+    if (appendUser) {
       setConversation(history);
       setRecentSearches((prev) => [trimmed, ...prev.filter((s) => s !== trimmed)].slice(0, 5));
     }
@@ -1156,7 +1040,6 @@ function AiFinderPageContent() {
         body: JSON.stringify({
           messages: history.map((entry) => ({ role: entry.role === "ai" ? "assistant" : "user", content: entry.text })),
           researchSessionId,
-          refreshApproval: approval,
         }),
       });
       payload = (await response.json()) as AgentChatResponse;
@@ -1187,46 +1070,12 @@ function AiFinderPageContent() {
     if (payload.researchSessionId !== undefined) setResearchSessionId(payload.researchSessionId);
 
     const meta = payload.meta ?? {};
-    const toolStatus = String(meta.status ?? '');
     const sport = String(meta.sport ?? "mlb").toUpperCase() === "NFL" ? "NFL" : "MLB";
     const requestDate = typeof meta.date === "string" ? meta.date : finderDate;
     if (requestDate !== finderDate) setFinderDate(requestDate);
     if (sport !== finderSport) setFinderSport(sport);
 
-    if (toolStatus === 'SPORTSBOOK_DATA_REQUIRED' || toolStatus === 'EVENT_LIST_REQUIRED') {
-      const preflight = meta.sportsbookPreflight as {
-        estimatedCreditCostLow?: number;
-        estimatedCreditCostExpected?: number;
-        estimatedCreditCostHigh?: number;
-        selectedValidationGames?: number;
-        researchPriorityGames?: RefreshApprovalOffer['researchPriorityGames'];
-        games?: RefreshApprovalOffer['slateGames'];
-      } | undefined;
-      const eventListUnavailable = toolStatus === 'EVENT_LIST_REQUIRED';
-      const estimatedHigh = eventListUnavailable ? null : preflight?.estimatedCreditCostHigh ?? null;
-      const priorityGames = preflight?.researchPriorityGames ?? [];
-      setRefreshApprovalOffer({
-        sport: sport.toLowerCase() as 'mlb' | 'nfl',
-        date: requestDate,
-        maxCredits: estimatedHigh ?? 0,
-        maxGames: Number(preflight?.selectedValidationGames ?? 0),
-        estimatedLow: eventListUnavailable ? null : preflight?.estimatedCreditCostLow ?? null,
-        estimatedExpected: eventListUnavailable ? null : preflight?.estimatedCreditCostExpected ?? null,
-        estimatedHigh,
-        currentCredits: Number((meta.oddsSpend as { creditsBefore?: number | null } | undefined)?.creditsBefore ?? NaN) || null,
-        researchPriorityGames: priorityGames,
-        slateGames: preflight?.games ?? [],
-      });
-      setManualSelectedGameIds(null);
-      setFinderStatus(toolStatus === 'EVENT_LIST_REQUIRED' ? 'EVENT_LIST_REQUIRED' : 'SPORTSBOOK_DATA_REQUIRED');
-      setResults([]);
-      setTotalMatched(0);
-      // Blocked sportsbook states render as a system card, not a repeated assistant paragraph.
-      setIsSearching(false);
-      return;
-    }
     setConversation((prev) => [...prev, { role: "ai", text: payload.reply }]);
-    setRefreshApprovalOffer(null);
 
     if ((payload.results ?? []).length > 0) {
       const structuredResults = (payload.results ?? []).filter((record) => record.eliteQualified && record.odds != null && record.odds >= -900).slice(0, 15).map((record) => recordToUiResult(record, sport));
@@ -1238,38 +1087,21 @@ function AiFinderPageContent() {
       return;
     }
 
+    setResults([]);
+    setTotalMatched(0);
     setClosestMisses((payload.closestMisses ?? []).slice(0, 5).map((record) => closestMissToUiResult(record, sport)));
 
-    // Cache-first: reuses the slate the agent already loaded, so returning here costs no credits.
-    let summary = deepSummarySport === sport && deepSummary?.slateDate === requestDate ? deepSummary : null;
-    if (!summary) summary = await fetchDeepSearch(requestDate, sport);
-
-    const qualifiedIds = new Set((payload.results ?? []).map((row) => row.candidateId));
-    const matched = (summary?.results ?? [])
-      .filter((candidate) => qualifiedIds.has(candidate.id))
-      .filter((candidate) => candidate.bestBook?.odds != null && candidate.bestBook.odds >= -900)
-      .map((candidate) => ({ candidate, analysis: analyzePickCandidate(finderResultToEliteCandidate(candidate)) }))
-      .filter(({ analysis }) => analysis.eliteQualified);
-
-    setTotalMatched(matched.length);
-    setResults(matched.map(({ candidate, analysis }) => ({
-      prop: finderResultToListItem(candidate),
-      eliteResearch: analysis,
-      deepResearch: buildDeepResearchCard(candidate, analysis),
-      matchScore: analysis.researchScore,
-      riskLevel: analysis.trapRisk <= 15 ? "LOW" : analysis.trapRisk <= 25 ? "MEDIUM" : "HIGH",
-      matchReasons: analysis.whyQualified,
-      riskNotes: analysis.riskFactors.slice(0, 2),
-      aiReason: candidate.signals[0] ?? "Qualified by the Elite Research Filter.",
-    } satisfies AiResult)));
-
-    const propsFound = Number(meta.propsFound ?? summary?.propsAnalyzed ?? 0);
-    setFinderStatus(
-      matched.length > 0 ? "RESULTS"
-        : summary?.slateComplete ? "SLATE_COMPLETE"
-          : propsFound === 0 ? "SPORTSBOOK_UNAVAILABLE"
-            : "NO_ELITE_RESULTS",
-    );
+    const trace = payload.toolTrace ?? [];
+    const lastLoad = [...trace].reverse().find((entry) => entry.name === 'get_sportsbook_candidates');
+    const ranSearch = trace.some((entry) => SEARCH_TOOLS.has(entry.name));
+    const outcome = lastLoad && lastLoad.status !== 'SUCCESS'
+      ? classifyLoadFailure(lastLoad.status)
+      : ranSearch ? 'NO_ELITE_RESULTS' as const
+        : payload.reply.trim().endsWith('?') && trace.length === 0 ? 'CLARIFY' as const : 'ANSWER' as const;
+    if (outcome === 'DATA_UNAVAILABLE' || outcome === 'CONNECTION_ERROR') {
+      console.warn('[DeepSide AI]', lastLoad?.status, lastLoad?.summary?.error ?? '');
+    }
+    setFinderStatus(outcome);
     setIsSearching(false);
   }
 
@@ -1277,42 +1109,23 @@ function AiFinderPageContent() {
     if (query.trim()) runSearch(query);
   }
 
-  function approveRefreshAndAnalyze() {
-    if (!refreshApprovalOffer || !query.trim()) return;
-    void runSearch(query, refreshApprovalOffer, false);
-  }
-
-  function approveWithinBudget() {
-    if (!refreshApprovalOffer || !query.trim()) return;
-    const budget = Number(customRefreshBudget) > 0 ? Number(customRefreshBudget) : selectedRefreshBudget;
-    const fullSlateGames = refreshApprovalOffer.researchPriorityGames.length || refreshApprovalOffer.maxGames;
-    const safeGames = safelyResearchableGames(budget, fullSlateGames);
-    if (safeGames <= 0) return;
-    const selectedGameIds = manualSelectedGameIds ?? refreshApprovalOffer.researchPriorityGames.slice(0, safeGames).map((game) => game.gameId);
-    if (selectedGameIds.length === 0) return;
-    void runSearch(query, { ...refreshApprovalOffer, maxCredits: budget, maxGames: selectedGameIds.length, selectedGameIds }, false);
-  }
-
-  function handlePrimarySearch() {
-    if (query.trim()) {
-      handleSubmit();
+  /** Real scope for the loading card: same date/sport resolver as the server, plus the free schedule. */
+  async function loadResearchScope(text: string) {
+    const sport = detectSport(text);
+    const resolved = resolveDateFromText(text);
+    if (!sport || (sport !== 'nfl' && sport !== 'mlb')) {
+      setResearchScope(resolved ? { label: resolved.displayDate, games: null } : null);
       return;
     }
-    setMode('deep');
-    void runDeepSearch();
-  }
-
-  function buildAndRun() {
-    const parts: string[] = [];
-    if (bMarket !== "Any") parts.push(bMarket.toLowerCase() + " props");
-    if (bSide !== "Any") parts.push(bSide.toLowerCase() + "s");
-    if (bRisk !== "Any") parts.push(bRisk.toLowerCase() + " risk");
-    if (bConf !== "Any") parts.push(bConf + " confidence");
-    if (bWindow !== "L10") parts.push(`strong ${bWindow} trends`);
-    const q = `Find me 15 ${parts.join(", ")} ${bSport} plays`;
-    setQuery(q);
-    runSearch(q);
-    setMode("quick");
+    const date = resolved?.resolvedDate ?? todaySlateDate();
+    const label = `${sport.toUpperCase()} • ${resolved?.displayDate ?? formatDisplayDate(date)}`;
+    setResearchScope({ label, games: null });
+    try {
+      const response = await fetch(`/api/${sport}/schedule?date=${date}`);
+      const payload = response.ok ? await response.json() as { data?: Array<{ completed?: boolean; status?: string }> } : null;
+      const games = (payload?.data ?? []).filter((game) => !game.completed && !/final|completed|postponed|cancell?ed/i.test(game.status ?? '')).length;
+      setResearchScope((current) => current?.label === label ? { label, games } : current);
+    } catch { /* the label alone is still accurate */ }
   }
 
   // ── compare ─────────────────────────────────────────────────────────────────
@@ -1324,14 +1137,6 @@ function AiFinderPageContent() {
     });
   }
   const selectedResults = results.filter((r) => selectedIds.has(r.prop.id));
-
-  // ── save search ─────────────────────────────────────────────────────────────
-  function saveCurrentSearch() {
-    if (!saveName.trim() || !query) return;
-    setSavedSearches((prev) => [...prev, { name: saveName.trim(), query }]);
-    setSaveName("");
-    setShowSaveDialog(false);
-  }
 
   function resetSearchSession() {
     sessionClearedRef.current = true;
@@ -1356,7 +1161,6 @@ function AiFinderPageContent() {
     setSelectedIds(new Set());
     setDeepSummary(null);
     setDeepSummarySport(null);
-    setDeepError(false);
     setFinderPlayerFilter('');
     setFinderTeamFilter('All');
     setFinderGameFilter('All');
@@ -1387,6 +1191,45 @@ function AiFinderPageContent() {
 
   const visibleResults = results.slice(0, showCount);
 
+  const lastUserQuery = [...conversation].reverse().find((entry) => entry.role === 'user')?.text ?? '';
+  const latestAiReply = conversation[conversation.length - 1]?.role === 'ai' ? conversation[conversation.length - 1].text : '';
+  const datePreset = presetForSlateDate(finderDate);
+  const slateLabel = `${finderSport} • ${datePreset === 'today' ? 'Today' : datePreset === 'tomorrow' ? 'Tomorrow' : new Date(`${finderDate}T12:00:00`).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}`;
+  const coverage = typeof agentMeta?.gamesFound === 'number' && typeof agentMeta?.gamesScheduled === 'number' && agentMeta.gamesScheduled > 0
+    ? { researched: agentMeta.gamesFound, expected: agentMeta.gamesScheduled }
+    : null;
+  const keyFindings = useMemo(() => {
+    if (results.length === 0) return [];
+    const findings = [`${results.length} play${results.length === 1 ? '' : 's'} passed DeepSide's qualification filter`];
+    const marketCounts = new Map<string, number>();
+    for (const result of results) marketCounts.set(result.prop.propType, (marketCounts.get(result.prop.propType) ?? 0) + 1);
+    const [topMarket, topCount] = [...marketCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (results.length > 1 && topCount > 1) findings.push(`Strongest market: ${topMarket} (${topCount} of ${results.length})`);
+    const top = [...results].sort((a, b) => b.matchScore - a.matchScore)[0];
+    findings.push(`Highest research score: ${top.prop.player} (${top.eliteResearch?.researchScore ?? top.matchScore})`);
+    return findings;
+  }, [results]);
+
+  function focusSearchInput() {
+    inputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }
+
+  function startNewSearch() {
+    resetSearchSession();
+    focusSearchInput();
+  }
+
+  function adjustSearch() {
+    setQuery(lastUserQuery);
+    focusSearchInput();
+  }
+
+  function retryLastSearch() {
+    if (lastUserQuery) void runSearch(lastUserQuery, false);
+  }
+
   const analysisChips = ([
     ['sport', 'Sport'], ['date', 'Slate'], ['gamesFound', 'Games'],
     ['propsFound', 'Props'], ['booksFound', 'Books'], ['candidatesFound', 'Candidates'], ['eliteFound', 'Elite'],
@@ -1408,21 +1251,21 @@ function AiFinderPageContent() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* ── Top nav ── */}
-        <header className="flex shrink-0 items-center gap-3 border-b border-white/5 bg-[#0b1522] px-4 py-2.5">
-            <div className="flex max-w-sm flex-1 items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm text-slate-600">
+        <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-white/5 bg-[#0b1522] px-3 py-2.5 sm:px-4">
+          <div className="flex min-w-0 flex-1 basis-32 items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm text-slate-600">
             <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
             <span>DeepSide AI</span>
           </div>
-          <div className="ml-auto flex items-center gap-2">
-            <div className="flex items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
+          <div className="scrollbar-hidden ml-auto flex min-w-0 max-w-full items-center gap-2 overflow-x-auto">
+            <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
               <button onClick={() => setFinderSport('MLB')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'MLB' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>⚾ MLB</button>
               <button onClick={() => setFinderSport('NFL')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'NFL' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>NFL</button>
             </div>
-            <div className="flex items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
+            <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
               <button onClick={() => setFinderDate(todaySlateDate())} className={`rounded-lg px-2.5 py-1 transition ${presetForSlateDate(finderDate) === 'today' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>Today</button>
               <button onClick={() => setFinderDate(tomorrowSlateDate())} className={`rounded-lg px-2.5 py-1 transition ${presetForSlateDate(finderDate) === 'tomorrow' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>Tomorrow</button>
             </div>
-            <button onClick={resetSearchSession} title="Clear the saved AI Finder session" className="rounded-xl border border-rose-500/20 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reset</button>
+            <button onClick={resetSearchSession} title="Clear the saved DeepSide AI session" className="rounded-xl border border-rose-500/20 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reset</button>
             <button disabled title="Notifications are not connected yet" className="relative flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-full border border-white/8 bg-white/5 text-slate-300 opacity-50">
               <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
             </button>
@@ -1431,7 +1274,7 @@ function AiFinderPageContent() {
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          <div className={`flex gap-5 p-5 pb-10 ${criteria ? "" : "min-h-full"}`}>
+          <div className={`flex gap-3 p-3 pb-10 sm:gap-5 sm:p-5 ${criteria ? "" : "min-h-full"}`}>
 
             {/* ── Center column ── */}
             <div className="flex min-w-0 flex-1 flex-col gap-5">
@@ -1442,171 +1285,38 @@ function AiFinderPageContent() {
                 </p>
               )}
 
-              {/* Prop Finder hero */}
+              {/* DeepSide AI hero */}
               {conversation.length === 0 && !isSearching && (
                 <div className="mx-auto flex w-full max-w-[1000px] flex-1 flex-col justify-center pb-12 pt-16 text-center">
-                  <p className="text-5xl font-black tracking-[-0.06em] text-white sm:text-7xl">Prop <span className="text-[#39f27f]">Finder</span></p>
+                  <p className="text-5xl font-black tracking-[-0.06em] text-white sm:text-7xl">DeepSide <span className="text-[#39f27f]">AI</span></p>
                   <p className="mt-5 text-base text-slate-400 sm:text-lg">Research any prop. Find your edge.</p>
                 </div>
               )}
 
-              {/* Mode tabs */}
-              <div className={`mx-auto flex w-full max-w-[1000px] rounded-2xl border border-white/6 bg-white/3 p-1 ${criteria ? "" : "mt-8"}`}>
-                {([["quick", "⚡ Quick Find"], ["deep", "🔍 Deep Research"], ["builder", "🧪 Build My Research"]] as const).map(([m, label]) => (
-                  <button key={m} onClick={() => setMode(m as SearchMode)}
-                    className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition ${mode === m ? "bg-[#39f27f] text-[#041008]" : "text-slate-500 hover:border hover:border-[#39f27f]/30 hover:text-white"}`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              {/* ── Quick / Deep search area ── */}
-              {mode !== "builder" && (
-                <div className={`mx-auto w-full max-w-[1000px] space-y-3 ${criteria ? "" : "mt-5"}`}>
-                  <div className="flex min-h-[150px] gap-3 rounded-[18px] border border-[#39f27f]/30 bg-[#0a0e0c]/95 p-4 shadow-[0_0_28px_rgba(57,242,127,0.06)]">
+              {/* ── Search ── */}
+              {(
+                <div className={`mx-auto w-full max-w-[1000px] space-y-3 ${criteria ? "" : "mt-8"}`}>
+                  <div className="flex min-h-[150px] flex-col gap-3 rounded-[18px] border border-[#39f27f]/30 bg-[#0a0e0c]/95 p-3 shadow-[0_0_28px_rgba(57,242,127,0.06)] sm:flex-row sm:p-4">
                     <textarea
                       ref={inputRef}
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
-                      placeholder={mode === "deep" ? "Describe the research you want in detail..." : "What prop are we looking for?"}
+                      placeholder="Ask DeepSide AI — e.g. Best NFL plays Sunday"
                       rows={4}
-                      className="flex-1 resize-none bg-transparent px-2 py-1 text-base text-white outline-none placeholder:text-slate-600"
+                      className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-base text-white outline-none placeholder:text-slate-600"
                     />
                     <button type="button" disabled title="Attaching extra context isn't supported yet" aria-label="Add context" className="flex h-10 w-10 shrink-0 cursor-not-allowed items-center justify-center self-end rounded-xl border border-white/10 text-xl text-slate-600 opacity-40">+</button>
                     <button type="button" disabled title="Voice input isn't supported yet" aria-label="Use microphone" className="flex h-10 w-10 shrink-0 cursor-not-allowed items-center justify-center self-end rounded-xl border border-white/10 text-slate-600 opacity-40">
                       <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="10" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></svg>
                     </button>
-                    <button onClick={handlePrimarySearch} disabled={isSearching || deepLoading} aria-label="Search" title={query.trim() ? 'Search with AI Finder' : 'Run Deep Search for this sport and date'}
+                    <button onClick={handleSubmit} disabled={isSearching || !query.trim()} aria-label="Search" title="Search with DeepSide AI"
                       className="flex h-10 shrink-0 items-center justify-center gap-2 self-end rounded-xl bg-[#39f27f] px-3 text-sm font-bold text-[#041008] transition hover:bg-[#63f99a] disabled:cursor-not-allowed disabled:opacity-40">
                       <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-                      <span>{query.trim() ? 'Search' : 'Deep Search'}</span>
+                      <span>Search</span>
                     </button>
                   </div>
-                  <p className="text-center text-xs text-slate-500">✦ Ask naturally. For example: <span className="text-slate-400">&quot;Find me 15 low-risk hitter props tonight&quot;</span></p>
-                  {mode === "deep" && (
-                    <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <h3 className="font-semibold text-white">AI Finder — {finderSport} {presetForSlateDate(finderDate) === 'tomorrow' ? 'Tomorrow' : 'Today'}</h3>
-                          <p className="text-xs text-slate-500">{finderSport === 'MLB' ? 'Analyzes the cached MLB slate using real MLB Stats API and Odds API data.' : 'Analyzes NFL sportsbook props with ESPN player history, workload context, projections, and the Elite Filter.'}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={runQuickFind} disabled={deepLoading} title="Reuses already-cached results for this slate — no new provider calls" className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40">⚡ Quick Find</button>
-                          <button onClick={runDeepSearch} disabled={deepLoading} className="rounded-xl bg-[#39f27f] px-4 py-2 text-sm font-bold text-[#041008] transition hover:bg-[#63f99a] disabled:cursor-not-allowed disabled:opacity-50">{deepLoading ? "Analyzing…" : "🔍 Deep Search"}</button>
-                        </div>
-                      </div>
-                      {deepError && <p className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-amber-200">Sportsbook data unavailable. No unsupported or fabricated NFL candidates were shown.</p>}
-                      {visibleDeepSummary && (
-                        <div className="mt-4 space-y-3">
-                          <p className="text-xs text-slate-500">Last analyzed: {new Date(visibleDeepSummary.analyzedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} • Slate: {visibleDeepSummary.slateDate} • Games analyzed: {visibleDeepSummary.gamesAnalyzed} • Props analyzed: {visibleDeepSummary.propsAnalyzed} • Books analyzed: {visibleDeepSummary.booksAnalyzed}</p>
-                          {finderSport === 'MLB' && (
-                            <p className="rounded-lg border border-white/8 bg-black/20 px-3 py-1.5 font-mono text-[10px] text-slate-500">
-                              [dev] source={visibleDeepSummary.fromCache ? "cache" : "network"} • cacheAge={visibleDeepSummary.cacheAgeMs != null ? `${Math.round(visibleDeepSummary.cacheAgeMs / 1000)}s` : "n/a"} • credits.remaining={visibleDeepSummary.credits?.remaining ?? "unknown"} • credits.used={visibleDeepSummary.credits?.used ?? "unknown"}{visibleDeepSummary.budgetLimited ? " • BUDGET-LIMITED (some games skipped)" : ""}
-                            </p>
-                          )}
-
-                          {/* Filters + sort — all client-side over the already-fetched results, zero extra provider calls */}
-                          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-white/6 bg-black/10 p-2.5">
-                            <input value={finderPlayerFilter} onChange={(e) => setFinderPlayerFilter(e.target.value)} placeholder="Player" className="w-28 rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-[11px] text-white placeholder:text-slate-600" />
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Team
-                              <select value={finderTeamFilter} onChange={(e) => setFinderTeamFilter(e.target.value)} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value="All">Any</option>{finderFilterOptions.teams.map((t) => <option key={t} value={t}>{t}</option>)}
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Game
-                              <select value={finderGameFilter} onChange={(e) => setFinderGameFilter(e.target.value)} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value="All">Any</option>{finderFilterOptions.games.map((g) => <option key={g} value={g}>{g}</option>)}
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Prop
-                              <select value={finderMarketFilter} onChange={(e) => setFinderMarketFilter(e.target.value)} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value="All">Any</option>{finderFilterOptions.markets.map((m) => <option key={m} value={m}>{m}</option>)}
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Side
-                              <select value={finderSideFilter} onChange={(e) => setFinderSideFilter(e.target.value as typeof finderSideFilter)} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value="All">Any</option><option value="over">Over</option><option value="under">Under</option>
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Book
-                              <select value={finderBookFilter} onChange={(e) => setFinderBookFilter(e.target.value)} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value="All">Any</option>{finderFilterOptions.books.map((b) => <option key={b} value={b}>{b}</option>)}
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Type
-                              <select value={finderAltFilter} onChange={(e) => setFinderAltFilter(e.target.value as typeof finderAltFilter)} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value="All">Any</option><option value="Standard">Standard</option><option value="Alternate">Alternate</option>
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Min Score
-                              <select value={minFinderScore} onChange={(e) => setMinFinderScore(Number(e.target.value))} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value={0}>Any</option><option value={75}>75+</option><option value={80}>80+</option><option value={85}>85+</option><option value={90}>90+</option>
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Min EV
-                              <select value={minEv ?? ''} onChange={(e) => setMinEv(e.target.value === '' ? null : Number(e.target.value))} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value="">Any</option><option value={0}>0%+</option><option value={3}>3%+</option><option value={5}>5%+</option>
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Min Books
-                              <select value={minBooks} onChange={(e) => setMinBooks(Number(e.target.value))} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value={0}>Any</option><option value={2}>2+</option><option value={3}>3+</option><option value={4}>4+</option>
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Sort
-                              <select value={finderSortBy} onChange={(e) => setFinderSortBy(e.target.value as typeof finderSortBy)} className="rounded-md border border-white/10 bg-[#0c1310] px-1.5 py-1 text-white">
-                                <option value="score">Finder Score</option><option value="ev">EV</option><option value="price">Best Price</option><option value="time">Game Time</option>
-                              </select>
-                            </label>
-                            <button
-                              onClick={() => { setFinderPlayerFilter(''); setFinderTeamFilter('All'); setFinderGameFilter('All'); setFinderMarketFilter('All'); setFinderSideFilter('All'); setFinderBookFilter('All'); setFinderAltFilter('All'); setMinFinderScore(0); setMinEv(null); setMinBooks(0); }}
-                              className="ml-auto rounded-md border border-white/10 px-2 py-1 text-[11px] text-slate-400 hover:text-white"
-                            >
-                              Clear Filters
-                            </button>
-                          </div>
-
-                          {finderSport === 'MLB' && filteredDeepResults.length === 0 && visibleDeepSummary.propsAnalyzed > 0 && <p className="text-sm text-slate-400">No Elite picks found. Candidates must pass the full research filter before they can be recommended.</p>}
-                          {finderSport === 'MLB' && filteredDeepResults.length === 0 && visibleDeepSummary.slateComplete && <p className="text-sm text-amber-200">Every game on {visibleDeepSummary.slateDate} has already finished, so sportsbooks no longer offer props. Try the next slate.</p>}
-                          {finderSport === 'MLB' && filteredDeepResults.length === 0 && !visibleDeepSummary.slateComplete && visibleDeepSummary.propsAnalyzed === 0 && <p className="text-sm text-amber-200">Sportsbook data unavailable for this slate. No raw props were displayed.</p>}
-                          <div className={finderSport === 'MLB' ? 'space-y-2' : 'hidden'}>
-                            {filteredDeepResults.slice(0, 15).map((result: FinderResult, index: number) => (
-                              <div key={result.id} className="rounded-xl border border-white/6 bg-white/3 p-3">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <div className="flex items-center gap-3">
-                                    <PlayerAvatar playerId={result.playerId ?? undefined} playerName={result.player} size={36} />
-                                    <div>
-                                      <p className="text-sm font-bold text-white">#{index + 1} {result.player}</p>
-                                      <p className="text-xs text-slate-400">{result.side === 'over' ? 'Over' : 'Under'} {result.line} {result.marketLabel}{result.isAlternate ? ' (Alternate)' : ''}</p>
-                                      <p className="text-[10px] text-slate-500">
-                                        {result.teamName ?? 'Data unavailable'} {result.homeAway === 'away' ? '@' : 'vs'} {result.opponentName ?? 'Data unavailable'}
-                                        {result.gameTimeIso ? ` • ${new Date(result.gameTimeIso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}` : ''}
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-3 text-right">
-                                    <div><p className="text-lg font-extrabold text-[#39f27f]">{analyzePickCandidate(finderResultToEliteCandidate(result)).researchScore}</p><p className="text-[9px] text-slate-500">DeepSide Research Score</p></div>
-                                    {result.evPercent != null && <div><p className="text-sm font-semibold text-emerald-400">{result.evPercent > 0 ? '+' : ''}{result.evPercent.toFixed(1)}%</p><p className="text-[9px] text-slate-500">Consensus EV</p></div>}
-                                    {result.bestBook && <div><p className="text-sm font-semibold text-white">{result.bestBook.odds > 0 ? `+${result.bestBook.odds}` : result.bestBook.odds}</p><p className="text-[9px] text-slate-500">{result.bestBook.sportsbookName} ({result.availableBooks} books)</p></div>}
-                                  </div>
-                                </div>
-                                <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-400">
-                                  <span>L5 {result.historical.l5}</span><span>L10 {result.historical.l10}</span><span>L20 {result.historical.l20}</span><span>L40 {result.historical.l40}</span><span>Season {result.historical.season}</span>
-                                </div>
-                                {result.signals.length > 0 && <div className="mt-2 space-y-0.5"><p className="text-[9px] font-semibold uppercase tracking-wider text-slate-600">Why it rates well</p>{result.signals.map((signal: string) => <p key={signal} className="text-[11px] text-emerald-400">• {signal}</p>)}<p className="text-[10px] text-emerald-400">• {analyzePickCandidate(finderResultToEliteCandidate(result)).signalAgreement}/{analyzePickCandidate(finderResultToEliteCandidate(result)).signalsAvailable} signals agree • trap risk {analyzePickCandidate(finderResultToEliteCandidate(result)).trapRisk}</p></div>}
-                                {result.concerns.length > 0 && <div className="mt-1 space-y-0.5"><p className="text-[9px] font-semibold uppercase tracking-wider text-slate-600">Concerns</p>{result.concerns.map((concern: string) => <p key={concern} className="text-[11px] text-amber-400/80">• {concern}</p>)}</div>}
-                                <div className="mt-2 flex items-center gap-2">
-                                  {result.playerId ? <Link href={getResearchHref({ playerId: result.playerId, sport: result.sport, date: visibleDeepSummary.slateDate })} className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-400">Research</Link> : <span className="text-[10px] text-slate-500">Player ID unavailable</span>}
-                                  {result.bestBook && <AddPickButton id={result.id} playerId={result.playerId ?? undefined} playerName={result.player} teamName={result.teamName ?? 'Data unavailable'} opponentName={result.opponentName ?? 'Data unavailable'} gameId={result.gameId} gameTime={result.gameTimeIso ?? ''} propType={result.marketLabel} side={result.side} line={result.line} odds={result.bestBook.odds} />}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <p className="text-center text-xs text-slate-500">✦ Ask naturally. For example: <span className="text-slate-400">&quot;Best NFL plays Sunday&quot;</span> or <span className="text-slate-400">&quot;Best MLB pitcher props tomorrow under -200&quot;</span></p>
                   {conversation.length === 0 && (
                     <>
                       <div className="grid gap-3 pt-3 sm:grid-cols-2">
@@ -1618,7 +1328,7 @@ function AiFinderPageContent() {
                       </div>
                     </>
                   )}
-                  {agentError && (
+                  {agentError && process.env.NODE_ENV !== 'production' && (
                     <div className="mt-4 rounded-2xl border border-amber-500/25 bg-amber-500/8 p-4 text-left">
                       <p className="text-sm font-semibold text-amber-200">AI research agent unavailable</p>
                       <p className="mt-1 text-xs text-amber-200/80">{agentError}</p>
@@ -1629,56 +1339,26 @@ function AiFinderPageContent() {
                       )}
                     </div>
                   )}
-                  {restrictionMessage && <p className="pt-6 text-center text-xs text-slate-500">{restrictionMessage}</p>}
-                </div>
-              )}
-
-              {/* ── Prompt Builder ── */}
-              {mode === "builder" && (
-                <div className="rounded-2xl border border-white/6 bg-white/3 p-5">
-                  <h3 className="mb-4 font-semibold text-white">Build My Search</h3>
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    {[
-                      { label: "Sport", value: bSport, set: setBSport, opts: ["MLB", "NFL"] },
-                      { label: "Market", value: bMarket, set: setBMarket, opts: ["Any", "Hits", "Total Bases", "Home Runs", "Runs", "RBIs", "Strikeouts"] },
-                      { label: "Side", value: bSide, set: setBSide, opts: ["Any", "Over", "Under"] },
-                      { label: "Risk Level", value: bRisk, set: setBRisk, opts: ["Any", "Low", "Medium", "High"] },
-                      { label: "Min Confidence", value: bConf, set: setBConf, opts: ["Any", "65%", "70%", "75%", "80%"] },
-                      { label: "Recent Window", value: bWindow, set: setBWindow, opts: ["L5", "L10", "L20", "L40", "2026"] },
-                    ].map(({ label, value, set, opts }) => (
-                      <div key={label} className="relative rounded-xl border border-white/8 bg-white/3 px-3 py-2.5 hover:border-white/15">
-                        <p className="text-[10px] text-slate-500">{label}</p>
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-white">{value}</span>
-                          <span className="text-[10px] text-slate-600">▾</span>
-                        </div>
-                        <select className="absolute inset-0 cursor-pointer rounded-xl opacity-0" value={value} onChange={(e) => set(e.target.value)}>
-                          {opts.map((o) => <option key={o} className="bg-slate-900" value={o}>{o}</option>)}
-                        </select>
-                      </div>
-                    ))}
-                  </div>
-                  <button onClick={buildAndRun}
-                    className="mt-4 w-full rounded-xl bg-teal-500 py-3 text-sm font-bold text-slate-950 transition hover:bg-teal-400">
-                    Find Plays →
-                  </button>
+                  {restrictionMessage && process.env.NODE_ENV !== 'production' && <p className="pt-6 text-center text-xs text-slate-500">{restrictionMessage}</p>}
                 </div>
               )}
 
               {/* ── Loading animation ── */}
               {isSearching && (
-                <div className="overflow-hidden rounded-2xl border border-teal-500/20 bg-teal-500/5 p-5">
-                  <div className="mb-3 flex items-center gap-2">
-                    <div className="h-2 w-2 animate-pulse rounded-full bg-teal-500" />
-                    <p className="text-sm font-semibold text-teal-400">AI Finder is working…</p>
-                  </div>
-                  <div className="space-y-1.5">
-                    {LOADING_STEPS.map((step, i) => (
-                      <div key={step} className={`flex items-center gap-2 text-xs transition ${i <= loadingStep ? "text-white" : "text-slate-700"}`}>
-                        <span>{i < loadingStep ? "✓" : i === loadingStep ? "→" : "○"}</span>
-                        {step}
-                      </div>
-                    ))}
+                <div className="space-y-3">
+                  {(lastUserQuery || query) && (
+                    <div className="flex justify-end">
+                      <p className="max-w-[85%] rounded-2xl rounded-br-md border border-white/8 bg-white/5 px-4 py-2.5 text-sm text-slate-200">{lastUserQuery || query}</p>
+                    </div>
+                  )}
+                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-4" role="status" aria-live="polite">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">DeepSide AI is researching</p>
+                    </div>
+                    {researchScope && <p className="mt-2 text-base font-bold text-white">{researchScope.label}</p>}
+                    <p className="mt-1 text-sm text-slate-300">{researchScope?.games != null ? `Analyzing ${researchScope.games} game${researchScope.games === 1 ? '' : 's'} — loading sportsbook markets, researching candidates and applying DeepSide filters…` : 'Loading sportsbook markets, researching candidates and applying DeepSide filters…'}</p>
+                    <p className="mt-1 text-xs text-slate-500">{elapsedSeconds}s elapsed · complete slates can take a minute</p>
                   </div>
                 </div>
               )}
@@ -1687,238 +1367,111 @@ function AiFinderPageContent() {
               {!isSearching && (conversation.length > 0 || results.length > 0 || finderStatus !== 'IDLE') && (
                 <div className="space-y-4">
 
-                  {/* AI Conversation */}
-                  {results.length === 0 && conversation.length > 0 && !['RESULTS', 'SPORTSBOOK_DATA_REQUIRED', 'EVENT_LIST_REQUIRED', 'PAID_REFRESH_NOT_AUTHORIZED', 'RESERVE_BLOCKED'].includes(finderStatus) && (
-                    <div className="space-y-2">
-                      {conversation.slice(-4).map((msg, i) => (
-                        <div key={i} className={`flex gap-2 text-xs ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                          {msg.role === "ai" && <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-teal-500/20 text-[10px]">✨</span>}
-                          <div className={`max-w-sm whitespace-pre-wrap rounded-xl px-3 py-2 ${msg.role === "user" ? "bg-white/8 text-slate-300" : "border border-teal-500/15 bg-teal-500/8 text-teal-300"}`}>
-                            {msg.text}
-                          </div>
-                          {msg.role === "user" && <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white">LR</span>}
-                        </div>
-                      ))}
+                  {/* User query, then a state-specific research card — never raw tool/status codes. */}
+                  {lastUserQuery && (
+                    <div className="flex justify-end">
+                      <p className="max-w-[85%] rounded-2xl rounded-br-md border border-white/8 bg-white/5 px-4 py-2.5 text-sm text-slate-200">{lastUserQuery}</p>
                     </div>
                   )}
 
-                  {/* What the agent actually ran */}
-                  {toolTrace.length > 0 && (
-                    <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
-                      <div className="mb-3 flex items-center justify-between">
-                        <p className="text-xs font-semibold text-slate-400">Research Steps</p>
-                        <button onClick={() => { setResults([]); setToolTrace([]); }}
-                          className="text-xs text-teal-400 hover:text-teal-300">Clear</button>
+                  {(finderStatus === 'RESULTS' || finderStatus === 'NO_ELITE_RESULTS') && (
+                    <div className="rounded-2xl border border-white/8 bg-white/3 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">✓ Research Complete</p>
+                          <p className="mt-1 text-base font-bold text-white">{slateLabel}</p>
+                        </div>
+                        <button onClick={startNewSearch} className="min-h-9 shrink-0 rounded-xl border border-white/10 px-3 text-xs font-semibold text-slate-300 hover:text-white">New Search</button>
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {toolTrace.map((trace, index) => (
-                          <span key={`${trace.name}-${index}`} className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] ${
-                            trace.status === 'SUCCESS'
-                              ? 'border-teal-500/20 bg-teal-500/8 text-teal-300'
-                              : 'border-amber-500/20 bg-amber-500/8 text-amber-300'
-                          }`}>
-                            <span className="opacity-60">{trace.name}:</span> {trace.status}
+                      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                        {coverage && (
+                          <span className="text-slate-300">
+                            <span className="font-bold text-white">{coverage.researched} / {coverage.expected}</span> games researched
+                            {coverage.researched < coverage.expected && <span className="text-amber-300"> · {coverage.expected - coverage.researched} unavailable</span>}
                           </span>
-                        ))}
+                        )}
+                        {finderStatus === 'RESULTS' && <span className="font-semibold text-emerald-300">{results.length} qualifying play{results.length === 1 ? '' : 's'}</span>}
                       </div>
-                    </div>
-                  )}
-
-                  {/* Results header */}
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    {!['SPORTSBOOK_DATA_REQUIRED', 'EVENT_LIST_REQUIRED', 'PAID_REFRESH_NOT_AUTHORIZED', 'RESERVE_BLOCKED'].includes(finderStatus) && (
-                      <div className="text-sm text-slate-400">
-                        {typeof agentMeta?.gamesFound === 'number' && typeof agentMeta?.gamesScheduled === 'number' && agentMeta.gamesFound < agentMeta.gamesScheduled
-                          ? <>Best qualified plays from <span className="font-semibold text-white">{agentMeta.gamesFound}</span> of <span className="font-semibold text-white">{agentMeta.gamesScheduled}</span> researched games &bull; Showing best <span className="font-semibold text-white">{visibleResults.length}</span></>
-                          : <>Found <span className="font-semibold text-white">{totalMatched}</span> matching opportunit{totalMatched === 1 ? "y" : "ies"} &bull; Showing best <span className="font-semibold text-white">{visibleResults.length}</span></>}
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2">
-                      {selectedIds.size >= 2 && (
-                        <button onClick={() => comparePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} className="rounded-xl bg-teal-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-teal-400">
-                          Compare {selectedIds.size} Plays
-                        </button>
-                      )}
-                      {query && (
-                        <button onClick={() => setShowSaveDialog((v) => !v)}
-                          className="rounded-xl border border-white/8 bg-white/3 px-3 py-1.5 text-xs text-slate-300 hover:text-white">
-                          Save Search
-                        </button>
-                      )}
-                      <button onClick={resetSearchSession} className="rounded-xl border border-rose-500/20 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reset Search</button>
-                    </div>
-                  </div>
-
-                  {/* Save dialog */}
-                  {showSaveDialog && (
-                    <div className="flex gap-2 rounded-xl border border-teal-500/20 bg-teal-500/5 p-3">
-                      <input value={saveName} onChange={(e) => setSaveName(e.target.value)}
-                        placeholder="Name this search..." className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-600" />
-                      <button onClick={saveCurrentSearch} className="rounded-lg bg-teal-500 px-3 py-1 text-xs font-bold text-slate-950">Save</button>
-                      <button onClick={() => setShowSaveDialog(false)} className="text-slate-500 hover:text-white">×</button>
-                    </div>
-                  )}
-
-                  {/* No results — each cause gets its own honest state */}
-                  {results.length === 0 && finderStatus === 'ERROR' && (
-                    <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-6 text-center">
-                      <p className="text-lg font-semibold text-white">Research could not run</p>
-                      <p className="mt-1 text-sm text-amber-200/80">{agentError ?? 'The research agent is unavailable.'}</p>
-                    </div>
-                  )}
-
-                  {results.length === 0 && finderStatus === 'SLATE_COMPLETE' && (
-                    <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-6 text-center">
-                      <p className="text-lg font-semibold text-white">This slate has finished</p>
-                      <p className="mt-1 text-sm text-slate-400">Every game on {finderDate} is complete, so sportsbooks no longer offer props. Try the next slate.</p>
-                    </div>
-                  )}
-
-                  {results.length === 0 && finderStatus === 'NO_ELITE_RESULTS' && (
-                    <>
-                      <div className="rounded-2xl border border-white/6 bg-white/3 p-6 text-center">
-                        <p className="text-lg font-semibold text-white">No Elite candidates</p>
-                        <p className="mt-1 text-sm text-slate-400">
-                          {typeof agentMeta?.candidatesFound === 'number'
-                            ? `I researched ${agentMeta.candidatesFound} candidates, but none passed the Elite Filter.`
-                            : 'Candidates were researched, but none passed the Elite Filter.'}
-                        </p>
-                        <p className="mt-2 text-[10px] text-slate-500">Closest misses remain failed-gate research and are never official picks.</p>
-                      </div>
-                      {closestMisses.length > 0 && (
-                        <section className="space-y-3">
-                          <div className="rounded-xl border border-amber-400/25 bg-amber-400/8 px-4 py-3">
-                            <p className="text-sm font-black uppercase tracking-[0.14em] text-amber-200">Closest Misses</p>
-                            <p className="mt-1 text-xs text-amber-100/70">Ranked by distance from existing Elite requirements. Not official DeepSide picks.</p>
-                          </div>
-                          <div className="grid gap-3 xl:grid-cols-2">
-                            {closestMisses.map((result, index) => (
-                              <StructuredPickCard key={result.prop.id} result={result} index={index} expanded={false} selectedForCompare={false} onToggle={() => {}} onCompare={() => {}} />
-                            ))}
-                          </div>
-                        </section>
-                      )}
-                    </>
-                  )}
-
-                  {results.length === 0 && (finderStatus === 'SPORTSBOOK_DATA_REQUIRED' || finderStatus === 'EVENT_LIST_REQUIRED') && refreshApprovalOffer && (
-                    <div className="rounded-2xl border border-amber-400/30 bg-amber-400/8 p-6">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">{finderStatus}</p>
-                      <p className="mt-2 text-lg font-semibold text-white">{finderStatus === 'EVENT_LIST_REQUIRED' ? 'The free sportsbook event list does not contain this requested slate yet.' : 'Sportsbook data is required before DeepSide can research this slate.'}</p>
-                      <p className="mt-1 text-sm text-slate-400">{finderStatus === 'EVENT_LIST_REQUIRED' ? 'No paid player-prop request has been made. Cost remains unknown until the target events are discoverable.' : 'No paid request has been made. Review the slate and authorize one capped refresh.'}</p>
-                      <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                        <div className="rounded-lg bg-black/15 p-2"><span className="text-slate-500">Sport</span><strong className="mt-1 block text-white">{refreshApprovalOffer.sport.toUpperCase()}</strong></div>
-                        <div className="rounded-lg bg-black/15 p-2"><span className="text-slate-500">Date</span><strong className="mt-1 block text-white">{refreshApprovalOffer.date}</strong></div>
-                        <div className="rounded-lg bg-black/15 p-2"><span className="text-slate-500">Estimated</span><strong className="mt-1 block text-white">{refreshApprovalOffer.estimatedExpected == null ? 'UNKNOWN' : `${refreshApprovalOffer.estimatedExpected} credits`}</strong></div>
-                        <div className="rounded-lg bg-black/15 p-2"><span className="text-slate-500">Maximum authorized</span><strong className="mt-1 block text-white">{refreshApprovalOffer.estimatedHigh == null ? 'UNKNOWN' : `${refreshApprovalOffer.estimatedHigh} credits`}</strong></div>
-                        <div className="rounded-lg bg-black/15 p-2"><span className="text-slate-500">Odds credits</span><strong className="mt-1 block text-white">{refreshApprovalOffer.currentCredits ?? 'unavailable'}</strong></div>
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
-                        <span>Low: {refreshApprovalOffer.estimatedLow ?? 'UNKNOWN'}</span>
-                        <span>Expected: {refreshApprovalOffer.estimatedExpected ?? 'UNKNOWN'}</span>
-                        <span>High: {refreshApprovalOffer.estimatedHigh ?? 'UNKNOWN'}</span>
-                        <span>{finderStatus === 'EVENT_LIST_REQUIRED' ? `Matched games: ${refreshApprovalOffer.maxGames}` : `Games selected: ${refreshApprovalOffer.maxGames}`}</span>
-                      </div>
-                      {finderStatus === 'EVENT_LIST_REQUIRED' && (
-                        <div className="mt-5 rounded-xl border border-white/8 bg-black/10 p-4">
-                          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">Scheduled NFL Games</p>
-                          <div className="mt-3 space-y-2">
-                            {refreshApprovalOffer.slateGames.map((game) => (
-                              <div key={game.gameId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-xs">
-                                <div><p className="font-semibold text-white">{game.matchup}</p><p className="mt-0.5 text-slate-500">{game.gameTime ? new Date(game.gameTime).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : 'Time unavailable'}</p></div>
-                                <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-1 text-[10px] font-bold text-amber-200">Awaiting sportsbook event</span>
-                              </div>
-                            ))}
-                          </div>
+                      {finderStatus === 'NO_ELITE_RESULTS' && (
+                        <div className="mt-4 border-t border-white/6 pt-4">
+                          <p className="text-sm font-black uppercase tracking-[0.14em] text-white">No qualifying plays</p>
+                          <p className="mt-1 text-sm text-slate-400">No plays met DeepSide&apos;s current quality requirements.</p>
+                          <button onClick={adjustSearch} className="mt-3 min-h-10 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 text-sm font-semibold text-emerald-300">Adjust Search</button>
                         </div>
                       )}
-                      {finderStatus === 'SPORTSBOOK_DATA_REQUIRED' && refreshApprovalOffer.estimatedHigh != null && (
-                        <div className="mt-5 rounded-xl border border-white/8 bg-black/10 p-4">
-                          {refreshApprovalOffer.estimatedHigh > (refreshApprovalOffer.currentCredits ?? 0) && (
-                            <p className="text-xs text-amber-200">The full slate maximum exceeds your available balance. Full-slate refresh is disabled.</p>
-                          )}
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {[30, 60, 90].map((budget) => (
-                              <button key={budget} onClick={() => { setSelectedRefreshBudget(budget); setCustomRefreshBudget(''); }} className={`rounded-lg border px-3 py-1.5 text-xs ${selectedRefreshBudget === budget && !customRefreshBudget ? 'border-teal-400 bg-teal-400/15 text-teal-200' : 'border-white/10 text-slate-300'}`}>{budget} credits</button>
-                            ))}
-                            <input value={customRefreshBudget} onChange={(e) => setCustomRefreshBudget(e.target.value.replace(/\D/g, ''))} placeholder="Custom" inputMode="numeric" className="w-24 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white outline-none placeholder:text-slate-500" />
-                          </div>
-                          {(() => {
-                            const budget = Number(customRefreshBudget) > 0 ? Number(customRefreshBudget) : selectedRefreshBudget;
-                            const fullSlateGames = refreshApprovalOffer.researchPriorityGames.length || refreshApprovalOffer.maxGames;
-                            const safeGames = safelyResearchableGames(budget, fullSlateGames);
-                            const plannedGames = manualSelectedGameIds != null
-                              ? refreshApprovalOffer.researchPriorityGames.filter((game) => manualSelectedGameIds.includes(game.gameId))
-                              : refreshApprovalOffer.researchPriorityGames.slice(0, safeGames);
-                            const recommended = plannedGames[0] ?? refreshApprovalOffer.researchPriorityGames[0];
-                            return <>
-                              <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-4">
-                                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">Games safely researchable</p>
-                                <p className="mt-1 text-xl font-black text-white">{safeGames} of {fullSlateGames}</p>
-                                {recommended ? <div className="mt-3 rounded-xl border border-white/8 bg-black/20 p-3">
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <div>
-                                      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Recommended game</p>
-                                      <p className="mt-1 text-base font-bold text-white">{recommended.matchup}</p>
-                                    </div>
-                                    <span className={`rounded-full border px-2 py-1 text-[10px] font-bold ${recommended.coverage === 'HIGH' ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300' : recommended.coverage === 'MEDIUM' ? 'border-amber-400/30 bg-amber-400/10 text-amber-300' : 'border-white/10 bg-white/5 text-slate-400'}`}>Research coverage: {recommended.coverage}</span>
-                                  </div>
-                                  <div className="mt-3 grid gap-2 text-xs text-slate-300 md:grid-cols-2">
-                                    <div><p className="mb-1 font-semibold text-emerald-300">Why DeepSide selected it</p>{recommended.reasons.slice(0, 4).map((reason) => <p key={reason}>• {reason}</p>)}</div>
-                                    <div><p className="mb-1 font-semibold text-slate-400">Unavailable before purchase</p>{recommended.unavailableEvidence.slice(0, 4).map((item) => <p key={item}>• {item}</p>)}</div>
-                                  </div>
-                                </div> : <p className="mt-2 text-xs text-slate-500">No free research-priority game is available for this slate yet.</p>}
-                                {safeGames > 0 && safeGames < fullSlateGames && <p className="mt-3 text-xs text-amber-200">DeepSide will research part of this slate. Results will not represent the entire MLB slate.</p>}
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  <button type="button" onClick={() => setShowGameSelection((open) => !open)} className="rounded-xl border border-white/10 px-3 py-2 text-xs font-bold text-slate-300 hover:text-white">{showGameSelection ? 'Hide Games' : 'Change Game'}</button>
-                                  <button onClick={approveWithinBudget} disabled={isSearching || safeGames <= 0} className="rounded-xl border border-teal-400/40 bg-teal-400/10 px-4 py-2 text-sm font-bold text-teal-200 disabled:cursor-not-allowed disabled:opacity-50">{isSearching ? 'Refreshing…' : safeGames === 1 ? 'Analyze Selected Game' : 'Analyze Selected Games'}</button>
-                                  <span className="self-center text-xs text-slate-400">Selected: {plannedGames.length}</span>
-                                </div>
-                                {showGameSelection && <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
-                                  {refreshApprovalOffer.researchPriorityGames.map((game, index) => {
-                                    const checked = manualSelectedGameIds?.includes(game.gameId) ?? index < safeGames;
-                                    return <button key={game.gameId} type="button" onClick={() => setManualSelectedGameIds((selected) => {
-                                      const current = selected ?? refreshApprovalOffer.researchPriorityGames.slice(0, safeGames).map((item) => item.gameId);
-                                      return current.includes(game.gameId) ? current.filter((id) => id !== game.gameId) : [...current, game.gameId];
-                                    })} className={`block w-full rounded-xl border p-3 text-left text-xs transition ${checked ? 'border-emerald-400/40 bg-emerald-400/10' : 'border-white/8 bg-white/3 hover:bg-white/6'}`}>
-                                      <div className="flex items-center justify-between gap-2"><span className="font-bold text-white">{game.matchup}</span>{index === 0 && <span className="rounded-full bg-emerald-400 px-2 py-0.5 text-[9px] font-black text-slate-950">DeepSide Recommended</span>}</div>
-                                      <p className="mt-1 text-slate-400">Coverage {game.coverage} · Priority {game.priority} · {game.gameTime ? new Date(game.gameTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'Time unavailable'}</p>
-                                    </button>;
-                                  })}
-                                </div>}
-                              </div>
-                            </>;
-                          })()}
-                        </div>
-                      )}
-                      {finderStatus === 'SPORTSBOOK_DATA_REQUIRED' && canAuthorizeFullSlate(refreshApprovalOffer.estimatedHigh, refreshApprovalOffer.currentCredits) && <button onClick={approveRefreshAndAnalyze} disabled={isSearching} className="mt-3 rounded-xl bg-amber-300 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-50">{isSearching ? 'Refreshing…' : 'Refresh & Analyze Full Slate'}</button>}
                     </div>
                   )}
 
-                  {results.length === 0 && !['ERROR', 'SLATE_COMPLETE', 'NO_ELITE_RESULTS', 'SPORTSBOOK_UNAVAILABLE', 'SPORTSBOOK_DATA_REQUIRED', 'EVENT_LIST_REQUIRED'].includes(finderStatus) && (
-                    <div className="rounded-2xl border border-white/6 bg-white/3 p-6 text-center">
-                      <p className="text-lg font-semibold text-white">No plays matched every condition</p>
-                      <p className="mt-1 text-sm text-slate-400">Try relaxing your filters to see more options.</p>
-                      <div className="mt-4 flex flex-wrap justify-center gap-2">
-                        {[["Relax Confidence to 65%", "Find 5 MLB plays 65% confidence"],
-                          ["Remove Plus Money", "Find 5 strong MLB plays"],
-                          ["Show Closest Matches", "Find MLB plays"]].map(([label, q]) => (
-                          <button key={label} onClick={() => { setQuery(q); runSearch(q); }}
-                            className="rounded-xl border border-teal-500/30 bg-teal-500/8 px-3 py-1.5 text-xs text-teal-400 hover:bg-teal-500/15">
-                            {label}
-                          </button>
+                  {finderStatus === 'NO_ELITE_RESULTS' && closestMisses.length > 0 && (
+                    <section className="space-y-3">
+                      <div className="rounded-xl border border-amber-400/25 bg-amber-400/8 px-4 py-3">
+                        <p className="text-sm font-black uppercase tracking-[0.14em] text-amber-200">Closest Misses</p>
+                        <p className="mt-1 text-xs text-amber-100/70">Nearest to DeepSide&apos;s requirements. Not official picks.</p>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                        {closestMisses.map((result, index) => (
+                          <StructuredPickCard key={result.prop.id} result={result} index={index} expanded={false} selectedForCompare={false} onToggle={() => {}} onCompare={() => {}} />
                         ))}
                       </div>
+                    </section>
+                  )}
+
+                  {(finderStatus === 'DATA_UNAVAILABLE' || finderStatus === 'SPORTSBOOK_UNAVAILABLE') && (
+                    <div className="rounded-2xl border border-amber-400/25 bg-amber-400/5 p-5">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">Data Unavailable</p>
+                      <p className="mt-1 text-base font-bold text-white">{slateLabel}</p>
+                      <p className="mt-3 text-sm text-slate-300">Sportsbook data isn&apos;t available for this slate yet.</p>
+                      <p className="mt-1 text-sm text-slate-400">Try another date or check again when markets are available.</p>
+                      <button onClick={adjustSearch} className="mt-4 min-h-10 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 text-sm font-semibold text-amber-200">Try Another Date</button>
                     </div>
+                  )}
+
+                  {finderStatus === 'TEMP_UNAVAILABLE' && (
+                    <div className="rounded-2xl border border-amber-400/25 bg-amber-400/5 p-5">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">Sportsbook Data Temporarily Unavailable</p>
+                      <p className="mt-1 text-base font-bold text-white">{slateLabel}</p>
+                      <p className="mt-3 text-sm text-slate-300">DeepSide couldn&apos;t retrieve the latest markets for this search.</p>
+                      <p className="mt-1 text-sm text-slate-400">Please try again shortly.</p>
+                      <button onClick={retryLastSearch} className="mt-4 min-h-10 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 text-sm font-semibold text-amber-200">Try Again</button>
+                    </div>
+                  )}
+
+                  {(finderStatus === 'CONNECTION_ERROR' || finderStatus === 'ERROR') && (
+                    <div className="rounded-2xl border border-rose-400/25 bg-rose-400/5 p-5">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-rose-300">⚠ Data Connection Issue</p>
+                      <p className="mt-2 text-sm text-slate-300">DeepSide couldn&apos;t load the sportsbook data needed for this search.</p>
+                      {process.env.NODE_ENV !== 'production' && agentError && <p className="mt-2 font-mono text-[10px] text-slate-500">[dev] {agentError}</p>}
+                      <button onClick={retryLastSearch} className="mt-4 min-h-10 rounded-xl border border-rose-400/30 bg-rose-400/10 px-4 text-sm font-semibold text-rose-200">Try Again</button>
+                    </div>
+                  )}
+
+                  {finderStatus === 'SLATE_COMPLETE' && (
+                    <div className="rounded-2xl border border-white/8 bg-white/3 p-5">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Slate Complete</p>
+                      <p className="mt-1 text-base font-bold text-white">{slateLabel}</p>
+                      <p className="mt-3 text-sm text-slate-400">Every game on this slate has finished, so props are no longer offered.</p>
+                      <button onClick={adjustSearch} className="mt-4 min-h-10 rounded-xl border border-white/10 px-4 text-sm font-semibold text-slate-200">Try Another Date</button>
+                    </div>
+                  )}
+
+                  {(finderStatus === 'CLARIFY' || finderStatus === 'ANSWER') && latestAiReply && (
+                    <div className="rounded-2xl border border-white/8 bg-white/3 p-5">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">{finderStatus === 'CLARIFY' ? 'One Quick Question' : 'DeepSide AI'}</p>
+                      <StructuredAnswer text={latestAiReply} />
+                    </div>
+                  )}
+
+                  {selectedIds.size >= 2 && (
+                    <button onClick={() => comparePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} className="min-h-10 w-full rounded-xl bg-teal-500 px-3 text-sm font-bold text-slate-950 hover:bg-teal-400 sm:w-auto">
+                      Compare {selectedIds.size} Plays
+                    </button>
                   )}
 
                   {/* Result cards */}
                   {results.length > 0 && (
                     <>
-                      <p className="rounded-2xl border border-emerald-400/15 bg-emerald-400/5 px-4 py-3 text-sm text-emerald-100">
-                        DeepSide found {results.length} Elite-qualified opportunit{results.length === 1 ? 'y' : 'ies'} from {typeof agentMeta?.candidatesFound === 'number' ? agentMeta.candidatesFound : 'the'} researched candidates.
-                      </p>
-                      <div className="grid gap-3 xl:grid-cols-2">
+                      <h2 className="pt-1 text-xs font-black uppercase tracking-[0.2em] text-slate-400">Best Plays</h2>
+                      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                         {visibleResults.map((result, index) => (
                           <StructuredPickCard
                             key={result.prop.id}
@@ -1941,6 +1494,14 @@ function AiFinderPageContent() {
                           finderDate={finderDate}
                           showSelector={false}
                         />
+                      )}
+                      {keyFindings.length > 0 && (
+                        <section className="rounded-2xl border border-white/8 bg-white/3 p-4">
+                          <h2 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Key Findings</h2>
+                          <ul className="mt-2 space-y-1.5 text-sm text-slate-300">
+                            {keyFindings.map((finding) => <li key={finding} className="flex gap-2"><span className="text-emerald-400">•</span><span>{finding}</span></li>)}
+                          </ul>
+                        </section>
                       )}
                     </>
                   )}
@@ -2014,21 +1575,6 @@ function AiFinderPageContent() {
                       <button key={s} onClick={() => { setQuery(s); runSearch(s); }}
                         className="block w-full truncate rounded-lg px-2.5 py-2 text-left text-[11px] text-slate-400 transition hover:bg-white/8 hover:text-white">
                         {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Saved searches */}
-              {savedSearches.length > 0 && (
-                <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
-                  <h3 className="mb-3 text-sm font-semibold text-white">Saved Searches</h3>
-                  <div className="space-y-1.5">
-                    {savedSearches.map((s) => (
-                      <button key={s.name} onClick={() => { setQuery(s.query); runSearch(s.query); }}
-                        className="block w-full truncate rounded-lg border border-teal-500/15 px-2.5 py-2 text-left text-[11px] text-teal-400 transition hover:bg-teal-500/8">
-                        {s.name}
                       </button>
                     ))}
                   </div>

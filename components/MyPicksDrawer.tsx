@@ -44,7 +44,7 @@ export function MyPicksDrawer() {
             <div className="theme-panel mt-10 p-6 text-center">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--se-green-soft)] text-xl text-[var(--se-green)]">▣</div>
               <h3 className="mt-4 font-semibold text-white">Your slip is empty.</h3>
-              <p className="mt-2 text-sm leading-relaxed text-[var(--se-muted)]">Add props from Research, AI Finder or The Secret to compare sportsbooks.</p>
+              <p className="mt-2 text-sm leading-relaxed text-[var(--se-muted)]">Add props from Research, DeepSide AI or The Secret to compare sportsbooks.</p>
               <button type="button" onClick={closePicks} className="theme-button-primary mt-5 px-4 py-2 text-sm">Browse Props</button>
             </div>
           ) : (

@@ -145,8 +145,14 @@ describe('structured result delivery', () => {
     }));
     const saved = { ...session, candidates: qualified } as ResearchSession;
 
-    expect(resolveStructuredResults([], false, saved, 'Find me the 5 strongest plays today')).toEqual(qualified.slice(0, 5));
+    expect(resolveStructuredResults([], false, saved, 'Find me the 5 strongest plays')).toEqual(qualified.slice(0, 5));
     expect(resolveStructuredResults([], true, saved)).toEqual([]);
+  });
+
+  it('never reuses a stored session from a different day than the one requested', () => {
+    const qualified = pool.map((row) => ({ ...row, eliteQualified: true }));
+    const stale = { ...session, date: '2026-09-11', candidates: qualified } as ResearchSession;
+    expect(resolveStructuredResults([], false, stale, 'Find me the 5 strongest plays today')).toEqual([]);
   });
 });
 
@@ -222,6 +228,21 @@ describe('latest command constraints and price ranking', () => {
   it('materially changes safety ranking without weakening Elite qualification', () => {
     expect(selectRankedCandidates(pricedPool, 'Find me safer plays').selected[0].candidateId).toBe('minus-200');
     expect(selectRankedCandidates(pricedPool, 'Find me safer plays').selected.every((row) => row.eliteQualified)).toBe(true);
+  });
+
+  it('keeps game, player, market, odds, and result-count constraints deterministic', () => {
+    const gameScoped = selectRankedCandidates(pool, 'Give me the best Yankees vs Mets props').pool;
+    expect(gameScoped.map((row) => row.candidateId)).toEqual(['b', 'c']);
+
+    const playerScoped = selectRankedCandidates(pool, 'Research Max Scherzer props today').pool;
+    expect(playerScoped.map((row) => row.candidateId)).toEqual(['a']);
+
+    const marketScoped = selectRankedCandidates(pool, 'Best pitcher strikeout props in MLB today').pool;
+    expect(marketScoped.map((row) => row.candidateId)).toEqual(['a']);
+
+    const underMinus200 = selectRankedCandidates(pricedPool, 'Best MLB props under -200').pool;
+    expect(underMinus200.map((row) => row.candidateId)).toEqual(['minus-200']);
+    expect(selectRankedCandidates(pricedPool, 'Give me the best 2 MLB props today').selected).toHaveLength(2);
   });
 });
 

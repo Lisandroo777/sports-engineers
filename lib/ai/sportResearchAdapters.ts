@@ -71,3 +71,11 @@ export function normalizeSport(sport: string): SupportedSport | null {
   if (normalized === 'mls' || normalized === 'soccer' || normalized === 'football') return normalized === 'football' ? 'nfl' : 'soccer';
   return normalized in SPORT_RESEARCH_ADAPTERS ? normalized as SupportedSport : null;
 }
+
+/** Sport named in a free-text request, or null when the request spans sports. */
+export function detectSport(query: string): SupportedSport | null {
+  if (/\b(nfl|football)\b/i.test(query)) return 'nfl';
+  if (/\b(nba|basketball)\b/i.test(query)) return 'nba';
+  if (/\b(mlb|baseball)\b/i.test(query)) return 'mlb';
+  return null;
+}

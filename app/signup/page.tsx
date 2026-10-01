@@ -51,7 +51,7 @@ export default function SignupPage() {
 
     window.setTimeout(() => {
       setIsSubmitting(false);
-      router.push('/dashboard');
+      router.push('/ai');
     }, 300);
   };
 

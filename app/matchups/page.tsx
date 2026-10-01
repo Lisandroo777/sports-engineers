@@ -97,6 +97,12 @@ function PitcherStatBar({ label, value, isAway, invert = false }: { label: strin
 
 // ─── page ─────────────────────────────────────────────────────────────────────
 
+function shortTeamName(team: { name: string; abbreviation?: string | null }) {
+  if (team.abbreviation && team.abbreviation !== 'UNK') return team.abbreviation;
+  const words = team.name.split(' ');
+  return /^(Red|White|Blue)$/.test(words[words.length - 2] ?? '') ? words.slice(-2).join(' ') : words[words.length - 1];
+}
+
 export default function MatchupsPage() {
   return (
     <Suspense fallback={<div className="flex h-screen items-center justify-center bg-[#060d18] text-sm text-slate-400">Loading today&apos;s MLB games…</div>}>
@@ -245,13 +251,14 @@ function MatchupsPageContent() {
   return (
     <div className="flex h-screen overflow-hidden bg-[#060d18] text-white">
       {/* Sidebar with custom footer */}
-      <div className="flex w-[220px] shrink-0 flex-col border-r border-white/5 bg-[#0c1628]">
+      {/* `contents` on phones: AppSidebar is an off-canvas drawer there and must not reserve width. */}
+      <div className="contents md:flex md:w-[220px] md:shrink-0 md:flex-col md:border-r md:border-white/5 md:bg-[#0c1628]">
         <AppSidebar currentPath="/matchups" footer={sidebarFooter} />
       </div>
 
       {/* Batter detail panel */}
       {selectedBatter && (
-        <div className="fixed inset-y-0 right-0 z-50 w-80 overflow-y-auto border-l border-white/10 bg-[#0b1522] p-5 shadow-2xl">
+        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-80 overflow-y-auto border-l border-white/10 bg-[#0b1522] p-5 shadow-2xl">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="font-semibold text-white">Player Detail</h3>
             <button onClick={() => setSelectedBatter(null)} className="text-xl leading-none text-slate-400 hover:text-white">&times;</button>
@@ -291,65 +298,66 @@ function MatchupsPageContent() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top nav */}
-        <header className="flex shrink-0 items-center gap-3 border-b border-white/5 bg-[#0b1522] px-4 py-2.5">
-          <label className="flex max-w-sm flex-1 items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm text-slate-400">
+        <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/5 bg-[#0b1522] py-2.5 pl-14 pr-3 md:gap-3 md:px-4">
+          <h1 className="text-lg font-bold text-white md:hidden">Matchups</h1>
+          <label className="order-last flex w-full min-w-0 items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-sm text-slate-400 md:order-none md:w-auto md:max-w-sm md:flex-1 md:py-1.5">
             <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-            <input className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-600" placeholder="Search players, teams, props..." />
-            <kbd className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-600">K</kbd>
+            <input className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-600" placeholder="Search teams or players" />
+            <kbd className="hidden rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-600 md:inline">K</kbd>
           </label>
-          <div className="ml-auto flex items-center gap-2">
-            <button className="flex items-center gap-1.5 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm font-medium text-white">
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <button className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm font-medium text-white">
               <TeamLogo teamId={119} abbreviation="MLB" size={16} />
               MLB <span className="text-slate-500">v</span>
             </button>
-            <button className="flex items-center gap-1.5 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm font-medium text-white">📅 Today, {todayLabel} <span className="text-slate-500">v</span></button>
-            <button className="relative flex h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-white/5 text-slate-300">
+            <button className="hidden shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm font-medium text-white sm:flex">📅 Today, {todayLabel} <span className="text-slate-500">v</span></button>
+            <button className="relative hidden h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-white/5 text-slate-300 sm:flex">
               <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
               <span className="absolute right-0 top-0 h-2 w-2 rounded-full bg-emerald-500" />
             </button>
-            <button className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/20 text-xs font-bold text-emerald-400">LR</button>
+            <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-xs font-bold text-emerald-400">LR</button>
           </div>
         </header>
 
         {/* Alert strip */}
         {!alertDismissed && (
-          <div className="flex shrink-0 items-center justify-between border-b border-amber-500/20 bg-amber-500/8 px-5 py-1.5">
-            <div className="flex items-center gap-4 text-[11px] text-amber-300">
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-amber-500/20 bg-amber-500/8 px-4 py-2 md:items-center md:px-5 md:py-1.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-amber-300">
               <span className="font-semibold">Updates:</span>
-              <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Lineup confirmed</span>
-              <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Starting pitcher set</span>
-              <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-amber-400" />Weather updated 7 min ago</span>
+              <span className="flex items-center gap-1 whitespace-nowrap"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Lineup confirmed</span>
+              <span className="flex items-center gap-1 whitespace-nowrap"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Starting pitcher set</span>
+              <span className="flex items-center gap-1 whitespace-nowrap"><span className="h-1.5 w-1.5 rounded-full bg-amber-400" />Weather updated 7 min ago</span>
             </div>
-            <button onClick={() => setAlertDismissed(true)} className="text-sm text-slate-500 hover:text-white">&times;</button>
+            <button onClick={() => setAlertDismissed(true)} aria-label="Dismiss updates" className="-mr-1 -mt-1 flex h-8 w-8 shrink-0 items-center justify-center text-base text-slate-500 hover:text-white md:m-0 md:h-auto md:w-auto md:text-sm">&times;</button>
           </div>
         )}
 
         <main className="flex-1 overflow-y-auto">
-          <div className="space-y-4 p-5 pb-10">
+          <div className="space-y-4 p-3 pb-24 sm:p-5 sm:pb-10">
 
             {/* ── Matchup selector + controls ── */}
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Link href="/matchups" className="flex items-center gap-1 text-sm text-slate-400 hover:text-white">
+              <div className="flex w-full min-w-0 flex-col items-start gap-2 lg:w-auto lg:flex-1 lg:flex-row lg:items-center">
+                <Link href="/matchups" className="hidden items-center gap-1 text-sm text-slate-400 hover:text-white md:flex">
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" /></svg>
                   Matchups
                 </Link>
-                <div className="flex gap-2 overflow-x-auto">
+                <div className="scrollbar-hidden flex w-full min-w-0 gap-2 overflow-x-auto lg:w-auto">
                   {games.map((entry) => (
                     <button key={entry.id} onClick={() => selectGame(entry.id)}
-                      className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-1.5 text-sm transition ${selectedId === entry.id ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-white/8 bg-white/3 text-slate-400 hover:border-white/15 hover:text-white"}`}>
+                      className={`flex min-h-10 shrink-0 items-center gap-2 rounded-xl border px-3 py-1.5 text-sm transition ${selectedId === entry.id ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-white/8 bg-white/3 text-slate-400 hover:border-white/15 hover:text-white"}`}>
                       <TeamLogo teamId={entry.awayTeam.id} abbreviation={entry.awayTeam.abbreviation} size={16} />
-                      {entry.awayTeam.name}
+                      <span className="sm:hidden">{shortTeamName(entry.awayTeam)}</span><span className="hidden sm:inline">{entry.awayTeam.name}</span>
                       <span className="text-slate-600">@</span>
                       <TeamLogo teamId={entry.homeTeam.id} abbreviation={entry.homeTeam.abbreviation} size={16} />
-                      {entry.homeTeam.name}
+                      <span className="sm:hidden">{shortTeamName(entry.homeTeam)}</span><span className="hidden sm:inline">{entry.homeTeam.name}</span>
                       <span className="text-[10px] text-slate-600">{new Date(entry.gameTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
                     </button>
                   ))}
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-400">LIVE MLB DATA</span>
+                <span className="whitespace-nowrap rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-400">LIVE MLB DATA</span>
                 <span className="text-[10px] text-slate-500">{selectedGame.status}</span>
                 <div className="flex rounded-xl border border-white/8 bg-white/4 p-0.5">
                   <button onClick={() => setIsAdvanced(false)} className={`rounded-lg px-3 py-1 text-xs font-medium transition ${!isAdvanced ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"}`}>Beginner</button>
@@ -360,37 +368,57 @@ function MatchupsPageContent() {
 
             {/* ── Game Header ── */}
             <div className="overflow-hidden rounded-2xl border border-white/6 bg-white/3">
-              <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center">
-                <div className="flex items-center gap-4">
-                  <TeamLogo teamId={game.awayTeamId} abbreviation={game.awayLogo} teamName={game.awayTeam} size={64} />
-                  <div>
-                    <p className="text-[10px] text-slate-500">{game.awayDivision ?? "Away"}</p>
-                    <h2 className="text-2xl font-extrabold text-white">{game.awayTeam}</h2>
-                    <p className="text-sm text-slate-400">{game.awayRecord}</p>
+              <div className="flex items-center justify-between gap-3 border-b border-white/5 px-4 py-3 lg:hidden">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">MLB <span className="text-slate-600">•</span> {selectedGame.status}</p>
+                <p className="text-sm font-bold text-white">{game.time}</p>
+              </div>
+              <div className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:gap-4 lg:p-5">
+                <div className="flex min-w-0 items-center gap-3 lg:order-1 lg:gap-4">
+                  <span className="shrink-0 lg:hidden"><TeamLogo teamId={game.awayTeamId} abbreviation={game.awayLogo} teamName={game.awayTeam} size={48} /></span>
+                  <span className="hidden shrink-0 lg:block"><TeamLogo teamId={game.awayTeamId} abbreviation={game.awayLogo} teamName={game.awayTeam} size={64} /></span>
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 lg:font-normal lg:normal-case lg:tracking-normal">Away{game.awayDivision ? <span className="hidden lg:inline"> · {game.awayDivision}</span> : null}</p>
+                    <h2 className="text-xl font-extrabold leading-tight text-white lg:text-2xl">{game.awayTeam}</h2>
+                    <p className="text-xs text-slate-400 lg:text-sm">{game.awayRecord}</p>
                   </div>
                 </div>
-                <div className="flex flex-1 flex-col items-center gap-1.5 text-center">
-                  <p className="text-sm font-semibold text-white">{game.time}</p>
-                  <p className="text-xs text-slate-400">{game.stadium}</p>
-                  <p className="text-xs text-slate-500">{selectedGame.status}</p>
-                  <p className="text-xs text-slate-500">Weather unavailable</p>
-                  <div className="mt-1 flex gap-2">
-                    <button className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-400">⭐ Follow</button>
-                    <button className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-300">Share</button>
+                <div className="flex items-center gap-3 lg:hidden">
+                  <div className="h-px flex-1 bg-white/8" />
+                  <span className="text-[11px] font-bold tracking-widest text-slate-500">VS</span>
+                  <div className="h-px flex-1 bg-white/8" />
+                </div>
+                <div className="flex min-w-0 items-center gap-3 lg:order-3 lg:gap-4">
+                  <span className="shrink-0 lg:hidden"><TeamLogo teamId={game.homeTeamId} abbreviation={game.homeLogo} teamName={game.homeTeam} size={48} /></span>
+                  <span className="hidden shrink-0 lg:block"><TeamLogo teamId={game.homeTeamId} abbreviation={game.homeLogo} teamName={game.homeTeam} size={64} /></span>
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 lg:font-normal lg:normal-case lg:tracking-normal">Home{game.homeDivision ? <span className="hidden lg:inline"> · {game.homeDivision}</span> : null}</p>
+                    <h2 className="text-xl font-extrabold leading-tight text-white lg:text-2xl">{game.homeTeam}</h2>
+                    <p className="text-xs text-slate-400 lg:text-sm">{game.homeRecord}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-4">
-                  <TeamLogo teamId={game.homeTeamId} abbreviation={game.homeLogo} teamName={game.homeTeam} size={64} />
-                  <div>
-                    <p className="text-[10px] text-slate-500">{game.homeDivision ?? "Home"}</p>
-                    <h2 className="text-2xl font-extrabold text-white">{game.homeTeam}</h2>
-                    <p className="text-sm text-slate-400">{game.homeRecord}</p>
+                <div className="flex flex-col gap-3 border-t border-white/5 pt-3 lg:order-2 lg:flex-1 lg:items-center lg:gap-1.5 lg:border-0 lg:pt-0 lg:text-center">
+                  <p className="hidden text-sm font-semibold text-white lg:block">{game.time}</p>
+                  <div className="grid grid-cols-2 gap-3 lg:flex lg:flex-col lg:gap-1.5">
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase tracking-wider text-slate-600 lg:hidden">Stadium</p>
+                      <p className="text-sm text-slate-300 lg:text-xs lg:text-slate-400">{game.stadium}</p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase tracking-wider text-slate-600 lg:hidden">Weather</p>
+                      <p className="text-sm text-slate-300 lg:text-xs lg:text-slate-500"><span className="hidden lg:inline">Weather </span>Unavailable</p>
+                    </div>
+                  </div>
+                  <p className="hidden text-xs text-slate-500 lg:block">{selectedGame.status}</p>
+                  <div className="grid grid-cols-2 gap-2 lg:mt-1 lg:flex">
+                    <button className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-sm font-semibold text-amber-400 lg:min-h-0 lg:rounded-lg lg:text-xs">⭐ Follow</button>
+                    <button className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-slate-300 lg:min-h-0 lg:rounded-lg lg:text-xs">Share</button>
                   </div>
                 </div>
               </div>
 
               {/* Tab navigation */}
-              <div className="flex border-t border-white/5 overflow-x-auto">
+              <p className="border-t border-white/5 px-4 pt-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 lg:hidden">Matchup research</p>
+              <div className="scrollbar-hidden flex overflow-x-auto border-white/5 lg:border-t">
                 {TABS.map((tab) => (
                   <button key={tab} onClick={() => setActiveTab(tab)}
                     className={`flex items-center gap-1.5 shrink-0 px-4 py-2.5 text-sm font-medium transition border-b-2 ${activeTab === tab ? "border-emerald-500 text-emerald-400" : "border-transparent text-slate-500 hover:text-white"}`}>
@@ -412,7 +440,7 @@ function MatchupsPageContent() {
               <>
                 {/* Starting Pitcher Comparison — main visual focus */}
                 <div className="overflow-hidden rounded-2xl border border-white/6 bg-white/3">
-                  <div className="flex items-center justify-between border-b border-white/5 px-5 py-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 px-4 py-3.5 sm:px-5">
                     <div className="flex items-center gap-2">
                       <span className="text-amber-400">🏆</span>
                       <h3 className="font-semibold text-white">Starting Pitcher Comparison</h3>
