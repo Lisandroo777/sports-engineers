@@ -33,7 +33,7 @@ function candidate(over: Partial<ResearchCandidateRecord>): ResearchCandidateRec
   return {
     candidateId: 'c1', rank: 1, player: 'Test Player', team: 'New York Yankees', opponent: 'Boston Red Sox',
     market: 'Hits', marketKey: 'batter_hits', line: 0.5, direction: 'over', book: 'DK', odds: -110,
-    availableBooks: 3, projection: 1.2, projectionUncertainty: 0.6, edge: 0.7,
+    availableBooks: 3, projection: 1.2, projectionUncertainty: 0.6, edge: 0.7, sampleSize: 10, priceCurrent: true, valueQualified: true,
     l5Rate: 80, l10Rate: 80, l20Rate: 75, seasonRate: 78, researchScore: 80, signalAgreement: 5,
     signalsAvailable: 6, evidenceCoverage: 93, priceFreshness: 'FRESH', trueProbability: 70,
     evPercent: 5, isAlternate: false, dataQuality: 100, trapRisk: 0, qualification: 'WATCH',
@@ -137,7 +137,7 @@ describe('blocking reasons are reported accurately', () => {
 });
 
 describe('structured result delivery', () => {
-  it('returns all saved Elite candidates when the model did not explicitly rank a subset', () => {
+  it('returns tiered recommendations when the model did not explicitly rank a subset', () => {
     const qualified = Array.from({ length: 8 }, (_, index) => ({
       ...pool[index % pool.length],
       candidateId: `elite-${index}`,
@@ -145,7 +145,9 @@ describe('structured result delivery', () => {
     }));
     const saved = { ...session, candidates: qualified } as ResearchSession;
 
-    expect(resolveStructuredResults([], false, saved, 'Find me the 5 strongest plays')).toEqual(qualified.slice(0, 5));
+    const results = resolveStructuredResults([], false, saved, 'Find me the 5 strongest plays') as ResearchCandidateRecord[];
+    expect(results.map((candidate) => candidate.candidateId)).toEqual(qualified.slice(0, 5).map((candidate) => candidate.candidateId));
+    expect(results.every((candidate) => candidate.pickTier === 'ELITE')).toBe(true);
     expect(resolveStructuredResults([], true, saved)).toEqual([]);
   });
 
@@ -168,10 +170,14 @@ describe('research-session memory bounds', () => {
 
 describe('cached ranking turn', () => {
   it('re-ranks an existing NFL session without calling the model or reloading sportsbook data', async () => {
+    const injuryTimestamp = new Date().toISOString();
+    const injuryContext = { player: { player: 'Patrick Mahomes', playerId: 1, teamId: 1, team: 'Kansas City Chiefs', position: 'QB', injury: null, status: 'Active',
+      availabilityDesignation: 'CONFIRMED_AVAILABLE', updatedAt: injuryTimestamp, sourceStatus: 'CURRENT', evidence: null, affectedRole: 'PLAYER', missingFields: [] },
+      team: 'Kansas City Chiefs', teammateAbsences: [], opponentAbsences: [], sourceStatus: { provider: 'ESPN', status: 'CURRENT' }, lastUpdated: injuryTimestamp, missingFields: [] };
     const candidates = [
       candidate({ candidateId: 'value', odds: -110, evPercent: 12, priceEdgePercent: 8, eliteQualified: true }),
       candidate({ candidateId: 'payout', odds: 200, evPercent: 3, priceEdgePercent: 2, eliteQualified: true }),
-    ];
+    ].map((record, index) => ({ ...record, injuryContext, line: 244.5 + index, player: 'Patrick Mahomes', team: 'Kansas City Chiefs', opponent: 'Las Vegas Raiders', market: 'Passing Yards', marketKey: 'player_pass_yds' }));
     const saved = { ...session, sport: 'nfl', date: '2026-09-20', candidates } as ResearchSession;
     const result = rankCachedSession(saved, 'Give me higher value NFL plays.', 'session');
     expect(result?.results.map((row) => (row as ResearchCandidateRecord).candidateId)).toEqual(['value', 'payout']);
@@ -210,7 +216,7 @@ describe('latest command constraints and price ranking', () => {
     }));
 
     expect(outputs.map((output) => [output.constraints.sort, output.constraints.targetOdds])).toEqual([
-      ['research', null], ['value', null], ['research', -200], ['research', 200],
+      ['balanced', null], ['value', null], ['balanced', -200], ['balanced', 200],
     ]);
     expect(outputs[0].ids[0]).toBe('best');
     expect(outputs[1].ids.slice(0, 2)).toEqual(['plus-120', 'best']);
@@ -228,6 +234,25 @@ describe('latest command constraints and price ranking', () => {
   it('materially changes safety ranking without weakening Elite qualification', () => {
     expect(selectRankedCandidates(pricedPool, 'Find me safer plays').selected[0].candidateId).toBe('minus-200');
     expect(selectRankedCandidates(pricedPool, 'Find me safer plays').selected.every((row) => row.eliteQualified)).toBe(true);
+  });
+
+  it('keeps the probability/value frontier while separating safest and best-value intents', () => {
+    const controlled = [
+      candidate({ candidateId: 'A', trueProbability: 70, evPercent: 8, priceEdgePercent: 5, playerEdgePercent: 6, researchScore: 88, dataQuality: 94, trapRisk: 12, odds: -110, eliteQualified: true }),
+      candidate({ candidateId: 'B', trueProbability: 80, evPercent: 2, priceEdgePercent: 1, playerEdgePercent: 2, researchScore: 90, dataQuality: 96, trapRisk: 10, odds: -180, eliteQualified: true }),
+      candidate({ candidateId: 'C', trueProbability: 60, evPercent: 20, priceEdgePercent: 15, playerEdgePercent: 10, researchScore: 84, dataQuality: 91, trapRisk: 18, odds: 200, eliteQualified: true }),
+      candidate({ candidateId: 'D', trueProbability: 65, evPercent: 1, priceEdgePercent: 1, playerEdgePercent: 1, researchScore: 75, dataQuality: 90, trapRisk: 24, odds: 300, eliteQualified: true }),
+    ].map((row, index) => ({ ...row, player: `Player ${row.candidateId}`, line: 240 + index, market: 'Passing Yards', marketKey: 'player_pass_yds' }));
+
+    const balanced = selectRankedCandidates(controlled, 'Find me the best NFL props today').selected;
+    const safest = selectRankedCandidates(controlled, 'Find me the safest NFL props today').selected;
+    const bestValue = selectRankedCandidates(controlled, 'Find me the best value NFL props today').selected;
+
+    expect(new Set(balanced.slice(0, 3).map((row) => row.candidateId))).toEqual(new Set(['A', 'B', 'C']));
+    expect(balanced.at(-1)?.candidateId).toBe('D');
+    expect(safest[0].candidateId).toBe('B');
+    expect(bestValue[0].candidateId).toBe('C');
+    expect([...balanced, ...safest, ...bestValue].every((row) => row.eliteQualified)).toBe(true);
   });
 
   it('keeps game, player, market, odds, and result-count constraints deterministic', () => {

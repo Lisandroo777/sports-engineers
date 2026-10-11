@@ -63,7 +63,9 @@ describe('one canonical date and sport per request', () => {
 
   it('ignores a stale date and wrong sport passed by the model (e.g. June 9, 2024)', async () => {
     const { executeTool } = await import('./agent/tools');
-    const candidate = { candidateId: 'x', player: 'P', team: 'T', opponent: 'O', market: 'Passing Yards', marketKey: 'player_pass_yds', direction: 'over', odds: -110, eliteQualified: true, researchScore: 90, rejectionReasons: [] };
+    const injuryTimestamp = new Date().toISOString();
+    const candidate = { candidateId: 'x', playerId: 1, player: 'P', team: 'T', opponent: 'O', market: 'Passing Yards', marketKey: 'player_pass_yds', direction: 'over', odds: -110, eliteQualified: true, isAlternate: false, researchScore: 90, rejectionReasons: [], priceCurrent: true, priceFreshness: 'LIVE', valueQualified: true, trueProbability: 65, evPercent: 8, priceEdgePercent: 5, edge: 2, sampleSize: 10, dataQuality: 95, trapRisk: 10,
+      injuryContext: { player: { player: 'P', playerId: 1, teamId: 1, team: 'T', position: 'QB', injury: null, status: 'Active', availabilityDesignation: 'CONFIRMED_AVAILABLE', updatedAt: injuryTimestamp, sourceStatus: 'CURRENT', evidence: null, affectedRole: 'PLAYER', missingFields: [] }, team: 'T', teammateAbsences: [], opponentAbsences: [], sourceStatus: { provider: 'ESPN', status: 'CURRENT' }, lastUpdated: injuryTimestamp, missingFields: [] } };
     const session = { sport: 'nfl', date: '2026-10-04', queryIntent: '', generatedAt: '', toolMeta: {}, candidates: [candidate] };
     const context = createAgentContext(session as never);
     applyRequestScope(context, 'Best NFL plays Sunday', WEDNESDAY);
@@ -75,13 +77,13 @@ describe('one canonical date and sport per request', () => {
 
   it('keeps date, odds, and result-count constraints together', () => {
     const pool = [
-      { candidateId: 'a', player: 'A', team: 'T', opponent: 'O', market: 'Passing Yards', marketKey: 'player_pass_yds', direction: 'over', odds: -250, eliteQualified: true, researchScore: 90 },
-      { candidateId: 'b', player: 'B', team: 'T', opponent: 'O', market: 'Passing Yards', marketKey: 'player_pass_yds', direction: 'over', odds: -150, eliteQualified: true, researchScore: 95 },
+      { candidateId: 'a', playerId: 1, player: 'A', team: 'T', opponent: 'O', market: 'Passing Yards', marketKey: 'player_pass_yds', direction: 'over', odds: -250, eliteQualified: true, isAlternate: false, researchScore: 90, priceCurrent: true, priceFreshness: 'LIVE', valueQualified: true, trueProbability: 65, evPercent: 8, priceEdgePercent: 5, edge: 2, sampleSize: 10, dataQuality: 95, trapRisk: 10 },
+      { candidateId: 'b', playerId: 2, player: 'B', team: 'T', opponent: 'O', market: 'Passing Yards', marketKey: 'player_pass_yds', direction: 'over', odds: -150, eliteQualified: true, isAlternate: false, researchScore: 95, priceCurrent: true, priceFreshness: 'LIVE', valueQualified: true, trueProbability: 65, evPercent: 8, priceEdgePercent: 5, edge: 2, sampleSize: 10, dataQuality: 95, trapRisk: 10 },
     ] as unknown as ResearchCandidateRecord[];
     const constraints = parseCandidateSearchConstraints('Best NFL props Sunday under -200', pool);
     expect(constraints.sport).toBe('nfl');
-    expect(constraints.maxOdds).toBe(-200);
-    expect(selectRankedCandidates(pool, 'Best NFL props Sunday under -200').selected.map((c) => c.candidateId)).toEqual(['a']);
+    expect(constraints.minOdds).toBe(-200);
+    expect(selectRankedCandidates(pool, 'Best NFL props Sunday under -200').selected.map((c) => c.candidateId)).toEqual(['b']);
     expect(parseCandidateSearchConstraints('Give me the best 5 NFL props Sunday', pool).maxResults).toBe(5);
   });
 });

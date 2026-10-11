@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResearchSession, ResearchCandidateRecord } from '../ai/agent/session';
 
 function candidate(overrides: Partial<ResearchCandidateRecord> = {}): ResearchCandidateRecord {
+  const injuryTimestamp = new Date().toISOString();
   return {
     candidateId: 'c1', rank: 1, playerId: 1, teamId: 1, player: 'Player', team: 'Team', opponent: 'Opponent',
     market: 'Passing Yards', marketKey: 'player_pass_yds', line: 250, direction: 'over', book: 'Book', odds: -110,
-    availableBooks: 1, projection: 260, projectionUncertainty: 25, edge: 10,
+    availableBooks: 1, projection: 260, projectionUncertainty: 25, edge: 10, sampleSize: 10,
     l5Rate: 60, l10Rate: 60, l20Rate: null, seasonRate: 60, researchScore: 90,
     signalAgreement: 5, signalsAvailable: 5, evidenceCoverage: 100, priceFreshness: 'FRESH', trueProbability: 60,
     evPercent: 5, isAlternate: false, dataQuality: 100, trapRisk: 5, qualification: 'ELITE', eliteQualified: true,
@@ -14,7 +15,9 @@ function candidate(overrides: Partial<ResearchCandidateRecord> = {}): ResearchCa
     outlierDependencePercent: null, position: 'qb', modelProbability: 60, historicalHitRate: 60,
     projectionReliability: 'MEDIUM', priceCurrent: true, valueQualified: true,
     crossBookThreshold: null, marketMovement: null, outlierAnalysis: null, roleContext: null, opponentContext: null,
-    injuryContext: null, weatherContext: null,
+    injuryContext: { player: { player: 'Player', playerId: 1, teamId: 1, team: 'Team', position: 'QB', injury: null, status: 'Active',
+      availabilityDesignation: 'CONFIRMED_AVAILABLE', updatedAt: injuryTimestamp, sourceStatus: 'CURRENT', evidence: null, affectedRole: 'PLAYER', missingFields: [] },
+      team: 'Team', teammateAbsences: [], opponentAbsences: [], sourceStatus: { provider: 'ESPN', status: 'CURRENT' }, lastUpdated: injuryTimestamp, missingFields: [] }, weatherContext: null,
     ...overrides,
   } as ResearchCandidateRecord;
 }

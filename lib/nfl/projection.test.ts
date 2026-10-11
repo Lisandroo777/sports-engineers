@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildNFLHistory } from './history';
 import { projectNFLMarket } from './projection';
 import { getNFLMarketMetadata, getNFLMarketHistoricalValue } from './oddsTypes';
+import { buildNFLRoleContext } from './roleContext';
 import { NFL_FALLBACK_MARKETS, matchNFLPlayer } from '../finder/nflEngine';
 import { normalizeNFLEventProps } from './odds';
 import type { NFLGameLogEntry } from './types';
@@ -139,6 +140,32 @@ describe('NFL projection foundation', () => {
     expect(p.method).toBe('nfl_weighted_history');
   });
 
+  it.each([
+    ['player_reception_yds', { receivingTargets: 10, receivingYards: 90 }, { expectedOpportunity: 10, expectedEfficiency: 9 }],
+    ['player_receptions', { receivingTargets: 10, receptions: 7 }, { expectedOpportunity: 10, expectedEfficiency: 0.7 }],
+    ['player_rush_yds', { rushingAttempts: 15, rushingYards: 60 }, { expectedOpportunity: 15, expectedEfficiency: 4 }],
+    ['player_rush_attempts', { rushingAttempts: 15 }, { expectedOpportunity: 15, expectedEfficiency: 1 }],
+    ['player_pass_yds', { passingAttempts: 35, passingYards: 280 }, { expectedOpportunity: 35, expectedEfficiency: 8 }],
+    ['player_pass_completions', { passingAttempts: 35, completions: 24 }, { expectedOpportunity: 35, expectedEfficiency: 24 / 35 }],
+  ] as const)('builds a market-specific partial opportunity model for %s', (market, stats, expected) => {
+    const logs = Array.from({ length: 6 }, (_, index) => log(index, stats));
+    const projection = projectNFLMarket({ logs, market });
+    expect(projection.status).toBe('OK');
+    expect(projection.inputs.projectionModelType).toBe('PARTIAL_OPPORTUNITY_MODEL');
+    expect(projection.inputs.expectedOpportunity).toBe(expected.expectedOpportunity);
+    expect(projection.inputs.expectedEfficiency).toBeCloseTo(expected.expectedEfficiency, 3);
+    expect(projection.inputs.calibrationStatus).toBe('UNVALIDATED');
+  });
+
+  it('falls back to historical baseline when paired real opportunity inputs are missing', () => {
+    const projection = projectNFLMarket({
+      logs: Array.from({ length: 6 }, (_, index) => log(index, { receivingYards: 80 })), market: 'player_reception_yds',
+    });
+    expect(projection.inputs.projectionModelType).toBe('HISTORICAL_BASELINE_ONLY');
+    expect(projection.inputs.opportunityProjection).toBeNull();
+    expect(projection.inputs.missingOpportunityInputs).toContain('receivingTargets');
+  });
+
   it('marks the baseline as role-context limited rather than production-grade', () => {
     const p = projectNFLMarket({ logs: [10, 12, 8, 14, 16, 9].map((v, i) => log(i, { receivingYards: v })), market: 'player_reception_yds' });
     expect(p.reliabilityReasons).toContain('ROLE_CONTEXT_UNAVAILABLE');
@@ -181,5 +208,42 @@ describe('RARE_COUNT NFL markets use season-only weighting (Phase 6 audit fix)',
     const p = projectNFLMarket({ logs: volumeLogs, market: 'player_reception_yds' });
     // L3 mean (last 3) dominates at 0.45 weight -> pulled toward 40, not the full-season mean (~25).
     expect(p.projection).toBeGreaterThan(30);
+  });
+});
+
+describe('NFL yardage projection source-pair integrity', () => {
+  it.each([
+    ['player_pass_yds', 'QB', 'passingAttempts', 'passingYards'],
+    ['player_rush_yds', 'RB', 'rushingAttempts', 'rushingYards'],
+    ['player_reception_yds', 'WR', 'receivingTargets', 'receivingYards'],
+  ] as const)('rejects unsupported negative %s but retains a legitimate negative stat with opportunity', (market, position, opportunityKey, productionKey) => {
+    const baselineLogs = Array.from({ length: 3 }, (_, index) => log(index, { [opportunityKey]: 10, [productionKey]: 100 }));
+    const roleContext = buildNFLRoleContext(baselineLogs, market);
+    const baseline = projectNFLMarket({ logs: baselineLogs, market, position, roleContext });
+    const invalid = projectNFLMarket({ logs: [...baselineLogs, log(3, { [opportunityKey]: 0, [productionKey]: -20 })], market, position, roleContext });
+    expect(invalid.projection).toBe(baseline.projection);
+    expect(invalid.projectionModel?.historicalBaseline).toBe(baseline.projectionModel?.historicalBaseline);
+    expect(invalid.projectionModel?.opportunityInputs).toHaveLength(3);
+
+    const valid = projectNFLMarket({ logs: [...baselineLogs, log(3, { [opportunityKey]: 10, [productionKey]: -20 })], market, position, roleContext });
+    expect(valid.projectionModel?.opportunityInputs).toHaveLength(4);
+    expect(valid.projectionModel?.opportunityInputs.at(-1)?.production).toBe(-20);
+    expect(valid.projectionModel?.expectedEfficiency).toBe(7);
+    expect(valid.projection).not.toBe(baseline.projection);
+  });
+  it('keeps sack-supported negative passing yards in the historical baseline when pass attempts are zero', () => {
+    const entries = [0, 1, 2].map((index) => log(index, { passingAttempts: 10, passingYards: 100 }));
+    const sackOnly = log(3, { passingAttempts: 0, passingYards: -20, sacks: 2 });
+    expect(getNFLMarketHistoricalValue('player_pass_yds', sackOnly.stats)).toBe(-20);
+    const projection = projectNFLMarket({ logs: [...entries, sackOnly], market: 'player_pass_yds', position: 'QB' });
+    expect(projection.projectionModel?.historicalBaseline).toBeLessThan(100);
+    expect(projection.projectionModel?.opportunityInputs).toHaveLength(3);
+  });
+  it('rejects invalid negative opportunity counts even when the yardage result is positive', () => {
+    const base = Array.from({ length: 3 }, (_, index) => log(index, { rushingAttempts: 10, rushingYards: 50 }));
+    const baseline = projectNFLMarket({ logs: base, market: 'player_rush_yds', position: 'RB' });
+    const invalid = log(3, { rushingAttempts: -2, rushingYards: 80 });
+    expect(getNFLMarketHistoricalValue('player_rush_yds', invalid.stats)).toBeNull();
+    expect(projectNFLMarket({ logs: [...base, invalid], market: 'player_rush_yds', position: 'RB' }).projection).toBe(baseline.projection);
   });
 });

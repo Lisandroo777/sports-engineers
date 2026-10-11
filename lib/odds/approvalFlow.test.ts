@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { isPaidRefreshAllowed, withOneRunPaidRefresh } from './client';
 import { tomorrowSlateDate, todaySlateDate } from '../dateModel';
 
-describe('interactive refresh approval safety', () => {
-  it('authorizes only the awaited operation while the global flag remains false', async () => {
+describe('explicit current-data refresh policy', () => {
+  it('defaults to disabled and confines approval to one awaited scope', async () => {
     const previous = process.env.ODDS_ALLOW_PAID_REFRESH;
     process.env.ODDS_ALLOW_PAID_REFRESH = 'false';
     expect(isPaidRefreshAllowed()).toBe(false);

@@ -4,6 +4,7 @@
  */
 export type ToolStatus =
   | 'SUCCESS'
+  | 'RESEARCH_INCOMPLETE'
   | 'NO_SPORTSBOOK_DATA'
   | 'NO_CACHED_SPORTSBOOK_DATA'
   | 'STALE_SPORTSBOOK_DATA'
@@ -31,6 +32,8 @@ export interface ToolMetadata {
   propsFound?: number;
   candidatesFound?: number;
   eliteFound?: number;
+  researchComplete?: boolean;
+  nflLedger?: import('../../nfl/slateLedger').NFLSlateLedger;
   cached?: boolean;
   /** True when the answer came from an already-stored research session, so no slate work or paid call occurred. */
   reusedExistingSession?: boolean;

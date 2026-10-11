@@ -1,5 +1,5 @@
 import type { NFLGameLogEntry } from './types';
-import type { NFLAnalyzableMarketKey } from './oddsTypes';
+import { getNFLMarketHistoricalValue, type NFLAnalyzableMarketKey } from './oddsTypes';
 import { mean, standardDeviation } from '../projection/types';
 
 /**
@@ -68,6 +68,16 @@ const NFL_OPPORTUNITY_STAT: Record<NFLAnalyzableMarketKey, string | null> = {
 export type NFLWorkloadTrend = 'WORKLOAD_INCREASE' | 'WORKLOAD_DECREASE' | 'WORKLOAD_STABLE' | 'HIGH_WORKLOAD_VOLATILITY' | 'INSUFFICIENT_OPPORTUNITY_DATA';
 export type NFLRoleStatus = 'STABLE' | 'CHANGING' | 'UNCERTAIN' | 'UNAVAILABLE';
 export type NFLRoleConfidence = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
+export type NFLRoleStabilityStatus = 'STABLE' | 'INCREASING' | 'DECLINING' | 'CHANGED' | 'UNCERTAIN';
+
+export interface NFLRoleStability {
+  status: NFLRoleStabilityStatus;
+  games: number;
+  recentMean: number | null;
+  earlierSeasonMean: number | null;
+  relativeChange: number | null;
+  evidence: string[];
+}
 
 /** Minimum games with a recorded opportunity stat before any trend is trusted. */
 export const NFL_MIN_OPPORTUNITY_SAMPLE = 3;
@@ -81,6 +91,7 @@ export interface NFLOpportunityTrend {
   l5: NFLWorkloadWindow;
   l10: NFLWorkloadWindow;
   season: NFLWorkloadWindow;
+  rolling?: NFLWorkloadWindow;
   trend: NFLWorkloadTrend;
   volatility: number | null;
 }
@@ -97,35 +108,38 @@ function window(values: number[], size: number | null): NFLWorkloadWindow {
   return { games: slice.length, mean: mean(slice) };
 }
 
-function trendFromValues(values: number[], statKey: string | null): NFLOpportunityTrend {
+function trendFromValues(values: number[], statKey: string | null, windows = { l3: window(values, 3), l5: window(values, 5), l10: window(values, 10), season: window(values, null) }): NFLOpportunityTrend {
   const empty: NFLOpportunityTrend = {
     available: false, statKey, l3: { games: 0, mean: null }, l5: { games: 0, mean: null },
     l10: { games: 0, mean: null }, season: { games: 0, mean: null }, trend: 'INSUFFICIENT_OPPORTUNITY_DATA', volatility: null,
   };
-  if (values.length < NFL_MIN_OPPORTUNITY_SAMPLE) return { ...empty, l3: window(values, 3), l5: window(values, 5), l10: window(values, 10), season: window(values, null) };
+  if (values.length < NFL_MIN_OPPORTUNITY_SAMPLE) return { ...empty, ...windows, rolling: window(values, null) };
 
-  const l3 = window(values, 3);
-  const l5 = window(values, 5);
-  const l10 = window(values, 10);
-  const season = window(values, null);
+  const { l3, l5, l10, season } = windows;
+  const rolling = window(values, null);
   const volatility = standardDeviation(values);
-  const cv = volatility != null && season.mean != null && season.mean > 0 ? volatility / season.mean : null;
+  const cv = volatility != null && rolling.mean != null && rolling.mean > 0 ? volatility / rolling.mean : null;
   let trend: NFLWorkloadTrend = 'WORKLOAD_STABLE';
   if (cv != null && cv > 0.5) trend = 'HIGH_WORKLOAD_VOLATILITY';
-  else if (l3.mean != null && season.mean != null && season.mean > 0) {
-    const delta = (l3.mean - season.mean) / season.mean;
+  else if (l3.mean != null && rolling.mean != null && rolling.mean > 0) {
+    const delta = (l3.mean - rolling.mean) / rolling.mean;
     if (delta >= 0.2) trend = 'WORKLOAD_INCREASE';
     else if (delta <= -0.2) trend = 'WORKLOAD_DECREASE';
   }
-  return { available: true, statKey, l3, l5, l10, season, trend, volatility };
+  return { available: true, statKey, l3, l5, l10, season, rolling, trend, volatility };
+}
+
+function trendFromLogs(logs: NFLGameLogEntry[], statKey: string, valueFor: (log: NFLGameLogEntry) => number | null): NFLOpportunityTrend {
+  const completed = logs.filter((log) => log.result != null).sort((first, second) => new Date(first.date).getTime() - new Date(second.date).getTime());
+  const valuesFor = (entries: NFLGameLogEntry[]) => entries.map(valueFor).filter((value): value is number => value != null && Number.isFinite(value));
+  return trendFromValues(valuesFor(completed), statKey, {
+    l3: window(valuesFor(completed.slice(-3)), null), l5: window(valuesFor(completed.slice(-5)), null), l10: window(valuesFor(completed.slice(-10)), null),
+    season: window(valuesFor(completed.filter((log) => log.historySource !== 'PREVIOUS_SEASON')), null),
+  });
 }
 
 function computeRecordedStatTrend(logs: NFLGameLogEntry[], statKey: string): NFLOpportunityTrend {
-  const values = logs
-    .filter((log) => log.result != null)
-    .map((log) => log.stats[statKey] ?? null)
-    .filter((value): value is number => value != null);
-  return trendFromValues(values, statKey);
+  return trendFromLogs(logs, statKey, (log) => log.stats[statKey] ?? null);
 }
 
 /** Real recency-weighted workload comparison (L3/L5/L10/season) for one market's opportunity stat. */
@@ -137,11 +151,14 @@ export function computeNFLOpportunityTrend(logs: NFLGameLogEntry[], market: NFLA
   };
   if (!statKey) return empty;
 
-  const values = logs
-    .filter((log) => log.result != null)
-    .map((log) => (statKey === 'touches' ? touchesValue(log.stats) : log.stats[statKey] ?? null))
-    .filter((value): value is number => value != null);
-  return trendFromValues(values, statKey);
+  return trendFromLogs(logs, statKey, (log) => {
+    const yardageStat = market === 'player_pass_yds' ? 'passingYards' : market === 'player_rush_yds' ? 'rushingYards'
+      : market === 'player_reception_yds' ? 'receivingYards' : null;
+    const rawProduction = yardageStat ? log.stats[yardageStat] : null;
+    if (rawProduction != null && rawProduction < 0 && getNFLMarketHistoricalValue(market, log.stats) == null) return null;
+    const opportunity = statKey === 'touches' ? touchesValue(log.stats) : log.stats[statKey] ?? null;
+    return opportunity != null && Number.isFinite(opportunity) && opportunity >= 0 ? opportunity : null;
+  });
 }
 
 export interface NFLRoleContext {
@@ -150,6 +167,7 @@ export interface NFLRoleContext {
   confidence: NFLRoleConfidence;
   workloadTrend: NFLWorkloadTrend;
   opportunity: NFLOpportunityTrend;
+  stability: NFLRoleStability;
   /** Real, computed facts that back this status — never invented flavor text. */
   evidence: string[];
   /** Named data sources DeepSide does not have, so callers never assume more than we know. */
@@ -160,17 +178,58 @@ export interface NFLRoleContext {
 /** Data sources NFL role context can never draw on today — always reported, never silently assumed. */
 export const NFL_UNAVAILABLE_ROLE_EVIDENCE = ['snap share', 'route participation', 'target share', 'true dropbacks', 'depth chart position', 'confirmed starter status'];
 
+export function assessNFLRoleStability(logs: NFLGameLogEntry[], market: NFLAnalyzableMarketKey): NFLRoleStability {
+  const statKey = NFL_OPPORTUNITY_STAT[market];
+  const current = logs.filter((log) => log.result != null && log.historySource !== 'PREVIOUS_SEASON')
+    .sort((first, second) => Date.parse(first.date) - Date.parse(second.date));
+  const valueFor = (log: NFLGameLogEntry) => statKey === 'touches'
+    ? touchesValue(log.stats)
+    : statKey ? log.stats[statKey] ?? null : null;
+  const values = current.map(valueFor).filter((value): value is number => value != null && Number.isFinite(value));
+  if (!statKey || values.length < 6) return {
+    status: 'UNCERTAIN', games: values.length, recentMean: values.length ? mean(values.slice(-3)) : null,
+    earlierSeasonMean: null, relativeChange: null,
+    evidence: [!statKey ? 'No supported market-specific opportunity stat is recorded.' : `Only ${values.length} current-season opportunity games; at least 6 are required to compare recent usage with an earlier-season baseline.`],
+  };
+
+  const recent = values.slice(-3);
+  const earlier = values.slice(0, -3);
+  const recentMean = mean(recent);
+  const earlierSeasonMean = mean(earlier);
+  if (recentMean == null || earlierSeasonMean == null || earlierSeasonMean === 0) return {
+    status: 'UNCERTAIN', games: values.length, recentMean, earlierSeasonMean, relativeChange: null,
+    evidence: ['Recent and earlier-season opportunity cannot be compared from nonzero recorded values.'],
+  };
+
+  const relativeChange = (recentMean - earlierSeasonMean) / Math.abs(earlierSeasonMean);
+  const direction = relativeChange >= 0.2 ? 1 : relativeChange <= -0.2 ? -1 : 0;
+  const consistentGames = direction === 0 ? 0 : recent.filter((value) =>
+    direction > 0 ? value >= earlierSeasonMean * 1.1 : value <= earlierSeasonMean * 0.9).length;
+  const identityChanged = current.slice(-6).some((log) => log.teamId != null && current[0]?.teamId != null && log.teamId !== current[0].teamId)
+    || current.slice(-6).some((log) => log.position != null && current[0]?.position != null && log.position !== current[0].position);
+  const status: NFLRoleStabilityStatus = identityChanged ? 'CHANGED'
+    : direction !== 0 && consistentGames >= 2 ? direction > 0 ? 'INCREASING' : 'DECLINING'
+      : Math.abs(relativeChange) < 0.2 ? 'STABLE' : 'UNCERTAIN';
+  const evidence = [`Recent 3-game ${statKey} average ${recentMean.toFixed(2)} versus earlier current-season average ${earlierSeasonMean.toFixed(2)} (${(relativeChange * 100).toFixed(1)}%).`];
+  if (identityChanged) evidence.push('Player team or listed position changed within the recent current-season logs.');
+  if (status === 'UNCERTAIN') evidence.push('The apparent shift is not consistent across at least two of the latest three games; it is not treated as a confirmed role change.');
+  return { status, games: values.length, recentMean, earlierSeasonMean, relativeChange, evidence };
+}
+
 /** Builds a deterministic role-context verdict for one market from real ESPN game logs only. */
 export function buildNFLRoleContext(logs: NFLGameLogEntry[], market: NFLAnalyzableMarketKey): NFLRoleContext {
   const requirement = NFL_ROLE_REQUIREMENTS[market];
   const completedGames = logs.filter((log) => log.result != null).length;
   const trend = computeNFLOpportunityTrend(logs, market);
+  const stability = assessNFLRoleStability(logs, market);
   const evidence: string[] = [`${completedGames} completed games in the log`];
   const reasons: string[] = [];
 
   if (trend.available) {
     evidence.push(`L3 ${trend.statKey} avg ${trend.l3.mean?.toFixed(1)}, season avg ${trend.season.mean?.toFixed(1)} (${trend.season.games} games)`);
+    if (logs.some((log) => log.historySource === 'PREVIOUS_SEASON')) evidence.push(`Rolling workload: ${trend.rolling?.games ?? 0} games across seasons; current season remains ${trend.season.games} games.`);
   }
+  evidence.push(...stability.evidence);
 
   let status: NFLRoleStatus;
   let confidence: NFLRoleConfidence;
@@ -197,7 +256,7 @@ export function buildNFLRoleContext(logs: NFLGameLogEntry[], market: NFLAnalyzab
     confidence = requirement === 'CRITICAL' ? (trend.season.games >= 8 ? 'HIGH' : 'MEDIUM') : 'MEDIUM';
   }
 
-  return { requirement, status, confidence, workloadTrend: trend.trend, opportunity: trend, evidence, unavailableEvidence: [...NFL_UNAVAILABLE_ROLE_EVIDENCE], reasons };
+  return { requirement, status, confidence, workloadTrend: trend.trend, opportunity: trend, stability, evidence, unavailableEvidence: [...NFL_UNAVAILABLE_ROLE_EVIDENCE], reasons };
 }
 
 export interface NFLPlayerWorkloadProfile {

@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { buildNFLInjuryContext, classifyNFLAvailability, evaluateNFLPlayerAvailability, isNFLPlayerAvailabilityKnown, parseNFLInjuryReports } from './injuries';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildNFLInjuryContext, classifyNFLAvailability, evaluateNFLPlayerAvailability, isNFLInjuryContextFresh, isNFLPlayerAvailabilityKnown, parseNFLInjuryReports } from './injuries';
 
 const now = new Date('2026-09-20T16:00:00Z');
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); });
+afterEach(() => vi.useRealTimers());
 const payload = {
   injuries: [{ id: '29', displayName: 'Carolina Panthers', injuries: [
     { athlete: { id: '4685720', displayName: 'Bryce Young', position: { abbreviation: 'QB' } }, status: 'Questionable', shortComment: 'Limited Friday with an ankle issue.', details: { detail: 'Ankle' }, date: '2026-09-18T18:00:00Z' },
@@ -16,7 +18,7 @@ describe('NFL injury and availability context', () => {
   it('classifies only explicit availability designations', () => {
     expect(classifyNFLAvailability('Out')).toBe('OUT');
     expect(classifyNFLAvailability('Questionable')).toBe('QUESTIONABLE');
-    expect(classifyNFLAvailability('Active')).toBe('AVAILABLE');
+    expect(classifyNFLAvailability('Active')).toBe('CONFIRMED_AVAILABLE');
     expect(classifyNFLAvailability('Undisclosed')).toBe('UNKNOWN');
   });
 
@@ -31,12 +33,12 @@ describe('NFL injury and availability context', () => {
     expect(context.teammateAbsences.some((entry) => entry.player === 'Old Receiver')).toBe(false);
   });
 
-  it('keeps missing Bijan Robinson availability unknown while retaining relevant teammate facts', () => {
+  it('distinguishes no designation in current team evidence from failed retrieval', () => {
     const context = buildNFLInjuryContext({ playerId: 4430807, player: 'Bijan Robinson', teamId: 29, team: 'Carolina Panthers', opponentTeamId: 1, market: 'player_rush_yds', position: 'RB', reports: parseNFLInjuryReports(payload, now) });
-    expect(context.player.availabilityDesignation).toBe('UNKNOWN');
-    expect(context.player.sourceStatus).toBe('MISSING');
-    expect(isNFLPlayerAvailabilityKnown(context)).toBe(false);
-    expect(context.missingFields).toContain('current player availability');
+    expect(context.player.availabilityDesignation).toBe('NO_CURRENT_INJURY_DESIGNATION');
+    expect(context.player.sourceStatus).toBe('CURRENT');
+    expect(isNFLPlayerAvailabilityKnown(context)).toBe(true);
+    expect(context.missingFields).not.toContain('current player availability');
   });
 
   it('never treats Drake London stale data as current', () => {
@@ -55,5 +57,31 @@ describe('NFL injury and availability context', () => {
     ] }] }, now);
     const context = buildNFLInjuryContext({ playerId: 4685720, player: 'Bryce Young', teamId: 29, team: 'Carolina Panthers', opponentTeamId: 1, market: 'player_pass_yds', position: 'QB', reports });
     expect(evaluateNFLPlayerAvailability(context)).toEqual({ eligible: false, reason: 'Player is listed OUT on the current ESPN injury report.' });
+  });
+  it('rechecks cached player/snapshot timestamps instead of trusting saved CURRENT flags', () => {
+    const reports = parseNFLInjuryReports(payload, now);
+    const context = buildNFLInjuryContext({ playerId: 4685720, player: 'Bryce Young', teamId: 29, team: 'Carolina Panthers',
+      opponentTeamId: 1, market: 'player_pass_yds', position: 'QB', reports, snapshot: { reports, fetchedAt: now.toISOString(), complete: true, sourceStatus: 'CURRENT' } });
+    expect(isNFLInjuryContextFresh(context, now)).toBe(true);
+    const later = new Date('2026-09-24T20:00:00Z');
+    expect(context.player.sourceStatus).toBe('CURRENT');
+    expect(isNFLInjuryContextFresh(context, later)).toBe(false);
+    expect(isNFLPlayerAvailabilityKnown(context, later)).toBe(false);
+  });
+  it('rejects a stale surrounding injury record even when the player report is fresh', () => {
+    const reports = parseNFLInjuryReports(payload, now);
+    const context = buildNFLInjuryContext({ playerId: 4685720, player: 'Bryce Young', teamId: 29, team: 'Carolina Panthers',
+      opponentTeamId: 1, market: 'player_pass_yds', position: 'QB', reports, snapshot: { reports, fetchedAt: now.toISOString(), complete: true, sourceStatus: 'CURRENT' } });
+    const stale = { ...context, lastUpdated: now.toISOString(), teammateAbsences: [{ ...context.teammateAbsences[0], sourceStatus: 'CURRENT' as const,
+      updatedAt: '2026-09-01T00:00:00Z' }] };
+    expect(isNFLInjuryContextFresh(stale, now)).toBe(false);
+  });
+  it('fails closed on cached contexts missing snapshot, player or surrounding timestamps', () => {
+    const reports = parseNFLInjuryReports(payload, now);
+    const context = buildNFLInjuryContext({ playerId: 4685720, player: 'Bryce Young', teamId: 29, team: 'Carolina Panthers',
+      opponentTeamId: 1, market: 'player_pass_yds', position: 'QB', reports, snapshot: { reports, fetchedAt: now.toISOString(), complete: true, sourceStatus: 'CURRENT' } });
+    expect(isNFLInjuryContextFresh({ ...context, sourceStatus: { ...context.sourceStatus, status: 'MISSING' } }, now)).toBe(false);
+    expect(isNFLInjuryContextFresh({ ...context, player: { ...context.player, updatedAt: null } }, now)).toBe(false);
+    expect(isNFLInjuryContextFresh({ ...context, teammateAbsences: [{ ...context.teammateAbsences[0], updatedAt: null }] }, now)).toBe(false);
   });
 });

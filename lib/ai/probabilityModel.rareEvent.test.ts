@@ -96,6 +96,13 @@ describe('historical hit rate calibration stays bounded and never becomes the mo
     const large = calibrateProbability({ modelProbability: 0.7, historicalHitRate: 0.9, sampleSize: 40 });
     expect(small.historicalWeight).toBeLessThan(large.historicalWeight);
   });
+  it('labels the unchanged historical hit-rate blend as unvalidated rather than backtested calibration', () => {
+    const blended = calibrateProbability({ modelProbability: 0.7, historicalHitRate: 0.9, sampleSize: 10 });
+    expect(blended.calibratedProbability).toBeCloseTo((1 - 10 / 30) * 0.7 + (10 / 30) * 0.9);
+    expect(blended.basis).toContain('UNVALIDATED');
+    expect(blended.basis).not.toMatch(/backtest|historically calibrated/i);
+    expect(blended.historicalWeight).toBeCloseTo(10 / 30, 3);
+  });
 });
 
 describe('probability is independent of sportsbook price (Phase 6 task 10)', () => {

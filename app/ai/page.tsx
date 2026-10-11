@@ -8,6 +8,22 @@ import { NewsUnavailablePanel } from "../../components/NewsUnavailablePanel";
 import { PlayerAvatar } from "../../components/PlayerAvatar";
 import { PlayerHeadshot } from "../../components/PlayerHeadshot";
 import { TeamLogo } from "../../components/TeamLogo";
+import { NFLHistorySummary } from "../../components/NFLHistorySummary";
+import { NFLSlateSummary } from "../../components/NFLSlateSummary";
+import { NFLParticipationSummary } from "../../components/NFLParticipationSummary";
+import type { NFLInjuryContext } from "../../lib/nfl/injuries";
+import { NFLSportsbookPrices } from "../../components/NFLSportsbookPrices";
+import type { NFLSportsbookPrice } from "../../lib/nfl/underlyingPlays";
+import { nflMatchupLabel } from "../../lib/nfl/matchupLabel";
+import type { NFLCorrelationGroup } from "../../lib/nfl/correlation";
+import type { NFLSlateLedger } from "../../lib/nfl/slateLedger";
+import type { NFLMarketHistory } from "../../lib/nfl/history";
+import type { NFLResearchProfile } from "../../lib/nfl/researchModel";
+import type { NBAProjectionResult } from "../../lib/nba/prediction/types";
+import type { GameRecommendation, ModeledGameResearch } from "../../lib/nba/prediction/gameLines/recommendations";
+import { NBAGameRecommendationCard, NBAModeledGameResearch } from "../../components/NBAGameRecommendationCard";
+import { NBAPresentationCards, type NBAClientPresentation } from "../../components/NBAPresentationCards";
+import type { PickTier } from "../../lib/ai/agent/pickTiers";
 import { getResearchHref } from "../../lib/researchHref";
 import { resolveSlateDate, todaySlateDate, tomorrowSlateDate, presetForSlateDate } from "../../lib/dateModel";
 import { type AiResult, type AiSearchCriteria } from "../../lib/ai";
@@ -33,14 +49,24 @@ const RISK_STYLES = {
   HIGH: "border-rose-500/40 bg-rose-500/10 text-rose-400",
 };
 
+const PICK_TIER_STYLES: Record<PickTier, { badge: string; label: string; border: string; accent: string }> = {
+  NUKE: { badge: 'border-amber-300/70 bg-amber-300/15 text-amber-200', label: 'text-amber-200', border: 'border-amber-300/55 shadow-[0_0_24px_rgba(251,191,36,0.10)]', accent: 'text-amber-200' },
+  ELITE: { badge: 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300', label: 'text-emerald-300', border: 'border-emerald-400/30', accent: 'text-emerald-300' },
+  SHARP: { badge: 'border-cyan-400/35 bg-cyan-400/10 text-cyan-200', label: 'text-cyan-200', border: 'border-cyan-400/25', accent: 'text-cyan-200' },
+  EDGE: { badge: 'border-sky-400/30 bg-sky-400/8 text-sky-200', label: 'text-sky-200', border: 'border-sky-400/20', accent: 'text-sky-200' },
+  LEAN: { badge: 'border-white/15 bg-white/5 text-slate-300', label: 'text-slate-300', border: 'border-white/10', accent: 'text-slate-200' },
+  PASS: { badge: 'border-rose-400/25 bg-rose-400/5 text-rose-200', label: 'text-rose-200', border: 'border-rose-400/20', accent: 'text-slate-300' },
+};
+
 type SearchMode = "quick" | "deep" | "builder";
 type FinderStatus = 'IDLE' | 'LOADING' | 'SLATE_COMPLETE' | 'EVENT_LIST_REQUIRED' | 'SPORTSBOOK_DATA_REQUIRED' | 'SPORTSBOOK_UNAVAILABLE' | 'RESEARCHING' | 'NO_ELITE_RESULTS' | 'RESULTS' | 'ERROR'
-  | 'DATA_UNAVAILABLE' | 'TEMP_UNAVAILABLE' | 'CONNECTION_ERROR' | 'CLARIFY' | 'ANSWER';
+  | 'DATA_UNAVAILABLE' | 'TEMP_UNAVAILABLE' | 'CONNECTION_ERROR' | 'CLARIFY' | 'ANSWER' | 'RESEARCH_INCOMPLETE';
 
 const SEARCH_TOOLS = new Set(['get_sportsbook_candidates', 'rank_candidates', 'run_elite_filter']);
 
 /** Maps an internal tool status to the user-facing state; raw codes never reach the UI. */
 function classifyLoadFailure(status: string): FinderStatus {
+  if (status === 'RESEARCH_INCOMPLETE') return 'RESEARCH_INCOMPLETE';
   if (status === 'PROVIDER_ERROR') return 'CONNECTION_ERROR';
   if (status === 'SLATE_COMPLETE') return 'SLATE_COMPLETE';
   if (status === 'NO_CANDIDATES' || status === 'NO_ELITE_RESULTS') return 'NO_ELITE_RESULTS';
@@ -112,6 +138,7 @@ interface AgentResultRecord {
   priceEdgePercent: number | null;
   playerEdgePercent: number | null;
   breakEvenProbability: number | null;
+  retrievedAt?: string | null;
   priceFreshness: string;
   priceCurrent: boolean;
   valueQualified: boolean;
@@ -119,6 +146,11 @@ interface AgentResultRecord {
   trapRisk: number;
   qualification: string;
   eliteQualified: boolean;
+  pickTier?: PickTier;
+  tierReason?: string;
+  tierScore?: number;
+  tierRequirementsPassed?: string[];
+  tierRequirementsFailed?: string[];
   rejectionReasons: string[];
   howItLoses: string[];
   evidenceBoard: NonNullable<AiResult['deepResearch']>['evidenceBoard'];
@@ -139,18 +171,27 @@ interface AgentResultRecord {
   standardDeviation?: number | null;
   homeHitRate?: number | null;
   awayHitRate?: number | null;
+  nflHistory?: NFLMarketHistory | null;
+  availablePrices?: NFLSportsbookPrice[];
+  correlationGroups?: NFLCorrelationGroup[];
+  nflResearchProfile?: NFLResearchProfile;
+  nbaPrediction?: NBAProjectionResult | null;
+  nbaInjuryEvidence?: import('../../lib/nba/prediction/types').NBAInjuryEvidence;
 }
 
 type UiAiResult = AiResult & { sourceRecord?: AgentResultRecord; closestMiss?: boolean };
 
 interface AgentChatResponse {
   reply: string;
+  nbaPresentation?: NBAClientPresentation;
   toolTrace?: AgentToolTrace[];
-  results?: AgentResultRecord[];
+  results?: (AgentResultRecord | GameRecommendation)[];
+  modeledGames?: ModeledGameResearch[];
   closestMisses?: AgentResultRecord[];
   meta?: Record<string, unknown> | null;
   /** Opaque ID for the server-side research session — never the full (possibly hundreds-of-candidates) object. */
   researchSessionId?: string | null;
+  ledgerReceipt?: string | null;
   error?: string;
 }
 
@@ -221,11 +262,13 @@ function HitBar({ label, value }: { label: string; value: number }) {
   );
 }
 
-type ResearchSectionStatus = 'STRONG' | 'FAVORABLE' | 'NEUTRAL' | 'CAUTION' | 'RISK' | 'UNAVAILABLE';
+type ResearchSectionStatus = 'STRONG' | 'FAVORABLE' | 'NEUTRAL' | 'UNFAVORABLE' | 'PARTIAL DATA' | 'CAUTION' | 'RISK' | 'UNAVAILABLE';
 
 const SECTION_STATUS_STYLES: Record<ResearchSectionStatus, string> = {
   STRONG: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
   FAVORABLE: 'border-teal-400/30 bg-teal-400/10 text-teal-300',
+  UNFAVORABLE: 'border-rose-400/30 bg-rose-400/10 text-rose-300',
+  'PARTIAL DATA': 'border-amber-400/30 bg-amber-400/10 text-amber-300',
   NEUTRAL: 'border-slate-400/20 bg-slate-400/8 text-slate-300',
   CAUTION: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
   RISK: 'border-rose-400/30 bg-rose-400/10 text-rose-300',
@@ -360,7 +403,7 @@ function recordToUiResult(record: AgentResultRecord, sport: string): UiAiResult 
     riskLevel: record.trapRisk <= 15 ? 'LOW' : record.trapRisk <= 25 ? 'MEDIUM' : 'HIGH',
     matchReasons: record.evidenceBoard.filter((entry) => entry.status === 'agree').map((entry) => `${entry.signal}: ${entry.detail}`),
     riskNotes: record.howItLoses.length ? record.howItLoses : record.rejectionReasons,
-    aiReason: record.evidenceBoard.find((entry) => entry.status === 'agree')?.detail ?? 'Qualified by the Elite Research Filter.',
+    aiReason: record.tierReason ?? record.evidenceBoard.find((entry) => entry.status === 'agree')?.detail ?? `Qualified as ${record.pickTier ?? (record.eliteQualified ? 'ELITE' : 'PASS')} by DeepSide's research checks.`,
   };
 }
 
@@ -381,7 +424,8 @@ function nflCandidateToUiResult(candidate: NFLCandidate): UiAiResult | null {
     priceEdgePercent: analysis.priceEdgePercent, playerEdgePercent: null,
     breakEvenProbability: analysis.breakEvenProbability, priceFreshness: analysis.priceFreshness,
     priceCurrent: analysis.priceCurrent, valueQualified: analysis.valueQualified, dataQuality: analysis.dataQuality,
-    trapRisk: analysis.trapRisk, qualification: analysis.qualification, eliteQualified: true,
+    trapRisk: analysis.trapRisk, qualification: analysis.qualification,
+    eliteQualified: analysis.eliteQualified && candidate.nflResearchProfile?.productionEliteQualified === true,
     rejectionReasons: analysis.rejectedReasons, howItLoses: candidate.howItLoses,
     evidenceBoard: [
       { signal: 'Projection vs Line', status: analysis.rawEdge != null ? 'agree' : 'unavailable', detail: analysis.rawEdge != null ? `Projection edge: ${analysis.rawEdge.toFixed(2)}` : 'Projection unavailable.' },
@@ -404,8 +448,9 @@ function nflCandidateToUiResult(candidate: NFLCandidate): UiAiResult | null {
     sampleSize: candidate.history?.gamesUsed ?? null, average: candidate.history?.mean ?? null,
     median: candidate.history?.median ?? null, standardDeviation: candidate.history?.stdDev ?? null,
     homeHitRate: candidate.history?.splits.home.hitRate ?? null, awayHitRate: candidate.history?.splits.away.hitRate ?? null,
+    nflResearchProfile: candidate.nflResearchProfile ?? undefined,
   }, 'NFL');
-  return { ...result, closestMiss: !analysis.eliteQualified };
+  return { ...result, closestMiss: !result.sourceRecord?.eliteQualified };
 }
 
 function closestMissToUiResult(record: AgentResultRecord, sport: string): UiAiResult {
@@ -431,7 +476,7 @@ function sectionStatus(result: AiResult, section: 'projection' | 'matchup' | 're
   const d = result.deepResearch;
   if (!a) return 'UNAVAILABLE';
   if (section === 'projection') return a.rawEdge == null ? 'UNAVAILABLE' : a.rawEdge > 0 && a.trueProbability != null ? 'STRONG' : 'CAUTION';
-  if (section === 'matchup') return result.prop.opponent ? 'FAVORABLE' : 'UNAVAILABLE';
+  if (section === 'matchup') return result.prop.sport === 'NFL' ? nflMatchupLabel((result as UiAiResult).sourceRecord?.opponentContext as { status?: string } | undefined) : result.prop.opponent ? 'FAVORABLE' : 'UNAVAILABLE';
   if (section === 'recent') return result.prop.hitRates.last10 >= 65 ? 'STRONG' : result.prop.hitRates.last10 >= 50 ? 'NEUTRAL' : 'CAUTION';
   if (section === 'role') return result.prop.projectedPlateAppearances || result.prop.projectedValue != null ? 'NEUTRAL' : 'UNAVAILABLE';
   if (section === 'market') return a.priceCurrent && a.valueQualified ? 'STRONG' : a.priceCurrent ? 'CAUTION' : 'UNAVAILABLE';
@@ -495,23 +540,29 @@ function StructuredPickCard({ result, index, expanded, selectedForCompare, onTog
 }) {
   const { prop, eliteResearch: analysis, deepResearch } = result;
   const source = result.sourceRecord;
+  const nbaPrediction = source?.nbaPrediction ?? null;
+  const tier: PickTier = source?.pickTier ?? (source?.eliteQualified ? 'ELITE' : 'PASS');
+  const tierStyle = PICK_TIER_STYLES[tier];
   const price = source?.odds ?? (prop.researchSide === 'Under' ? prop.underOdds : prop.overOdds);
   const edge = analysis?.priceEdgePercent ?? deepResearch?.priceEdgePercent ?? null;
-  const reason = deepResearch?.evidenceBoard.find((entry) => entry.status === 'agree')?.detail ?? result.matchReasons[0] ?? 'Research evidence unavailable.';
-  const risk = deepResearch?.howItLoses?.[0] ?? result.riskNotes[0] ?? 'Risk detail unavailable.';
+  const profile = source?.nflResearchProfile;
+  const reasons = profile?.evidence.for.slice(0, 3).map((entry) => entry.statement) ?? [];
+  if (reasons.length === 0) reasons.push(deepResearch?.evidenceBoard.find((entry) => entry.status === 'agree')?.detail ?? result.matchReasons[0] ?? 'Research evidence unavailable.');
+  const risk = profile?.evidence.against[0]?.statement ?? deepResearch?.howItLoses?.[0] ?? result.riskNotes[0] ?? 'Risk detail unavailable.';
 
   return (
-    <article className={`rounded-2xl border bg-[#08120f] p-4 transition ${expanded ? 'border-emerald-400/50 shadow-[0_12px_40px_rgba(0,0,0,0.25)]' : 'border-white/8 hover:border-white/15'}`}>
+    <article className={`rounded-2xl border bg-[#08120f] p-4 transition ${tierStyle.border} ${expanded ? 'shadow-[0_12px_40px_rgba(0,0,0,0.25)]' : 'hover:border-white/20'}`}>
       <div className="flex items-start gap-3">
         <PlayerHeadshot sport={prop.sport} playerId={prop.playerId} playerName={prop.player} teamId={prop.teamId} teamName={prop.team} size={64} className="ring-1 ring-white/10" />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className={`text-[10px] font-bold uppercase tracking-[0.16em] ${result.closestMiss ? 'text-amber-300' : 'text-emerald-300'}`}>#{source?.rank ?? index + 1} · {result.closestMiss ? 'Closest Miss - Not an Official DeepSide Pick' : 'Elite Pick'}</p>
+              <p className={`text-[10px] font-bold uppercase tracking-[0.16em] ${result.closestMiss ? 'text-amber-300' : tierStyle.label}`}>#{source?.rank ?? index + 1} · {result.closestMiss ? 'Closest Research Miss' : tier}</p>
               <h3 className="text-lg font-black leading-tight text-white [overflow-wrap:anywhere]">{prop.player}</h3>
               <p className="mt-0.5 text-xs leading-snug text-slate-400">{prop.team}{prop.opponent && prop.opponent !== 'Unavailable' ? ` vs ${prop.opponent}` : ''}</p>
+              {prop.sport === 'NFL' && <p className="mt-1 text-[9px] font-semibold uppercase text-slate-500">{profile?.researchMode === 'DEEP' ? 'DEEP RESEARCH' : 'STANDARD RESEARCH'}</p>}
             </div>
-            <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[10px] font-bold text-emerald-300">{deepResearch?.grade ?? 'ELITE'}</span>
+            <span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-black ${tierStyle.badge}`}>{tier}{tier === 'NUKE' ? ` · ${source?.tierScore ?? analysis?.researchScore}/100` : ''}</span>
           </div>
           <p className="mt-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{prop.propType}</p>
           <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -522,23 +573,49 @@ function StructuredPickCard({ result, index, expanded, selectedForCompare, onTog
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-4 divide-x divide-white/8 border-y border-white/8 py-2 text-center">
-        <div><p className="text-[9px] uppercase text-slate-500">Score</p><p className="mt-1 font-black text-white">{analysis?.researchScore ?? result.matchScore}</p></div>
-        <div><p className="text-[9px] uppercase text-slate-500">Probability</p><p className="mt-1 font-black text-emerald-300">{pct(analysis?.trueProbability)}</p></div>
+      <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-white/8 border-y border-white/8 py-2 text-center sm:grid-cols-5 sm:divide-y-0">
+        <div><p className="text-[9px] uppercase text-slate-500">Score</p><p className={`mt-1 font-black ${tierStyle.accent}`}>{source?.tierScore ?? analysis?.researchScore ?? result.matchScore}{tier === 'NUKE' ? '/100' : ''}</p></div>
+        <div><p className="text-[9px] uppercase text-slate-500">Probability</p><p className={`mt-1 font-black ${tier === 'NUKE' ? 'text-amber-200' : 'text-emerald-300'}`}>{pct(analysis?.trueProbability)}</p></div>
+        <div><p className="text-[9px] uppercase text-slate-500">Implied</p><p className="mt-1 font-black text-white">{pct(profile?.market.value?.impliedProbability ?? analysis?.breakEvenProbability)}</p></div>
         <div><p className="text-[9px] uppercase text-slate-500">Edge</p><p className="mt-1 font-black text-white">{pct(edge)}</p></div>
         <div><p className="text-[9px] uppercase text-slate-500">Trap</p><p className="mt-1 font-black text-amber-300">{analysis?.trapRisk ?? 'Unavailable'}</p></div>
       </div>
 
+      {prop.sport === 'NBA' && nbaPrediction && <div className="mt-3 space-y-2 border-b border-white/8 pb-3">
+        <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+          <div><p className="text-[9px] uppercase text-slate-500">Push</p><p className="mt-1 font-bold text-white">{nbaPrediction.probabilities ? pct(nbaPrediction.probabilities.push * 100) : 'Unavailable'}</p></div>
+          <div><p className="text-[9px] uppercase text-slate-500">Fair odds</p><p className="mt-1 font-bold text-white">{nbaPrediction.fairAmericanOdds == null ? 'Unavailable' : odds(nbaPrediction.fairAmericanOdds)}</p></div>
+          <div><p className="text-[9px] uppercase text-slate-500">Push-aware EV</p><p className={`mt-1 font-bold ${(nbaPrediction.expectedValuePercent ?? -1) > 0 ? 'text-emerald-300' : 'text-slate-300'}`}>{pct(nbaPrediction.expectedValuePercent)}</p></div>
+          <div><p className="text-[9px] uppercase text-slate-500">Phase / price</p><p className="mt-1 font-bold text-white">{nbaPrediction.targetPhase.replace('_', ' ')} / {nbaPrediction.quoteStatus}</p></div>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-500">
+          <span>{nbaPrediction.modelVersion} · {nbaPrediction.validationStatus}</span>
+          <span>n={nbaPrediction.sampleSize} · minutes n={nbaPrediction.minutesSampleSize}</span>
+          {source?.nbaInjuryEvidence && <span>Availability: {source.nbaInjuryEvidence.replaceAll('_', ' ')}</span>}
+          {source?.retrievedAt && <span>Quote {new Date(source.retrievedAt).toLocaleString()}</span>}
+        </div>
+        {nbaPrediction.contextEvidence.length > 0 && <div className="space-y-1 text-xs text-slate-300">
+          {nbaPrediction.contextEvidence.slice(0, 2).map((evidence) => <p key={evidence.id}><span className="font-semibold text-emerald-300">{evidence.kind}/{evidence.state}:</span> {evidence.detail}</p>)}
+        </div>}
+        {nbaPrediction.intelligenceEvidence.length > 0 && <div className="space-y-1 text-xs text-slate-300">
+          {nbaPrediction.intelligenceEvidence.slice(0, 2).map((evidence) => <p key={evidence.id}><span className="font-semibold text-amber-300">{evidence.kind}/{evidence.direction}:</span> {evidence.detail}</p>)}
+        </div>}
+        {nbaPrediction.contextMissing.length > 0 && <p className="text-[10px] text-slate-500">Context gaps: {nbaPrediction.contextMissing.slice(0, 3).join('; ')}</p>}
+        <p className="text-[10px] text-amber-200">Probability model is UNVALIDATED; this estimate is not proven accuracy.</p>
+      </div>}
+
       <div className="mt-3 space-y-2 text-xs leading-5">
-        <p className="text-slate-300"><span className="font-bold text-emerald-300">Why:</span> {reason}</p>
+        {reasons.map((reason, reasonIndex) => <p key={`${reasonIndex}-${reason}`} className="text-slate-300"><span className="font-bold text-emerald-300">{reasonIndex === 0 ? 'Why:' : 'Also:'}</span> {reason}</p>)}
         <p className="text-slate-400"><span className="font-bold text-amber-300">Risk:</span> {risk}</p>
-        {result.closestMiss && <p className="rounded-lg border border-rose-400/20 bg-rose-400/5 px-2 py-1.5 text-rose-200"><span className="font-bold">FAILED ELITE:</span> {(source?.rejectionReasons ?? analysis?.rejectedReasons ?? []).join(' + ') || 'Existing Elite qualification gates were not met.'}</p>}
+        {prop.sport === 'NFL' && source?.correlationGroups?.map(group => <p key={group.id} className="text-amber-200"><span className="font-bold">Correlated:</span> {group.label} · {group.relatedPlays} linked plays, not independent bets.</p>)}
+        {tier === 'PASS' && <p className="rounded-lg border border-rose-400/20 bg-rose-400/5 px-2 py-1.5 text-rose-200"><span className="font-bold">PASS:</span> {(source?.tierRequirementsFailed ?? source?.rejectionReasons ?? analysis?.rejectedReasons ?? []).join(' + ') || 'Publication requirements were not met.'}</p>}
       </div>
 
       <div className="mt-4 flex items-center justify-between gap-2">
-        <button onClick={onToggle} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300">{expanded ? 'Close Research' : 'Open Research'}</button>
+        <button onClick={onToggle} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300">{expanded ? 'Close Research' : 'View Full Research'}</button>
         <button onClick={() => onCompare(prop.id)} className={`rounded-xl border px-3 py-2 text-xs font-bold ${selectedForCompare ? 'border-emerald-400/50 text-emerald-300' : 'border-white/10 text-slate-400 hover:text-white'}`}>{selectedForCompare ? 'Selected' : 'Compare'}</button>
       </div>
+      {prop.sport === 'NFL' && source?.availablePrices && <NFLSportsbookPrices prices={source.availablePrices} primary={source.book} />}
     </article>
   );
 }
@@ -556,6 +633,181 @@ function ResearchRow({ title, status, children, defaultOpen = false }: { title: 
       <div className="border-t border-white/6 px-4 py-4">{children}</div>
     </details>
   );
+}
+
+function nflLayerStatus(status: NFLResearchProfile['market']['status']): ResearchSectionStatus {
+  if (status === 'AVAILABLE') return 'STRONG';
+  if (status === 'PARTIAL_DATA') return 'PARTIAL DATA';
+  if (status === 'NOT_APPLICABLE') return 'NEUTRAL';
+  return 'UNAVAILABLE';
+}
+
+function NFLProfileMetric({ label, value, showUnavailable = false }: { label: string; value: unknown; showUnavailable?: boolean }) {
+  if (value == null || value === '' || value === 'Unavailable') return showUnavailable ? <MetricTile label={label} value="Unavailable" /> : null;
+  return <MetricTile label={label} value={typeof value === 'object' ? JSON.stringify(value) : String(value)} />;
+}
+
+function hasNFLUsage(value: { lastGame: number | null; l3: number | null; l5: number | null; season: number | null } | undefined) {
+  return value != null && [value.lastGame, value.l3, value.l5, value.season].some((entry) => entry != null);
+}
+
+function NFLResearchProfileDetails({ profile }: { profile: NFLResearchProfile }) {
+  const show = (value: unknown) => value == null || value === '' ? 'Unavailable' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const usageText = (value: { lastGame: number | null; l3: number | null; l5: number | null; season: number | null } | undefined) =>
+    value ? `${show(value.lastGame)} / ${show(value.l3)} / ${show(value.l5)} / ${show(value.season)}` : 'Unavailable';
+  const list = (items: string[] | undefined, empty = 'Unavailable') => items?.length
+    ? <ul className="space-y-1 text-sm text-slate-300">{items.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul>
+    : <p className="text-sm text-slate-500">{empty}</p>;
+  const role = profile.role.value;
+  const market = profile.market.value;
+  const script = profile.gameScript.value;
+  const gameEnvironment = profile.gameEnvironmentModel ?? profile.projectionModel?.gameEnvironmentModel ?? script?.environmentModel;
+  const scheme = profile.schemeMatchup.value;
+  const matchup = profile.matchupModel ?? profile.projectionModel?.matchupModel ?? scheme?.matchupAnalysis;
+  const trench = profile.trench.value;
+  const injuries = profile.injuryNetwork.value;
+  const practice = profile.practice.value;
+  const weather = profile.weather.value;
+  const movement = profile.marketIntelligence.value;
+  const seasonContextLayer = profile.seasonContext;
+  const seasonContext = seasonContextLayer?.value;
+  const gates = Object.entries(profile.hardGates) as Array<[keyof NFLResearchProfile['hardGates'], NFLResearchProfile['hardGates'][keyof NFLResearchProfile['hardGates']]]>;
+
+  return <div className="space-y-2 border-t border-white/8 pt-4">
+    <p className="text-[10px] font-semibold uppercase text-slate-400">{profile.researchMode === 'DEEP' ? 'Deep Research' : 'Standard Research'}</p>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <p className="text-xs font-bold uppercase text-emerald-300">NFL Research · {profile.sportFilterVersion}</p>
+      <p className="text-xs text-slate-400">NFL weighted score: {profile.score.score == null ? 'Unavailable' : `${profile.score.score}/100 · ${profile.score.classification}`}</p>
+    </div>
+    <p className="text-xs text-amber-200">The NFL score classification is separate from the preserved production Elite threshold ({profile.score.productionEliteBoundary}); the requested score boundary is {profile.score.scoreEliteBoundary}.</p>
+    <ResearchRow title="NFL Score Coverage" status={nflLayerStatus(profile.score.score == null ? 'PARTIAL_DATA' : 'AVAILABLE')}>
+      <div className="space-y-2">{Object.entries(profile.score.components).map(([key, component]) => <div key={key} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-white/5 py-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]"><span className="break-words text-slate-300">{key.replaceAll(/([A-Z])/g, ' $1')}</span><span className="text-white">{component.componentScore == null ? 'Score unavailable' : `${component.componentScore}/100 · ${component.points?.toFixed(1)} pts`}</span><span className="text-slate-400">{component.weight}% weight · {component.evidenceCoverage == null ? 'coverage unavailable' : `${component.evidenceCoverage}% coverage`}</span><span className="text-slate-500">{component.confidence ?? 'confidence unavailable'}</span></div>)}</div>
+      <p className="mt-3 text-xs text-amber-200">Weighted total remains unavailable unless every component has sufficient evidence coverage.</p>
+    </ResearchRow>
+    <ResearchRow title="Season Context" status={nflLayerStatus(seasonContextLayer?.status ?? 'UNAVAILABLE')}>
+      {seasonContext ? <div className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <NFLProfileMetric label="Season phase" value={`${seasonContext.week == null ? '' : `Week ${seasonContext.week} · `}${seasonContext.phase.replaceAll('_', ' ')}`} />
+          <NFLProfileMetric label="Season / game number" value={seasonContext.season == null ? null : `${seasonContext.season}${seasonContext.gameNumber == null ? '' : ` · Player game ${seasonContext.gameNumber}`}`} />
+          <NFLProfileMetric label="Postseason round" value={seasonContext.playoffRound?.replaceAll('_', ' ')} />
+          <NFLProfileMetric label="Team situation" value={seasonContext.teamSituation} />
+          <NFLProfileMetric label="Context impact" value={seasonContext.impact === 'NEUTRAL' ? 'No material season-context adjustment identified.' : seasonContext.impact} />
+          <NFLProfileMetric label="Confidence" value={seasonContext.confidence} />
+          <NFLProfileMetric label="Projection adjustment" value={seasonContext.projectionAdjustment == null ? 'None; no validated phase adjustment is applied.' : seasonContext.projectionAdjustment} />
+        </div>
+        {seasonContext.playerContext.length > 0 && <div><p className="mb-1 text-[10px] font-bold uppercase text-slate-500">Player Context</p>{list(seasonContext.playerContext)}</div>}
+        {seasonContext.phaseHistory.length > 0 && <div><p className="mb-1 text-[10px] font-bold uppercase text-slate-500">Season-Phase Evidence</p>{list(seasonContext.phaseHistory)}</div>}
+        {seasonContext.notes.length > 0 && <div><p className="mb-1 text-[10px] font-bold uppercase text-amber-200">Context / Counter-Case</p>{list(seasonContext.notes)}</div>}
+        {seasonContext.missingData.length > 0 && <div><p className="mb-1 text-[10px] font-bold uppercase text-slate-500">Unavailable To DeepSide</p>{list(seasonContext.missingData)}</div>}
+      </div> : <p className="text-sm text-slate-400">No material season-context adjustment identified.</p>}
+    </ResearchRow>
+    <ResearchRow title="Projected Opportunity" status={profile.projectionModel ? 'PARTIAL DATA' : 'UNAVAILABLE'}>
+      {profile.projectionModel ? <div className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          <NFLProfileMetric label="Projection model" value={profile.projectionModel.modelType.replaceAll('_', ' ')} />
+          <NFLProfileMetric label={profile.projectionModel.opportunityLabel ?? 'Expected opportunity'} value={num(profile.projectionModel.expectedOpportunity, 1)} />
+          <NFLProfileMetric label={profile.projectionModel.efficiencyLabel ?? 'Expected efficiency'} value={profile.projectionModel.expectedEfficiency == null ? null
+            : ['Catch rate', 'Completion rate'].includes(profile.projectionModel.efficiencyLabel ?? '')
+              ? `${(profile.projectionModel.expectedEfficiency * 100).toFixed(1)}%` : num(profile.projectionModel.expectedEfficiency, 2)} />
+          <NFLProfileMetric label="Opportunity projection" value={profile.projectionModel.opportunityProjection} />
+          <NFLProfileMetric label="Historical baseline" value={profile.projectionModel.historicalBaseline} />
+          <NFLProfileMetric label="Final projection" value={profile.projectionModel.finalProjection} />
+          <NFLProfileMetric label="Opportunity sample · current / prior" value={`${profile.projectionModel.currentSeasonOpportunityGames} / ${profile.projectionModel.priorSeasonOpportunityGames}`} />
+          <NFLProfileMetric label="Projection uncertainty" value={profile.projectionModel.uncertainty} />
+          <NFLProfileMetric label="Opportunity confidence" value={profile.projectionModel.confidence} />
+          <NFLProfileMetric label="Calibration status" value={profile.projectionModel.calibrationStatus} />
+          <NFLProfileMetric label="Season phase" value={profile.projectionModel.seasonPhase.replaceAll('_', ' ')} />
+        </div>
+        <p className="text-xs leading-relaxed text-slate-400">{profile.projectionModel.modelType === 'HISTORICAL_BASELINE_ONLY'
+          ? 'Historical baseline only; sufficient paired opportunity data is unavailable.'
+          : `Expected production combines recorded player opportunity and observed efficiency with the historical baseline. Opportunity confidence is ${profile.projectionModel.confidence.toLowerCase()}; advanced participation metrics remain unavailable.`}</p>
+        {profile.projectionModel.notes.map((note) => <p key={note} className="text-xs text-slate-300">{note}</p>)}
+        {profile.projectionModel.missingInputs.length > 0 && <div><p className="mb-1 text-[10px] font-bold uppercase text-amber-200">Unavailable Opportunity Inputs</p>{list(profile.projectionModel.missingInputs)}</div>}
+      </div> : <p className="text-sm text-slate-400">Opportunity decomposition unavailable; historical projection only.</p>}
+    </ResearchRow>
+    <ResearchRow title="Role / Opportunity" status={nflLayerStatus(profile.role.status)}>
+      <div className="grid gap-2 sm:grid-cols-2"><NFLProfileMetric label="Role / trend" value={`${role?.roleStatus ?? ''}${role?.roleTrend ? ` / ${role.roleTrend}` : ''}`} /><NFLProfileMetric label="Current-season role stability" value={role?.roleStability} /><NFLProfileMetric label="Confidence" value={role?.roleConfidence} />
+        {role?.position === 'QB' && <>{hasNFLUsage(role.positionUsage.passAttempts) && <NFLProfileMetric label="Pass attempts · last game / L3 / L5 / season" value={usageText(role.positionUsage.passAttempts)} />}{hasNFLUsage(role.positionUsage.rushingAttempts) && <NFLProfileMetric label="Rushing attempts · last game / L3 / L5 / season" value={usageText(role.positionUsage.rushingAttempts)} />}</>}
+        {role?.position === 'RB' && <>{hasNFLUsage(role.positionUsage.rushingAttempts) && <NFLProfileMetric label="Carries · last game / L3 / L5 / season" value={usageText(role.positionUsage.rushingAttempts)} />}{hasNFLUsage(role.positionUsage.touches) && <NFLProfileMetric label="Touches · last game / L3 / L5 / season" value={usageText(role.positionUsage.touches)} />}{hasNFLUsage(role.positionUsage.targets) && <NFLProfileMetric label="Targets · last game / L3 / L5 / season" value={usageText(role.positionUsage.targets)} />}{hasNFLUsage(role.positionUsage.receptions) && <NFLProfileMetric label="Receptions · last game / L3 / L5 / season" value={usageText(role.positionUsage.receptions)} />}{hasNFLUsage(role.positionUsage.touchdowns) && <NFLProfileMetric label="Touchdowns · last game / L3 / L5 / season" value={usageText(role.positionUsage.touchdowns)} />}</>}
+        {(role?.position === 'WR' || role?.position === 'TE') && <>{hasNFLUsage(role.positionUsage.targets) && <NFLProfileMetric label="Targets · last game / L3 / L5 / season" value={usageText(role.positionUsage.targets)} />}{hasNFLUsage(role.positionUsage.receptions) && <NFLProfileMetric label="Receptions · last game / L3 / L5 / season" value={usageText(role.positionUsage.receptions)} />}{hasNFLUsage(role.positionUsage.touchdowns) && <NFLProfileMetric label="Touchdowns · last game / L3 / L5 / season" value={usageText(role.positionUsage.touchdowns)} />}</>}
+        <NFLProfileMetric label="Snap share" value={role?.snapShare} /><NFLProfileMetric label="Route participation" value={role?.routeParticipation} /><NFLProfileMetric label="Target share / air yards" value={role?.targetShare ?? role?.airYardShare} /></div>
+      <div className="mt-3">{list(role?.roleEvidence)}</div><div className="mt-2">{list(role?.roleStabilityEvidence)}</div><div className="mt-2">{list(profile.role.missingFields)}</div>
+    </ResearchRow>
+    <ResearchRow title="Game Script" status={nflLayerStatus(profile.gameScript.status)}>
+      {script?.thesis && <p className="text-sm text-slate-300">{script.thesis}</p>}
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <NFLProfileMetric label="Candidate spread" value={gameEnvironment?.inputs.candidateSpread} />
+        <NFLProfileMetric label="Game total" value={gameEnvironment?.inputs.total ?? script?.total} />
+        <NFLProfileMetric label="Derived team / opponent total" value={gameEnvironment?.inputs.teamTotal == null ? null : `${gameEnvironment.inputs.teamTotal} / ${show(gameEnvironment.inputs.opponentTeamTotal)}`} />
+        <NFLProfileMetric label="Market-implied leader" value={gameEnvironment?.inputs.expectedLeader ?? script?.expectedLeader} />
+        <NFLProfileMetric label="Expected margin" value={gameEnvironment?.inputs.expectedMargin} />
+        <NFLProfileMetric label="Expected script" value={gameEnvironment?.expectedScript.replaceAll('_', ' ')} />
+        <NFLProfileMetric label="Projected team plays" value={gameEnvironment?.expectedTeamVolume.plays} showUnavailable />
+        <NFLProfileMetric label="Projected team pass / rush attempts" value={gameEnvironment?.expectedTeamVolume.passAttempts == null ? null : `${gameEnvironment.expectedTeamVolume.passAttempts} / ${show(gameEnvironment.expectedTeamVolume.rushAttempts)}`} showUnavailable />
+        <NFLProfileMetric label="Expected possessions" value={gameEnvironment?.expectedTeamVolume.possessions} showUnavailable />
+        <NFLProfileMetric label="Script confidence" value={gameEnvironment?.confidence ?? (script?.confidence === 'UNKNOWN' ? null : script?.confidence)} />
+        <NFLProfileMetric label="Player opportunity · base / script" value={gameEnvironment?.phase2Opportunity == null ? null : `${gameEnvironment.phase2Opportunity} / ${show(gameEnvironment.expectedPlayerOpportunity)}`} />
+        <NFLProfileMetric label="Volume adjustment" value={gameEnvironment ? gameEnvironment.volumeAdjustment : null} />
+      </div>
+      {gameEnvironment ? <div className="mt-3 space-y-3">
+        <p className="text-xs text-slate-500">{gameEnvironment.snapshotOnly ? 'Saved script snapshot' : 'Game environment'} · {gameEnvironment.evaluatedAt}</p>
+        <p className="text-sm text-slate-300">{gameEnvironment.passRushEnvironment}</p>
+        <p className="text-xs text-slate-400">{gameEnvironment.adjustmentReason}</p>
+        {list(gameEnvironment.evidence)}
+        <div><p className="mb-1 text-[10px] font-bold uppercase text-amber-200">Game-Flow Counter-Case</p>{list(gameEnvironment.counterCase)}</div>
+        {gameEnvironment.scenarios.length > 0 && <div className="space-y-2"><p className="text-[10px] font-bold uppercase text-slate-400">Deep Script Scenarios</p>{gameEnvironment.scenarios.map((scenario) => <div key={scenario.name} className="border-l border-white/15 pl-3"><p className="text-xs font-semibold text-slate-200">{scenario.name} · {scenario.scoreState}</p><p className="text-sm text-slate-300">{scenario.opportunityImpact}</p></div>)}<p className="text-xs text-slate-500">Conditional scenarios; probabilities and projection ranges are unavailable.</p></div>}
+        <div><p className="mb-1 text-[10px] font-bold uppercase text-slate-400">Missing Game-Script Inputs</p>{list(gameEnvironment.missingInputs)}</div>
+      </div> : <div className="mt-2">{list(script?.evidence)}{list(profile.gameScript.missingFields)}</div>}
+    </ResearchRow>
+    <ResearchRow title="Scheme Matchup" status={nflLayerStatus(profile.schemeMatchup.status)}>
+      {matchup && <div className="mb-3 space-y-2">
+        <p className="text-xs text-slate-500">{matchup.snapshotOnly ? 'Saved matchup snapshot' : 'Matchup analysis'} · {matchup.evaluatedAt}</p>
+        <div className="grid gap-2 sm:grid-cols-2"><NFLProfileMetric label="Overall" value={matchup.overall === 'UNASSESSED' ? 'Partial evidence · not graded' : matchup.overall} /><NFLProfileMetric label="Matchup confidence" value={matchup.confidence} /><NFLProfileMetric label="Defensive state" value={matchup.defensiveState} /><NFLProfileMetric label="Efficiency adjustment" value={`${(matchup.efficiencyAdjustment * 100).toFixed(2)}%`} /><NFLProfileMetric label="Phase 2 → final projection" value={matchup.phase2Projection == null ? null : `${matchup.phase2Projection.toFixed(2)} → ${matchup.finalProjection?.toFixed(2) ?? 'Unavailable'}`} /></div>
+        <p className="text-sm text-slate-300">{matchup.playerFit}</p>
+        <p className="text-xs text-slate-400">{matchup.adjustmentReason}</p>
+        <div><p className="mb-1 text-[10px] font-bold uppercase text-amber-200">Counter-Case</p>{list(matchup.counterCase)}</div>
+        <div><p className="mb-1 text-[10px] font-bold uppercase text-slate-400">Missing Matchup Evidence</p>{list(matchup.missingInputs)}</div>
+      </div>}
+      {scheme?.evidenceSummary && <p className="text-sm text-slate-300">{scheme.evidenceSummary}</p>}<div className="mt-2 grid gap-2 sm:grid-cols-2"><NFLProfileMetric label="Evidence strength" value={scheme?.strength} /><NFLProfileMetric label="Measured sack rate" value={scheme?.sackRate} /><NFLProfileMetric label="Coverage rates" value={Object.keys(scheme?.coverageRates ?? {}).length ? scheme?.coverageRates : null} /><NFLProfileMetric label="How player wins" value={scheme?.playerWinMechanism} /></div>{scheme?.aggregateMetrics.map((metric) => <p key={metric.key} className="mt-2 text-xs text-slate-300">{metric.label}: L3 {show(metric.l3.mean)} ({metric.l3.games}), L5 {show(metric.l5.mean)} ({metric.l5.games}), L10 {show(metric.l10.mean)} ({metric.l10.games}), season {show(metric.season.mean)} ({metric.season.games}) · {metric.trend}</p>)}{!scheme?.aggregateMetrics.length && <div className="mt-2">{list(profile.schemeMatchup.missingFields)}</div>}
+    </ResearchRow>
+    <ResearchRow title="Trench / Protection" status={nflLayerStatus(profile.trench.status)}>
+      {matchup && <div className="mb-2 grid gap-2 sm:grid-cols-2"><NFLProfileMetric label="Trench confidence" value={matchup.trenchEvidence.length ? 'LOW · PARTIAL' : 'UNAVAILABLE'} /><NFLProfileMetric label="Pressure / blitz rate" value={null} /></div>}
+      <p className="text-sm text-slate-300">{show(trench?.lineTrenchStatus)} · {show(trench?.lineTrenchImpact)}</p><div className="mt-2">{list(trench?.lineTrenchEvidence)}</div><div className="mt-2">{list(profile.trench.missingFields)}</div>
+    </ResearchRow>
+    <ResearchRow title="Injury Impact" status={nflLayerStatus(profile.injuryNetwork.status)}>
+      {injuries?.length ? <ul className="space-y-2">{injuries.map((item, index) => <li key={`${item.player}-${index}`} className="text-sm text-slate-300">{item.relationship}: {item.player} · {item.position ?? 'position unavailable'} · {item.status} · {item.opportunityImpact ?? 'impact not quantified'}</li>)}</ul> : <p className="text-sm text-slate-500">Unavailable</p>}
+      <div className="mt-2">{list(profile.injuryNetwork.missingFields)}</div>
+    </ResearchRow>
+    <ResearchRow title="Practice Trend" status={nflLayerStatus(profile.practice.status)}>
+      {practice?.evidence.length ? <><p className="text-sm text-slate-300">Practice trend: {practice.trend}</p><ul className="mt-2 space-y-1 text-sm text-slate-300">{practice.evidence.map((item) => <li key={`${item.player}-${item.practiceDate}`}>{item.practiceDate}: {item.player} · {item.participation} · {item.source.source}</li>)}</ul></> : <p className="text-sm text-slate-500">{profile.practice.missingFields.join('; ') || 'No dated practice reports available.'}</p>}
+    </ResearchRow>
+    <ResearchRow title="DeepSide Intelligence" status={nflLayerStatus(profile.intelligence.status)}>
+      {profile.intelligence.value?.length ? <ul className="space-y-2">{profile.intelligence.value.map((item, index) => <li key={`${item.source}-${index}`} className="text-sm text-slate-300"><strong>{item.actionability} ACTIONABILITY · {item.reliability} · {item.direction}</strong><p>{item.quoteOrSummary}</p><p className="text-xs text-slate-500">{item.source} · {item.sourceType} · {item.publishedAt ?? 'publication time unavailable'} · {item.affectedPlayer ?? item.affectedTeam ?? 'subject unavailable'}</p>{item.articleUrl && <a href={item.articleUrl} target="_blank" rel="noreferrer" className="text-xs text-emerald-300 underline">Open source</a>}</li>)}</ul> : <p className="text-sm text-slate-500">{profile.intelligence.status === 'AVAILABLE' ? 'No current tagged player/team stories in the seven-day feed.' : profile.intelligence.missingFields.join(', ') || 'Unavailable'}</p>}
+      {profile.newsImpactSignals.map((item, index) => <p key={`${item.signal}-${index}`} className="mt-2 text-xs text-slate-300">Impact hook: {item.signal} → {item.affectedPlayers.join(', ')} → {item.affectedMarkets.join(', ')} → {item.projectionImpact ?? 'projection impact pending'} · {item.reEvaluationRequired ? 're-evaluation required' : 'no re-evaluation requested'}</p>)}
+    </ResearchRow>
+    <ResearchRow title="Market" status={nflLayerStatus(profile.marketIntelligence.status)}>
+      <div className="grid gap-2 sm:grid-cols-2"><NFLProfileMetric label="Current pick" value={`${show(market?.direction?.toUpperCase())} ${show(market?.line)}`} /><NFLProfileMetric label="Best current price / book" value={`${show(market?.currentPrice)} / ${show(market?.sportsbook)}`} /><NFLProfileMetric label="DeepSide / implied probability" value={market?.trueProbability == null && market?.impliedProbability == null ? null : `${pct(market?.trueProbability)} / ${pct(market?.impliedProbability)}`} /><NFLProfileMetric label="Edge" value={market?.priceEdge == null ? null : pct(market.priceEdge)} /><NFLProfileMetric label="Observed previous → current line" value={movement?.previousLine == null ? null : `${movement.previousLine} → ${show(movement.currentLine)}`} /><NFLProfileMetric label="Previous → current price" value={movement?.previousPrice == null ? null : `${movement.previousPrice} → ${show(movement.currentPrice)}`} /><NFLProfileMetric label="Movement reason" value={movement?.movementReason === 'UNKNOWN' ? null : movement?.movementReason} /><NFLProfileMetric label="Value remains at current line" value={movement?.valueRemains == null ? null : movement.valueRemains ? 'Yes' : 'No'} /></div>
+      {profile.marketIntelligence.missingFields.length > 0 && <p className="mt-2 text-xs text-slate-500">{profile.marketIntelligence.missingFields.join('; ')}. Movement cause is not inferred.</p>}
+    </ResearchRow>
+    <ResearchRow title="Weather" status={nflLayerStatus(profile.weather.status)}>
+      {profile.weather.status === 'NOT_APPLICABLE' ? <p className="text-sm text-slate-400">Indoor venue; no material outdoor weather concern.</p> : <><div className="grid gap-2 sm:grid-cols-2"><NFLProfileMetric label="Venue / roof" value={weather?.venue && weather.roof ? `${weather.venue} / ${weather.roof}` : weather?.venue ?? weather?.roof} /><NFLProfileMetric label="Temperature" value={weather?.temperatureF == null ? null : `${weather.temperatureF}°F`} /><NFLProfileMetric label="Sustained wind / gust" value={weather?.sustainedWindMph == null && weather?.gustMph == null ? null : `${show(weather.sustainedWindMph)} / ${show(weather.gustMph)} mph`} /><NFLProfileMetric label="Precipitation" value={weather?.precipitationInches == null ? null : `${weather.precipitationInches} in`} /></div>{weather?.candidateImpacts.length ? <ul className="mt-2 space-y-1 text-sm text-slate-300">{weather.candidateImpacts.map((impact, index) => <li key={`${impact.market}-${index}`}>{impact.direction}: {impact.statement}</li>)}</ul> : <p className="mt-2 text-xs text-slate-500">{profile.weather.status === 'AVAILABLE' ? 'No material market-specific weather concern.' : profile.weather.missingFields.join('; ')}</p>}</>}
+    </ResearchRow>
+    <ResearchRow title="Evidence For / Counter-Case" status={profile.verdict === 'PLAY' ? 'STRONG' : 'CAUTION'}>
+      <div className="grid gap-4 md:grid-cols-2"><div><p className="mb-2 text-xs font-bold uppercase text-emerald-300">Evidence For</p>{list(profile.evidence.for.map((item) => item.statement))}</div><div><p className="mb-2 text-xs font-bold uppercase text-amber-300">Counter-Case</p>{list(profile.evidence.against.map((item) => item.statement))}</div></div>
+      <p className="mt-3 text-sm font-bold text-white">Verdict: {profile.verdict}</p>
+      <p className="mt-2 text-xs text-slate-400">Conflict status: {profile.evidence.conflictStatus} · {profile.evidence.resolutionReason ?? 'Resolution pending'}</p>
+      {profile.evidence.highestAuthorityEvidence && <p className="mt-1 text-xs text-slate-400">Highest authority: {profile.evidence.highestAuthorityEvidence}</p>}
+      {profile.evidence.conflicts.map((conflict, index) => <p key={`${conflict.topic}-${index}`} className="mt-1 text-xs text-slate-300">{conflict.status} · {conflict.topic} · {conflict.resolutionReason}</p>)}
+      <div className="mt-2 space-y-1">{gates.map(([key, gate]) => <p key={key} className={`text-xs ${gate.passed ? 'text-emerald-300' : 'text-amber-200'}`}>{gate.passed ? 'PASS' : 'BLOCK'} · {key}{gate.reason ? ` · ${gate.reason}` : ''}</p>)}</div>
+    </ResearchRow>
+  </div>;
+}
+
+function BarMetric({ label, value }: { label: string; value: number }) {
+  return <div>
+    <div className="mb-1 flex items-center justify-between text-xs"><span className="text-slate-500">{label}</span><span className="font-bold text-white">{value < 0 || !Number.isFinite(value) ? 'Unavailable' : `${value}%`}</span></div>
+    <div className="h-2 overflow-hidden rounded-full bg-white/8"><div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-300" style={{ width: `${value < 0 || !Number.isFinite(value) ? 0 : Math.min(100, Math.max(0, value))}%` }} /></div>
+  </div>;
 }
 
 function TabbedPlayResearch({
@@ -584,6 +836,7 @@ function TabbedPlayResearch({
   const roleContext = source?.roleContext as { requirement?: string; status?: string; confidence?: string; workloadTrend?: string; evidence?: string[]; unavailableEvidence?: string[] } | undefined;
   const opponentContext = source?.opponentContext as { status?: string; evidence?: string[]; unavailableMetrics?: string[] } | undefined;
   const injuryContext = source?.injuryContext as { player?: { availabilityDesignation?: string; sourceStatus?: string; status?: string | null; updatedAt?: string | null }; teammateAbsences?: Array<{ player: string; position?: string | null; availabilityDesignation?: string }>; opponentAbsences?: Array<{ player: string; position?: string | null; availabilityDesignation?: string }>; missingFields?: string[] } | undefined;
+  const participation = (source?.injuryContext as NFLInjuryContext | undefined)?.participation;
   const weatherContext = source?.weatherContext as { venue?: { name?: string } | null; environment?: string; conditions?: string | null; temperature?: { value?: number; unit?: string } | null; wind?: { speed?: number; unit?: string } | null; gusts?: { speed?: number; unit?: string } | null; precipitation?: { amount?: number; unit?: string } | null; sourceStatus?: string; missingFields?: string[] } | undefined;
   const signalPct = a?.signalsAvailable ? Math.round((a.signalAgreement / a.signalsAvailable) * 100) : null;
   const edge = a?.priceEdgePercent ?? selected.deepResearch?.priceEdgePercent ?? null;
@@ -607,21 +860,15 @@ function TabbedPlayResearch({
     { key: 'how' as const, label: 'How It Loses', status: sectionStatus(selected, 'how') },
   ];
 
-  const BarMetric = ({ label, value }: { label: string; value: number }) => (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-xs"><span className="text-slate-500">{label}</span><span className="font-bold text-white">{value < 0 || !Number.isFinite(value) ? 'Unavailable' : `${value}%`}</span></div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/8"><div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-300" style={{ width: `${value < 0 || !Number.isFinite(value) ? 0 : Math.min(100, Math.max(0, value))}%` }} /></div>
-    </div>
-  );
-
   const unavailable = <span className="text-slate-500">Unavailable</span>;
-  const risks = (d?.howItLoses?.length ? d.howItLoses : selected.riskNotes).slice(0, 4);
+  const riskDetails = d?.howItLoses?.length ? d.howItLoses : selected.riskNotes;
+  const risks = isNFL ? riskDetails : riskDetails.slice(0, 4);
 
   return (
     <div className="overflow-hidden rounded-[1.35rem] border border-emerald-400/20 bg-[#07110d] shadow-[0_18px_80px_rgba(0,0,0,0.35)]">
       {showSelector && <div className="border-b border-white/8 bg-black/20 px-4 py-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-300">{results.length} Elite Play{results.length === 1 ? '' : 's'}</p>
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-300">{results.length} recommendation{results.length === 1 ? '' : 's'}</p>
           <p className="text-xs text-slate-500">No reload · no new research</p>
         </div>
         <div className="scrollbar-hidden mt-3 flex gap-2 overflow-x-auto pb-1">
@@ -694,6 +941,15 @@ function TabbedPlayResearch({
             <div className="mt-2 rounded-2xl border border-white/8 bg-[#061019] p-4">
               {activeResearchTab === 'overview' && (
                 <div className="space-y-5">
+                  {source?.pickTier && <div className="rounded-xl border border-white/8 bg-white/[0.025] p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className={`text-xs font-black uppercase ${PICK_TIER_STYLES[source.pickTier].label}`}>{source.pickTier} · {source.tierScore ?? a?.researchScore ?? '—'}/100</p>
+                      <p className="text-xs text-slate-400">Tier is fixed; query intent changes ranking only.</p>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-300">{source.tierReason ?? 'Tier reason unavailable.'}</p>
+                    {source.pickTier === 'NUKE' && <div className="mt-3 grid gap-1 sm:grid-cols-2">{(source.tierRequirementsPassed ?? []).map((requirement) => <p key={requirement} className="text-xs text-amber-200">✓ {requirement}</p>)}</div>}
+                    {source.tierRequirementsFailed?.length ? <div className="mt-3 space-y-1">{source.tierRequirementsFailed.map((requirement) => <p key={requirement} className="text-xs text-slate-400">Not met: {requirement}</p>)}</div> : null}
+                  </div>}
                   <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Why is this interesting?</p>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div>
@@ -713,11 +969,13 @@ function TabbedPlayResearch({
                       <p className="mt-1 text-sm leading-6 text-slate-300">{risks[0] ?? 'Unavailable'}</p>
                     </div>
                   </div>
+                  {isNFL && source?.nflResearchProfile && <NFLResearchProfileDetails profile={source.nflResearchProfile} />}
                 </div>
               )}
 
               {activeResearchTab === 'research' && (
                 <div className="space-y-4">
+                  {isNFL && source?.nflResearchProfile && <NFLResearchProfileDetails profile={source.nflResearchProfile} />}
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                     <MetricTile label="Sportsbook Line" value={`${side} ${prop.line}`} />
                     <MetricTile label="DeepSide Projection" value={num(projectionValue, 2)} tone="good" />
@@ -742,6 +1000,7 @@ function TabbedPlayResearch({
 
               {activeResearchTab === 'matchup' && (
                 isNFL ? <div className="space-y-4">
+                  {participation && <NFLParticipationSummary verdict={participation} />}
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                     <MetricTile label="Player / Opponent" value={`${prop.player} vs ${prop.opponent || 'Unavailable'}`} />
                     <MetricTile label="Matchup Status" value={opponentContext?.status ?? 'Unavailable'} tone="muted" />
@@ -777,6 +1036,7 @@ function TabbedPlayResearch({
 
               {activeResearchTab === 'trends' && (
                 <div className="space-y-4">
+                  {isNFL && source?.nflHistory && <NFLHistorySummary history={source.nflHistory} />}
                   <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
                     <div className="space-y-3 rounded-2xl border border-white/8 bg-black/20 p-4"><BarMetric label="L5 hit rate" value={prop.hitRates.last5} /><BarMetric label="L10 hit rate" value={prop.hitRates.last10} /><BarMetric label="L20 hit rate" value={prop.hitRates.last20} /><BarMetric label="Season hit rate" value={prop.hitRates.season} /></div>
                     <div className="grid gap-2"><MetricTile label="Recent Trend" value={prop.hitRates.last5 > prop.hitRates.season + 10 ? 'Improving' : prop.hitRates.last5 < prop.hitRates.season - 10 ? 'Declining' : 'Stable'} /><MetricTile label="Long-Term Baseline" value={`${prop.hitRates.season}% season`} /><MetricTile label="Sample / Average" value={isNFL ? `${source?.sampleSize ?? 'Unavailable'} / ${num(source?.average, 2)}` : 'Unavailable'} /><MetricTile label="Median / Std Dev" value={isNFL ? `${num(source?.median, 2)} / ${num(source?.standardDeviation, 2)}` : 'Unavailable'} /><MetricTile label="Outlier Dependence" value={String(source?.outlierDependencePercent ?? 'Unavailable')} tone="muted" /></div>
@@ -850,7 +1110,10 @@ function AiFinderPageGate() {
 function AiFinderPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const [finderSport, setFinderSport] = useState(() => (searchParams.get('sport')?.toLowerCase() === 'nfl' ? 'NFL' : 'MLB'));
+  const [finderSport, setFinderSport] = useState(() => {
+    const sport = searchParams.get('sport')?.toLowerCase();
+    return sport === 'nfl' ? 'NFL' : sport === 'nba' ? 'NBA' : 'MLB';
+  });
   const [finderDate, setFinderDate] = useState(() => resolveSlateDate(searchParams.get('date')));
   const [mode, setMode] = useState<SearchMode>("quick");
   const [query, setQuery] = useState("");
@@ -858,8 +1121,19 @@ function AiFinderPageContent() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [criteria, setCriteria] = useState<AiSearchCriteria | null>(null);
   const [results, setResults] = useState<UiAiResult[]>([]);
+  const [gameResults, setGameResults] = useState<GameRecommendation[]>([]);
+  const [modeledGames, setModeledGames] = useState<ModeledGameResearch[]>([]);
+  const [nbaPresentation, setNbaPresentation] = useState<NBAClientPresentation | null>(null);
+  const [ledgerReceipt, setLedgerReceipt] = useState<string | null>(null);
+  const [ledgerCaptureIssue, setLedgerCaptureIssue] = useState<string | null>(null);
+  const acknowledgedReceipt = useRef<string | null>(null);
   const [closestMisses, setClosestMisses] = useState<UiAiResult[]>([]);
   const [selectedPlayIndex, setSelectedPlayIndex] = useState<number | null>(null);
+  const [selectionResultCount, setSelectionResultCount] = useState(results.length);
+  if (selectionResultCount !== results.length) {
+    setSelectionResultCount(results.length);
+    setSelectedPlayIndex(null);
+  }
   const [totalMatched, setTotalMatched] = useState(0);
   const [showCount, setShowCount] = useState(15);
   const [conversation, setConversation] = useState<Array<{ role: "user" | "ai"; text: string }>>([]);
@@ -871,6 +1145,17 @@ function AiFinderPageContent() {
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [restrictionMessage, setRestrictionMessage] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!ledgerReceipt || finderSport !== 'NFL' || !results.length || acknowledgedReceipt.current === ledgerReceipt) return;
+    const candidateIds = results.map((result) => result.sourceRecord?.candidateId).filter((id): id is string => typeof id === 'string');
+    if (!candidateIds.length) return;
+    acknowledgedReceipt.current = ledgerReceipt;
+    fetch('/api/nfl/ledger/capture', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ receipt: ledgerReceipt, candidateIds }) }).then((response) => {
+        if (!response.ok) setLedgerCaptureIssue('This displayed NFL recommendation could not be saved to the forward track record.');
+      }).catch(() => setLedgerCaptureIssue('This displayed NFL recommendation could not be saved to the forward track record.'));
+  }, [finderSport, ledgerReceipt, results]);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const comparePanelRef = useRef<HTMLDivElement>(null);
@@ -892,17 +1177,11 @@ function AiFinderPageContent() {
   const [sessionRestored, setSessionRestored] = useState(false);
   const sessionClearedRef = useRef(false);
   // Dev-only: how far page boot got, so a stuck/blank page can be diagnosed without a debugger.
-  const [bootCheckpoint, setBootCheckpoint] = useState('AI_BOOT_2_COMPONENT');
-
-  useEffect(() => {
-    setBootCheckpoint((prev) => (prev === 'AI_BOOT_2_COMPONENT' ? 'AI_BOOT_4_UI_READY' : prev));
-  }, []);
-
   // Keep ?sport=/?date= in the URL in sync with the Finder selectors.
   useEffect(() => {
     if (!sessionRestored) return;
     const params = new URLSearchParams(Array.from(searchParams.entries()));
-    const nextSport = finderSport === 'NFL' ? 'nfl' : 'mlb';
+    const nextSport = finderSport === 'NFL' ? 'nfl' : finderSport === 'NBA' ? 'nba' : 'mlb';
     if (params.get('sport') === nextSport && params.get('date') === finderDate) return;
     params.set('sport', nextSport);
     params.set('date', finderDate);
@@ -911,6 +1190,9 @@ function AiFinderPageContent() {
   }, [finderSport, finderDate, sessionRestored]);
 
   useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
     try {
       const raw = window.sessionStorage.getItem(AI_FINDER_SESSION_KEY);
       if (raw) {
@@ -925,7 +1207,7 @@ function AiFinderPageContent() {
         // Each field is restored independently: if one is malformed, the rest still apply and the
         // page still loads — a single bad field can never take down the whole restore.
         const restore = (fn: () => void) => { try { fn(); } catch { /* ignore this field, keep going */ } };
-        restore(() => { if (saved.sport === 'MLB' || saved.sport === 'NFL') setFinderSport(saved.sport); });
+        restore(() => { if (saved.sport === 'MLB' || saved.sport === 'NFL' || saved.sport === 'NBA') setFinderSport(saved.sport); });
         restore(() => { if (saved.date) setFinderDate(resolveSlateDate(saved.date)); });
         restore(() => { if (saved.mode) setMode(saved.mode); });
         restore(() => setQuery(saved.query ?? ''));
@@ -958,8 +1240,9 @@ function AiFinderPageContent() {
       window.sessionStorage.removeItem(AI_FINDER_SESSION_KEY);
     } finally {
       setSessionRestored(true);
-      setBootCheckpoint('AI_BOOT_5_SESSION_READY');
     }
+    });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -1001,10 +1284,6 @@ function AiFinderPageContent() {
   }, [agentMeta, conversation, criteria, deepSummary, deepSummarySport, finderAltFilter, finderBookFilter, finderDate, finderGameFilter, finderMarketFilter, finderPlayerFilter, finderSideFilter, finderSortBy, finderSport, finderStatus, finderTeamFilter, minBooks, minEv, minFinderScore, mode, query, researchSessionId, results, selectedIds, sessionRestored, showCount, toolTrace, totalMatched]);
 
   useEffect(() => {
-    setSelectedPlayIndex(null);
-  }, [results.length]);
-
-  useEffect(() => {
     if (!isSearching) return;
     const startedAt = Date.now();
     const id = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
@@ -1016,6 +1295,11 @@ function AiFinderPageContent() {
   // still decides qualification, and results render through the existing DeepSide cards.
   async function runSearch(q: string, appendUser = true) {
     if (!q.trim()) return;
+    setNbaPresentation(null);
+    setGameResults([]);
+    setModeledGames([]);
+    setLedgerReceipt(null);
+    setLedgerCaptureIssue(null);
     sessionClearedRef.current = false;
     const trimmed = q.trim();
     setIsSearching(true);
@@ -1040,6 +1324,7 @@ function AiFinderPageContent() {
         body: JSON.stringify({
           messages: history.map((entry) => ({ role: entry.role === "ai" ? "assistant" : "user", content: entry.text })),
           researchSessionId,
+          context: { sport: finderSport.toLowerCase(), date: finderDate },
         }),
       });
       payload = (await response.json()) as AgentChatResponse;
@@ -1064,25 +1349,46 @@ function AiFinderPageContent() {
     }
 
     setToolTrace(payload.toolTrace ?? []);
+    setLedgerReceipt(payload.ledgerReceipt ?? null);
+    const responseSport = String(payload.meta?.sport ?? finderSport).toLowerCase();
+    if (responseSport === 'nfl' && (payload.results?.length ?? 0) > 0 && !payload.ledgerReceipt) {
+      setLedgerCaptureIssue('This displayed NFL recommendation was not tracked because a signed ledger receipt is unavailable.');
+    }
     // Follow-up turns that only read stored memory (get_closest_misses etc.) return no meta —
     // keep showing the last real analysis instead of blanking the panel.
     if (payload.meta) setAgentMeta(payload.meta);
     if (payload.researchSessionId !== undefined) setResearchSessionId(payload.researchSessionId);
 
     const meta = payload.meta ?? {};
-    const sport = String(meta.sport ?? "mlb").toUpperCase() === "NFL" ? "NFL" : "MLB";
+    const sportLabel = String(meta.sport ?? finderSport).toUpperCase();
+    const sport = sportLabel === 'NFL' ? 'NFL' : sportLabel === 'NBA' ? 'NBA' : 'MLB';
     const requestDate = typeof meta.date === "string" ? meta.date : finderDate;
     if (requestDate !== finderDate) setFinderDate(requestDate);
     if (sport !== finderSport) setFinderSport(sport);
 
     setConversation((prev) => [...prev, { role: "ai", text: payload.reply }]);
+    if (sport === 'NBA' && payload.nbaPresentation?.schemaVersion === 'deepside-nba-pick-presentation/1') {
+      setNbaPresentation(payload.nbaPresentation);
+      setResults([]);
+      setGameResults([]);
+      setModeledGames([]);
+      setClosestMisses([]);
+      setTotalMatched(payload.nbaPresentation.recommendedCandidateIds?.length ?? 0);
+      setFinderStatus(payload.nbaPresentation.picks.length > 0 ? 'RESULTS' : 'NO_ELITE_RESULTS');
+      setIsSearching(false);
+      return;
+    }
+    const responseGames = (payload.results ?? []).filter((record): record is GameRecommendation => 'recommendationType' in record && record.recommendationType === 'GAME');
+    const responseProps = (payload.results ?? []).filter((record): record is AgentResultRecord => !('recommendationType' in record) || record.recommendationType !== 'GAME');
+    setGameResults(responseGames);
+    setModeledGames(payload.modeledGames ?? []);
 
     if ((payload.results ?? []).length > 0) {
-      const structuredResults = (payload.results ?? []).filter((record) => record.eliteQualified && record.odds != null && record.odds >= -900).slice(0, 15).map((record) => recordToUiResult(record, sport));
-      setTotalMatched(structuredResults.length);
+      const structuredResults = responseProps.filter((record) => (record.pickTier != null || record.eliteQualified) && record.odds != null && record.odds >= -900).slice(0, 15).map((record) => recordToUiResult(record, sport));
+      setTotalMatched(structuredResults.length + responseGames.length);
       setResults(structuredResults);
       setClosestMisses([]);
-      setFinderStatus(structuredResults.length > 0 ? 'RESULTS' : 'NO_ELITE_RESULTS');
+      setFinderStatus(structuredResults.length + responseGames.length > 0 ? 'RESULTS' : 'NO_ELITE_RESULTS');
       setIsSearching(false);
       return;
     }
@@ -1094,9 +1400,9 @@ function AiFinderPageContent() {
     const trace = payload.toolTrace ?? [];
     const lastLoad = [...trace].reverse().find((entry) => entry.name === 'get_sportsbook_candidates');
     const ranSearch = trace.some((entry) => SEARCH_TOOLS.has(entry.name));
-    const outcome = lastLoad && lastLoad.status !== 'SUCCESS'
+    const outcome = meta.researchComplete === false ? 'RESEARCH_INCOMPLETE' as const : meta.status === 'SLATE_COMPLETE' ? 'SLATE_COMPLETE' as const : meta.status === 'NOT_FOUND' ? 'CLARIFY' as const : lastLoad && lastLoad.status !== 'SUCCESS'
       ? classifyLoadFailure(lastLoad.status)
-      : ranSearch ? 'NO_ELITE_RESULTS' as const
+      : ranSearch || meta.researchComplete === true ? 'NO_ELITE_RESULTS' as const
         : payload.reply.trim().endsWith('?') && trace.length === 0 ? 'CLARIFY' as const : 'ANSWER' as const;
     if (outcome === 'DATA_UNAVAILABLE' || outcome === 'CONNECTION_ERROR') {
       console.warn('[DeepSide AI]', lastLoad?.status, lastLoad?.summary?.error ?? '');
@@ -1154,6 +1460,9 @@ function AiFinderPageContent() {
     setResearchSessionId(null);
     setAgentError(null);
     setResults([]);
+    setNbaPresentation(null);
+    setGameResults([]);
+    setModeledGames([]);
     setTotalMatched(0);
     setFinderStatus('IDLE');
     setShowCount(15);
@@ -1190,6 +1499,11 @@ function AiFinderPageContent() {
   ) : undefined;
 
   const visibleResults = results.slice(0, showCount);
+  const tierCounts = results.reduce<Partial<Record<PickTier, number>>>((counts, result) => {
+    const tier = result.sourceRecord?.pickTier ?? (result.sourceRecord?.eliteQualified ? 'ELITE' : 'PASS');
+    counts[tier] = (counts[tier] ?? 0) + 1;
+    return counts;
+  }, {});
 
   const lastUserQuery = [...conversation].reverse().find((entry) => entry.role === 'user')?.text ?? '';
   const latestAiReply = conversation[conversation.length - 1]?.role === 'ai' ? conversation[conversation.length - 1].text : '';
@@ -1198,6 +1512,7 @@ function AiFinderPageContent() {
   const coverage = typeof agentMeta?.gamesFound === 'number' && typeof agentMeta?.gamesScheduled === 'number' && agentMeta.gamesScheduled > 0
     ? { researched: agentMeta.gamesFound, expected: agentMeta.gamesScheduled }
     : null;
+  const nflLedger = finderSport === 'NFL' ? agentMeta?.nflLedger as NFLSlateLedger | undefined : undefined;
   const keyFindings = useMemo(() => {
     if (results.length === 0) return [];
     const findings = [`${results.length} play${results.length === 1 ? '' : 's'} passed DeepSide's qualification filter`];
@@ -1232,33 +1547,26 @@ function AiFinderPageContent() {
 
   const analysisChips = ([
     ['sport', 'Sport'], ['date', 'Slate'], ['gamesFound', 'Games'],
-    ['propsFound', 'Props'], ['booksFound', 'Books'], ['candidatesFound', 'Candidates'], ['eliteFound', 'Elite'],
+    ['propsFound', 'Props'], ['booksFound', 'Books'], ['candidatesFound', 'Candidates'], ['recommendedFound', 'Recommended'],
   ] as const)
     .filter(([key]) => agentMeta?.[key] !== undefined && agentMeta?.[key] !== null)
     .map(([key, label]) => ({ label, value: String(agentMeta?.[key]) }));
-
-  // Dev-only provider-spend diagnostic — never shown in production.
-  const oddsSpend = agentMeta?.oddsSpend as { creditsSpent: number; paidRequestsMade: number; cacheHits: number; staleCacheHits: number; cacheMisses: number } | null | undefined;
-  const oddsSpendLabel = process.env.NODE_ENV !== 'production' && oddsSpend
-    ? oddsSpend.paidRequestsMade > 0
-      ? `Odds API: PAID • ${oddsSpend.creditsSpent} credits (${oddsSpend.paidRequestsMade} requests)`
-      : `Odds API: CACHE • 0 credits (${oddsSpend.cacheHits} fresh, ${oddsSpend.staleCacheHits} stale, ${oddsSpend.cacheMisses} missing)`
-    : null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#060d18] text-white">
       <AppSidebar currentPath="/ai" footer={sidebarFooter} />
 
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* ── Top nav ── */}
         <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-white/5 bg-[#0b1522] px-3 py-2.5 sm:px-4">
-          <div className="flex min-w-0 flex-1 basis-32 items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm text-slate-600">
+          <div className="flex min-w-0 w-full items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm text-slate-600 sm:w-auto sm:flex-1 sm:basis-32">
             <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
             <span>DeepSide AI</span>
           </div>
-          <div className="scrollbar-hidden ml-auto flex min-w-0 max-w-full items-center gap-2 overflow-x-auto">
+          <div className="scrollbar-hidden ml-0 flex w-full min-w-0 items-center gap-2 overflow-x-auto sm:ml-auto sm:w-auto sm:max-w-full">
             <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
               <button onClick={() => setFinderSport('MLB')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'MLB' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>⚾ MLB</button>
+              <button onClick={() => setFinderSport('NBA')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'NBA' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>NBA</button>
               <button onClick={() => setFinderSport('NFL')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'NFL' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>NFL</button>
             </div>
             <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
@@ -1273,17 +1581,11 @@ function AiFinderPageContent() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto">
-          <div className={`flex gap-3 p-3 pb-10 sm:gap-5 sm:p-5 ${criteria ? "" : "min-h-full"}`}>
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <div className={`flex min-w-0 gap-3 p-3 pb-10 sm:gap-5 sm:p-5 ${criteria ? "" : "min-h-full"}`}>
 
             {/* ── Center column ── */}
             <div className="flex min-w-0 flex-1 flex-col gap-5">
-
-              {process.env.NODE_ENV !== "production" && (
-                <p className="text-center text-[10px] font-mono text-[#39f27f]/70">
-                  AI BUILD: {AI_BUILD_MARKER} • {bootCheckpoint}
-                </p>
-              )}
 
               {/* DeepSide AI hero */}
               {conversation.length === 0 && !isSearching && (
@@ -1384,18 +1686,27 @@ function AiFinderPageContent() {
                         <button onClick={startNewSearch} className="min-h-9 shrink-0 rounded-xl border border-white/10 px-3 text-xs font-semibold text-slate-300 hover:text-white">New Search</button>
                       </div>
                       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-                        {coverage && (
+                        {nflLedger ? <NFLSlateSummary ledger={nflLedger} /> : coverage && (
                           <span className="text-slate-300">
                             <span className="font-bold text-white">{coverage.researched} / {coverage.expected}</span> games researched
                             {coverage.researched < coverage.expected && <span className="text-amber-300"> · {coverage.expected - coverage.researched} unavailable</span>}
                           </span>
                         )}
-                        {finderStatus === 'RESULTS' && <span className="font-semibold text-emerald-300">{results.length} qualifying play{results.length === 1 ? '' : 's'}</span>}
+                        {finderStatus === 'RESULTS' && <span className={`font-semibold ${agentMeta?.includePasses === true ? 'text-rose-200' : 'text-emerald-300'}`}>
+                          {nbaPresentation?.recommendedCandidateIds?.length ?? results.length + gameResults.length} {agentMeta?.includePasses === true ? 'PASS candidate' : 'recommended play'}{(nbaPresentation?.recommendedCandidateIds?.length ?? results.length + gameResults.length) === 1 ? '' : 's'}
+                        </span>}
                       </div>
+                      {finderSport === 'NBA' && typeof agentMeta?.unsupportedMarketNotice === 'string'
+                        && <p role="status" className="mt-3 border-l-2 border-amber-300 px-3 py-2 text-xs leading-relaxed text-amber-100">{agentMeta.unsupportedMarketNotice}</p>}
+                      {finderStatus === 'RESULTS' && <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Recommendation counts by tier">
+                        {(['NUKE', 'ELITE', 'SHARP', 'EDGE', 'LEAN', ...(agentMeta?.includePasses === true ? ['PASS' as const] : [])] as const).filter((tier) => (tierCounts[tier] ?? 0) > 0).map((tier) => (
+                          <span key={tier} className={`rounded-full border px-2 py-1 text-[10px] font-bold ${PICK_TIER_STYLES[tier].badge}`}>{tier} {tierCounts[tier]}</span>
+                        ))}
+                      </div>}
                       {finderStatus === 'NO_ELITE_RESULTS' && (
                         <div className="mt-4 border-t border-white/6 pt-4">
-                          <p className="text-sm font-black uppercase tracking-[0.14em] text-white">No qualifying plays</p>
-                          <p className="mt-1 text-sm text-slate-400">No plays met DeepSide&apos;s current quality requirements.</p>
+                          <p className="text-sm font-black uppercase tracking-[0.14em] text-white">No recommendable plays</p>
+                          <p className="mt-1 text-sm text-slate-400">DeepSide found no plays that passed publication gates and the requested quality floor.</p>
                           <button onClick={adjustSearch} className="mt-3 min-h-10 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 text-sm font-semibold text-emerald-300">Adjust Search</button>
                         </div>
                       )}
@@ -1424,6 +1735,18 @@ function AiFinderPageContent() {
                       <p className="mt-1 text-sm text-slate-400">Try another date or check again when markets are available.</p>
                       <button onClick={adjustSearch} className="mt-4 min-h-10 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 text-sm font-semibold text-amber-200">Try Another Date</button>
                     </div>
+                  )}
+
+                  {finderStatus === 'RESEARCH_INCOMPLETE' && (
+                    <section className="space-y-3 border-t border-amber-400/25 py-4">
+                      <p className="text-sm font-bold text-amber-200">Research Incomplete</p>
+                      <p className="text-base font-bold text-white">{slateLabel}</p>
+                      <p className="text-sm text-slate-300">{nflLedger && nflLedger.eligiblePregame > 0 && nflLedger.retrievedGames === nflLedger.eligiblePregame && nflLedger.zeroMarketGames === nflLedger.eligiblePregame && nflLedger.failedGames === 0 && nflLedger.notFetchedGames === 0
+                        ? 'Sportsbook player-prop markets have not been posted for this slate yet.'
+                        : 'Required sportsbook market data is currently unavailable.'}</p>
+                      <p className="text-sm text-slate-400">DeepSide will not issue Elite Picks until the required markets and research evidence are available.</p>
+                      {nflLedger && <NFLSlateSummary ledger={nflLedger} />}
+                    </section>
                   )}
 
                   {finderStatus === 'TEMP_UNAVAILABLE' && (
@@ -1468,18 +1791,26 @@ function AiFinderPageContent() {
                   )}
 
                   {/* Result cards */}
-                  {results.length > 0 && (
+                  {finderSport === 'NBA' && nbaPresentation && <NBAPresentationCards presentation={nbaPresentation} />}
+                  {modeledGames.length > 0 && <section className="space-y-3 border-t border-white/10 pt-4">
+                    <h2 className="text-xs font-bold uppercase text-slate-400">Team research · Not a recommendation</h2>
+                    <div className="grid grid-cols-1 gap-x-6 xl:grid-cols-2">{modeledGames.filter(record => !gameResults.some(game => game.gameId === record.gameId)).map(record => <NBAModeledGameResearch key={record.gameId} record={record} />)}</div>
+                  </section>}
+                  {results.length + gameResults.length > 0 && (
                     <>
-                      <h2 className="pt-1 text-xs font-black uppercase tracking-[0.2em] text-slate-400">Best Plays</h2>
+                      {finderSport === 'NFL' && ledgerCaptureIssue && <p role="status" className="border-l-2 border-amber-300 px-3 py-2 text-xs text-amber-100">{ledgerCaptureIssue}</p>}
+                      <h2 className="pt-1 text-xs font-black uppercase tracking-[0.2em] text-slate-400">{agentMeta?.includePasses === true ? 'Rejected Candidates' : 'Recommendations'}</h2>
                       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-                        {visibleResults.map((result, index) => (
+                        {[...visibleResults.map((result, index) => ({ rank: result.sourceRecord?.rank ?? index + 1, prop: result, index })),
+                          ...gameResults.map(game => ({ rank: game.rank, game }))].sort((first, second) => first.rank - second.rank).map(entry => 'game' in entry
+                          ? <NBAGameRecommendationCard key={entry.game.candidateId} record={entry.game} /> : (
                           <StructuredPickCard
-                            key={result.prop.id}
-                            result={result}
-                            index={index}
-                            expanded={selectedPlayIndex === index}
-                            selectedForCompare={selectedIds.has(result.prop.id)}
-                            onToggle={() => setSelectedPlayIndex((selected) => selected === index ? null : index)}
+                            key={entry.prop.prop.id}
+                            result={entry.prop}
+                            index={entry.rank - 1}
+                            expanded={selectedPlayIndex === entry.index}
+                            selectedForCompare={selectedIds.has(entry.prop.prop.id)}
+                            onToggle={() => setSelectedPlayIndex((selected) => selected === entry.index ? null : entry.index)}
                             onCompare={toggleSelect}
                           />
                         ))}
@@ -1586,7 +1917,7 @@ function AiFinderPageContent() {
                 <div className="rounded-2xl border border-teal-500/15 bg-teal-500/5 p-4">
                   <div className="mb-2 flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-white">Last Analysis</h3>
-                    <button onClick={() => { setResults([]); setToolTrace([]); }} className="text-[10px] text-slate-500 hover:text-white">Clear</button>
+                    <button onClick={() => { setResults([]); setNbaPresentation(null); setToolTrace([]); }} className="text-[10px] text-slate-500 hover:text-white">Clear</button>
                   </div>
                   <div className="space-y-1">
                     {analysisChips.map(({ label, value }) => (
@@ -1596,9 +1927,6 @@ function AiFinderPageContent() {
                       </div>
                     ))}
                   </div>
-                  {oddsSpendLabel && (
-                    <p className={`mt-2 border-t border-white/5 pt-2 text-[9px] font-mono ${oddsSpend?.paidRequestsMade ? 'text-amber-400' : 'text-slate-500'}`}>{oddsSpendLabel}</p>
-                  )}
                 </div>
               )}
             </aside>

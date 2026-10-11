@@ -36,27 +36,67 @@ export class OddsRefreshNotAuthorizedError extends Error {
 
 export { OddsBudgetGuardError } from './budget';
 
-/**
- * Paid Odds API refreshes are OFF by default outside production. A cache TTL expiring is not, by
- * itself, authorization to spend credits — development, tests, page reloads, and OpenAI follow-ups
- * must all be able to run against whatever is cached (fresh or stale) without ever spending money.
- * Set ODDS_ALLOW_PAID_REFRESH=true to explicitly opt in during local development.
- */
 export function isPaidRefreshAllowed(): boolean {
-  if (oneRunPaidRefreshAuthorization.getStore() != null) return true;
-  if (process.env.ODDS_ALLOW_PAID_REFRESH === 'true') return true;
-  if (process.env.ODDS_ALLOW_PAID_REFRESH === 'false') return false;
-  return process.env.NODE_ENV === 'production';
+  return oneRunPaidRefreshAuthorization.getStore() != null || process.env.ODDS_ALLOW_PAID_REFRESH === 'true';
 }
 
-const oneRunPaidRefreshAuthorization = new AsyncLocalStorage<{ forceFresh: boolean }>();
+interface PaidRequestAuthorization {
+  active: boolean;
+  forceFresh: boolean;
+  maxRequests: number;
+  maxCredits: number;
+  requestsReserved: number;
+  creditsReserved: number;
+  allowedRequestKeys?: readonly string[];
+}
+const oneRunPaidRefreshAuthorization = new AsyncLocalStorage<PaidRequestAuthorization>();
 
 /**
- * Authorizes paid Odds refreshes for the awaited operation only. Fresh cache is still served unless
- * `forceFresh` is set (an explicit user "refresh / check again" request).
+ * Scopes a cache-bypassing refresh to one awaited operation. Normal refreshes remain automatic and
+ * cache-first; `forceFresh` is reserved for an explicit user request to disregard fresh cache.
  */
-export function withOneRunPaidRefresh<T>(operation: () => Promise<T>, options: { forceFresh?: boolean } = {}): Promise<T> {
-  return oneRunPaidRefreshAuthorization.run({ forceFresh: options.forceFresh === true }, operation);
+export function withOneRunPaidRefresh<T>(operation: () => Promise<T>, options: {
+  forceFresh?: boolean; maxRequests?: number; maxCredits?: number; allowedRequestKeys?: readonly string[];
+} = {}): Promise<T> {
+  const existing = oneRunPaidRefreshAuthorization.getStore();
+  if (existing) {
+    if (!existing.active) throw new OddsRefreshNotAuthorizedError('Paid authorization scope has closed.');
+    return operation();
+  }
+  const maxRequests = options.maxRequests ?? 1;
+  const maxCredits = options.maxCredits ?? 7;
+  if (!Number.isInteger(maxRequests) || maxRequests < 1 || !Number.isInteger(maxCredits) || maxCredits < 1) {
+    throw new OddsRefreshNotAuthorizedError('Explicit positive paid request and credit limits required.');
+  }
+  const approval: PaidRequestAuthorization = { active: true, forceFresh: options.forceFresh === true, maxRequests, maxCredits,
+    requestsReserved: 0, creditsReserved: 0, allowedRequestKeys: options.allowedRequestKeys };
+  return oneRunPaidRefreshAuthorization.run(approval, async () => {
+    try { return await operation(); } finally { approval.active = false; }
+  });
+}
+
+function estimatedPaidCredits(path: string, params: Record<string, string>): number {
+  if (/^\/sports\/[^/]+\/events\/[^/]+\/markets$/.test(path)) return 1;
+  if (!/^\/sports\/[^/]+\/(?:events\/[^/]+\/)?odds$/.test(path)) {
+    throw new OddsRefreshNotAuthorizedError('This paid endpoint has no approved bounded cost estimator.');
+  }
+  const markets = [...new Set((params.markets ?? 'h2h').split(',').filter(Boolean))];
+  const regions = params.bookmakers ? Math.ceil(new Set(params.bookmakers.split(',').filter(Boolean)).size / 10)
+    : new Set((params.regions ?? '').split(',').filter(Boolean)).size;
+  if (!markets.length || !regions) throw new OddsRefreshNotAuthorizedError('Explicit markets and regions required for paid cost estimate.');
+  return markets.length * regions;
+}
+
+function reservePaidRequest(path: string, params: Record<string, string>, key: string) {
+  const approval = oneRunPaidRefreshAuthorization.getStore();
+  if (!approval?.active || !isPaidRefreshAllowed()) throw new OddsRefreshNotAuthorizedError('Paid refresh disabled: an active explicit bounded request scope is required.');
+  const credits = estimatedPaidCredits(path, params);
+  if (approval.allowedRequestKeys && !approval.allowedRequestKeys.includes(key)) throw new OddsRefreshNotAuthorizedError('Paid request is outside the explicitly approved scope.');
+  if (approval.requestsReserved >= approval.maxRequests || approval.creditsReserved + credits > approval.maxCredits) {
+    throw new OddsRefreshNotAuthorizedError('Paid request or credit ceiling reached. No provider request made.');
+  }
+  approval.requestsReserved += 1;
+  approval.creditsReserved += credits;
 }
 
 function getApiKey() {
@@ -175,26 +215,9 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
 
   if (!isFreePath(path)) {
     const staleHit = await readStalePersistentCache<T>(cacheKey);
-
-    if (!isPaidRefreshAllowed()) {
-      // Development-safe default: a merely-expired TTL is never enough to authorize spending credits.
-      if (staleHit) {
-        const ageMs = Date.now() - staleHit.cachedAt;
-        const status = await readCreditStatus();
-        lastCreditInfo = { lastCost: '0', used: status?.used ?? null, remaining: status?.remaining ?? null, path, cached: true, source: 'stale-disk', cacheState: 'CACHE_STALE', cacheAgeMs: ageMs };
-        recordSpend(lastCreditInfo);
-        console.warn(`[odds] paid refresh not authorized (set ODDS_ALLOW_PAID_REFRESH=true to allow); serving STALE cache for ${path} (age=${Math.round(ageMs / 60000)}m)`);
-        return staleHit.data;
-      }
-      const status = await readCreditStatus();
-      lastCreditInfo = { lastCost: '0', used: status?.used ?? null, remaining: status?.remaining ?? null, path, cached: false, source: 'blocked', cacheState: 'CACHE_MISSING', cacheAgeMs: null };
-      recordSpend(lastCreditInfo);
-      throw new OddsRefreshNotAuthorizedError(
-        `No cached data for ${path} and paid Odds API refreshes are not authorized in this environment (set ODDS_ALLOW_PAID_REFRESH=true to allow).`,
-      );
+    if (!oneRunPaidRefreshAuthorization.getStore()) {
+      throw new OddsRefreshNotAuthorizedError('Paid refresh disabled: normal searches may use fresh cache only.');
     }
-
-    // Paid refreshes are authorized here (production, or explicit dev opt-in) — the credit reserve is a second, independent layer of protection.
     const budget = await getOddsBudgetStatus();
     if (budget.belowReserve) {
       // A paid refresh is not affordable. Prefer already-purchased (expired) data over
@@ -215,8 +238,11 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
     }
   }
 
+  const concurrent = inFlight.get(cacheKey);
+  if (concurrent) return concurrent as Promise<T>;
+  if (!isFreePath(path)) reservePaidRequest(path, params, cacheKey);
   const promise = (async () => {
-    const response = await fetch(url.toString(), { headers: { accept: 'application/json' } });
+    const response = await fetch(url.toString(), { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
     const remaining = response.headers.get('x-requests-remaining');
     const used = response.headers.get('x-requests-used');
     const last = response.headers.get('x-requests-last');
@@ -226,8 +252,6 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
     await writeCreditStatus({ lastCost: last, used, remaining, path, updatedAt: Date.now() });
 
     if (!response.ok) {
-      const body = await response.text();
-      console.error(`[odds] request failed (${response.status}): ${body.slice(0, 200)}`);
       throw new OddsApiUnavailableError(`Odds API request failed (${response.status})`);
     }
 
@@ -264,6 +288,26 @@ export async function getOddsEventsForSport(sport: string): Promise<OddsEvent[]>
     {},
   );
   return data.map((event) => ({ id: event.id, commenceTime: event.commence_time, homeTeam: event.home_team, awayTeam: event.away_team }));
+}
+
+export const APPROVED_NBA_ACTIVATION_MARKETS = 'player_points,player_rebounds,player_assists,h2h,spreads,totals,team_totals';
+
+export function nbaActivationQuoteCacheKey(eventId: string): string {
+  if (!/^[a-f0-9]{32}$/.test(eventId)) throw new OddsRefreshNotAuthorizedError('A verified upcoming NBA provider event ID is required.');
+  const url = new URL(`${BASE_URL}/sports/basketball_nba/events/${eventId}/odds`);
+  url.searchParams.set('regions', 'us');
+  url.searchParams.set('markets', APPROVED_NBA_ACTIVATION_MARKETS);
+  url.searchParams.set('oddsFormat', 'american');
+  return url.toString();
+}
+
+export async function getAuthorizedNBAActivationOdds(event: OddsEvent): Promise<unknown> {
+  const key = nbaActivationQuoteCacheKey(event.id);
+  if (!event.homeTeam || !event.awayTeam || event.homeTeam === event.awayTeam || Date.parse(event.commenceTime) <= Date.now()
+    || !Number.isFinite(Date.parse(event.commenceTime))) throw new OddsRefreshNotAuthorizedError('Exact upcoming event identity required.');
+  return withOneRunPaidRefresh(() => oddsFetch<unknown>(`/sports/basketball_nba/events/${event.id}/odds`, {
+    regions: 'us', markets: APPROVED_NBA_ACTIVATION_MARKETS, oddsFormat: 'american',
+  }), { forceFresh: true, maxRequests: 1, maxCredits: 7, allowedRequestKeys: [key] });
 }
 
 interface RawOutcome {

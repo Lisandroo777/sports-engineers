@@ -57,7 +57,15 @@ describe('NFL prop-specific opponent context', () => {
       ],
       players: [{ team: { id: '27' }, statistics: [{ name: 'passing', labels: ['C/ATT', 'YDS', 'SACKS'], athletes: [{ stats: ['17/32', '167', '1-8'] }] }] }],
     } }, 1, 'event', '2025-09-07', 2025);
-    expect(parsed?.metrics).toEqual({ passingYardsAllowed: 167, completionsAllowed: 17, passAttemptsAllowed: 32, sacksGenerated: 1, rushingYardsAllowed: 101, rushingAttemptsAllowed: 23, yardsPerRushAttemptAllowed: 4.391 });
+    expect(parsed?.metrics).toMatchObject({ passingYardsAllowed: 167, completionsAllowed: 17, passAttemptsAllowed: 32, sacksGenerated: 1, rushingYardsAllowed: 101, rushingAttemptsAllowed: 23,
+      yardsPerPassAttemptAllowed: 167 / 32, completionRateAllowed: 17 / 32, sackRate: 1 / 33 });
+    expect(parsed?.metrics.yardsPerRushAttemptAllowed).toBeCloseTo(101 / 23);
+  });
+
+  it('does not fabricate sacks or attempts when only passing yards are recorded', () => {
+    const parsed = parseNFLDefenseGame({ boxscore: { teams: [{ team: { id: '1' } }, { team: { id: '2' } }],
+      players: [{ team: { id: '2' }, statistics: [{ name: 'passing', labels: ['YDS'], athletes: [{ stats: ['200'] }] }] }] } }, 1, 'event', '2026-09-01', 2026);
+    expect(parsed?.metrics).toEqual({ passingYardsAllowed: 200 });
   });
 
   it('fails closed when the requested defense is absent from the boxscore', () => {

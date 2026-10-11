@@ -1,6 +1,7 @@
 import type * as Fs from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
+import { deflateSync, inflateSync } from 'node:zlib';
 import type { ResearchSession } from './session';
 import { allowLocalPersistenceFallback, hasDurableKV, kvDel, kvGetJson, kvSetJson } from '../../storage/kv';
 
@@ -23,7 +24,24 @@ interface StoredSession {
   id: string;
   savedAt: number;
   expiresAt: number;
-  session: ResearchSession;
+  session?: ResearchSession;
+  sessionEncoding?: 'deflate-base64-v1';
+  compressedSession?: string;
+}
+
+function compressedKVSession(session: ResearchSession): Pick<StoredSession, 'sessionEncoding' | 'compressedSession'> {
+  return { sessionEncoding: 'deflate-base64-v1', compressedSession: deflateSync(Buffer.from(JSON.stringify(session))).toString('base64') };
+}
+
+function sessionFromStored(stored: StoredSession): ResearchSession | null {
+  if (isWellFormed(stored.session)) return stored.session;
+  if (stored.sessionEncoding !== 'deflate-base64-v1' || typeof stored.compressedSession !== 'string') return null;
+  try {
+    const session = JSON.parse(inflateSync(Buffer.from(stored.compressedSession, 'base64')).toString('utf8')) as unknown;
+    return isWellFormed(session) ? session : null;
+  } catch {
+    return null;
+  }
 }
 
 function filePathFor(id: string) {
@@ -69,16 +87,17 @@ async function sweep() {
 
 export async function saveResearchSession(session: ResearchSession): Promise<string> {
   const id = randomUUID();
-  const stored: StoredSession = { id, savedAt: Date.now(), expiresAt: Date.now() + TTL_MS, session };
+  const savedAt = Date.now();
+  const expiresAt = savedAt + TTL_MS;
   if (hasDurableKV()) {
-    await kvSetJson(`${SESSION_KEY_PREFIX}${id}`, stored, TTL_MS);
+    await kvSetJson(`${SESSION_KEY_PREFIX}${id}`, { id, savedAt, expiresAt, ...compressedKVSession(session) }, TTL_MS);
     return id;
   }
   if (!allowLocalPersistenceFallback()) return id;
   try {
     const { existsSync, mkdirSync, writeFileSync } = await fsApi();
     if (!existsSync(STORE_DIR)) mkdirSync(STORE_DIR, { recursive: true });
-    writeFileSync(filePathFor(id), JSON.stringify(stored), 'utf-8');
+    writeFileSync(filePathFor(id), JSON.stringify({ id, savedAt, expiresAt, session }), 'utf-8');
   } catch {
     // best-effort; if the disk write fails the session simply won't survive a restart
   }
@@ -98,8 +117,8 @@ export async function getResearchSession(id: string | null | undefined): Promise
   if (!id) return null;
   if (hasDurableKV()) {
     const stored = await kvGetJson<StoredSession>(`${SESSION_KEY_PREFIX}${id}`);
-    if (!stored || stored.expiresAt <= Date.now() || !isWellFormed(stored.session)) return null;
-    return stored.session;
+    if (!stored || stored.expiresAt <= Date.now()) return null;
+    return sessionFromStored(stored);
   }
   if (!allowLocalPersistenceFallback()) return null;
   const file = filePathFor(id);
@@ -107,11 +126,12 @@ export async function getResearchSession(id: string | null | undefined): Promise
     const { existsSync, readFileSync, unlinkSync } = await fsApi();
     if (!existsSync(file)) return null;
     const stored = JSON.parse(readFileSync(file, 'utf-8')) as StoredSession;
-    if (stored.expiresAt <= Date.now() || !isWellFormed(stored.session)) {
+    const session = sessionFromStored(stored);
+    if (stored.expiresAt <= Date.now() || !session) {
       unlinkSync(file);
       return null;
     }
-    return stored.session;
+    return session;
   } catch {
     // Corrupt/unparseable file — self-heal by removing it so it doesn't keep failing on every read.
     try { const { unlinkSync } = await fsApi(); unlinkSync(file); } catch { /* ignore */ }

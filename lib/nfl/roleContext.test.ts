@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { NFL_ROLE_REQUIREMENTS, computeNFLOpportunityTrend, buildNFLRoleContext, buildNFLPlayerWorkloadProfile } from './roleContext';
+import { NFL_ROLE_REQUIREMENTS, assessNFLRoleStability, computeNFLOpportunityTrend, buildNFLRoleContext, buildNFLPlayerWorkloadProfile } from './roleContext';
 import { projectNFLMarket } from './projection';
 import type { NFLGameLogEntry } from './types';
 
 function log(stats: Record<string, number>, index: number): NFLGameLogEntry {
-  return { gameId: `g${index}`, week: index, date: `2024-0${(index % 9) + 1}-01`, opponent: 'OPP', opponentAbbreviation: 'OPP', homeAway: 'home', result: 'W', stats };
+  return { gameId: `g${index}`, week: index, date: new Date(Date.UTC(2024, 8, index + 1)).toISOString(), opponent: 'OPP', opponentAbbreviation: 'OPP', homeAway: 'home', result: 'W', stats };
 }
 
 describe('NFL market-by-market role requirement classification', () => {
@@ -53,6 +53,36 @@ describe('NFL workload trend detection', () => {
     const logs = [log({ rushingAttempts: 10 }, 0)];
     const trend = computeNFLOpportunityTrend(logs, 'player_rush_attempts');
     expect(trend.trend).toBe('INSUFFICIENT_OPPORTUNITY_DATA');
+  });
+});
+
+describe('NFL current-season role stability', () => {
+  it('labels a stable usage pattern only after an adequate current-season sample', () => {
+    const logs = Array.from({ length: 8 }, (_, index) => log({ receivingTargets: 8 + (index % 2) }, index));
+    expect(assessNFLRoleStability(logs, 'player_reception_yds').status).toBe('STABLE');
+  });
+
+  it('recognizes a consistent recent increase and decline', () => {
+    const increasing = [...Array.from({ length: 6 }, (_, index) => log({ rushingAttempts: 10 }, index)),
+      ...Array.from({ length: 3 }, (_, index) => log({ rushingAttempts: 16 }, index + 6))];
+    const declining = [...Array.from({ length: 6 }, (_, index) => log({ rushingAttempts: 16 }, index)),
+      ...Array.from({ length: 3 }, (_, index) => log({ rushingAttempts: 10 }, index + 6))];
+    expect(assessNFLRoleStability(increasing, 'player_rush_attempts').status).toBe('INCREASING');
+    expect(assessNFLRoleStability(declining, 'player_rush_attempts').status).toBe('DECLINING');
+  });
+
+  it('does not treat a one-game spike as a role shift and flags a changed team', () => {
+    const oneSpike = [...Array.from({ length: 6 }, (_, index) => log({ receivingTargets: 8 }, index)),
+      log({ receivingTargets: 20 }, 6), log({ receivingTargets: 8 }, 7), log({ receivingTargets: 8 }, 8)];
+    expect(assessNFLRoleStability(oneSpike, 'player_reception_yds').status).toBe('UNCERTAIN');
+    const changed = oneSpike.map((entry, index) => ({ ...entry, teamId: index >= 7 ? 99 : 1 }));
+    expect(assessNFLRoleStability(changed, 'player_reception_yds').status).toBe('CHANGED');
+  });
+
+  it('keeps prior-season supplementation out of current-season stability comparisons', () => {
+    const current = Array.from({ length: 3 }, (_, index) => log({ receivingTargets: 10 }, index));
+    const prior = Array.from({ length: 8 }, (_, index) => ({ ...log({ receivingTargets: 2 }, index + 3), historySource: 'PREVIOUS_SEASON' as const }));
+    expect(assessNFLRoleStability([...prior, ...current], 'player_reception_yds')).toMatchObject({ status: 'UNCERTAIN', games: 3 });
   });
 });
 

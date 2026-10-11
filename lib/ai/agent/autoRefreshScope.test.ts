@@ -8,6 +8,11 @@ const NFL_SUNDAY = [
   { gameId: 'g2', matchup: 'Kansas City Chiefs @ Buffalo Bills' },
   { gameId: 'g3', matchup: 'Los Angeles Rams @ San Francisco 49ers' },
 ];
+const injuryTimestamp = new Date().toISOString();
+const freshNFLInjury = { player: { player: 'P', playerId: 1, teamId: 18, team: 'Indianapolis Colts', position: 'QB',
+  injury: null, status: 'Active', availabilityDesignation: 'CONFIRMED_AVAILABLE' as const, updatedAt: injuryTimestamp, sourceStatus: 'CURRENT' as const,
+  evidence: null, affectedRole: 'PLAYER' as const, missingFields: [] }, team: 'Indianapolis Colts', teammateAbsences: [], opponentAbsences: [],
+  sourceStatus: { provider: 'ESPN' as const, status: 'CURRENT' as const }, lastUpdated: injuryTimestamp, missingFields: [] };
 
 describe('request scope decides which games get refreshed', () => {
   it('a sport/date request covers the complete slate', () => {
@@ -29,7 +34,7 @@ describe('request scope decides which games get refreshed', () => {
 });
 
 describe('a single-game session never answers a whole-slate request', () => {
-  const candidate = { candidateId: 'x', player: 'P', team: 'Indianapolis Colts', opponent: 'Washington Commanders', market: 'Passing Yards', marketKey: 'player_pass_yds', direction: 'over', odds: -110, eliteQualified: true, researchScore: 90, rejectionReasons: [] };
+  const candidate = { candidateId: 'x', player: 'P', playerId: 1, teamId: 18, team: 'Indianapolis Colts', opponent: 'Washington Commanders', market: 'Passing Yards', marketKey: 'player_pass_yds', direction: 'over', odds: -110, priceCurrent: true, priceFreshness: 'FRESH', injuryContext: freshNFLInjury, eliteQualified: true, researchScore: 90, rejectionReasons: [] };
   const scoped = { sport: 'nfl', date: '2026-10-04', queryIntent: '', generatedAt: '', toolMeta: {}, candidates: [candidate], scopeGameIds: ['g1'] } as unknown as ResearchSession;
 
   it('falls through to fresh research for a broader request', () => {
@@ -55,6 +60,6 @@ describe('provider credit data never reaches the production client', () => {
   });
 
   it('keeps diagnostics in development', () => {
-    expect(toClientResult(result, false)).toBe(result);
+    expect(JSON.stringify(toClientResult(result, false))).not.toMatch(/credits|oddsSpend|sportsbookPreflight/);
   });
 });

@@ -7,6 +7,7 @@
  */
 const SITE_BASE_URL = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl';
 const WEB_BASE_URL = 'https://site.web.api.espn.com/apis';
+import { memoNFLResearchInput } from './researchSnapshot';
 
 export class NFLDataUnavailableError extends Error {
   constructor(message = 'NFL data is currently unavailable.') {
@@ -20,7 +21,8 @@ async function fetchJson<T>(url: string, revalidate: number): Promise<T> {
   try {
     response = await fetch(url, {
       headers: { accept: 'application/json' },
-      next: { revalidate },
+      ...(revalidate === 0 ? { cache: 'no-store' as const } : { next: { revalidate } }),
+      signal: AbortSignal.timeout(15000),
     });
   } catch {
     throw new NFLDataUnavailableError('Unable to reach the NFL data provider.');
@@ -38,12 +40,12 @@ async function fetchJson<T>(url: string, revalidate: number): Promise<T> {
 export function espnSiteFetch<T>(path: string, params: Record<string, string> = {}, revalidate = 300): Promise<T> {
   const url = new URL(`${SITE_BASE_URL}/${path.replace(/^\//, '')}`);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
-  return fetchJson<T>(url.toString(), revalidate);
+  return memoNFLResearchInput(`site:${url}`, () => fetchJson<T>(url.toString(), revalidate));
 }
 
 /** site.web.api.espn.com — player search, athlete profiles, game logs. */
 export function espnWebFetch<T>(path: string, params: Record<string, string> = {}, revalidate = 300): Promise<T> {
   const url = new URL(`${WEB_BASE_URL}/${path.replace(/^\//, '')}`);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
-  return fetchJson<T>(url.toString(), revalidate);
+  return memoNFLResearchInput(`web:${url}`, () => fetchJson<T>(url.toString(), revalidate));
 }

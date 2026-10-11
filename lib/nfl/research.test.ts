@@ -48,10 +48,12 @@ describe('NFL Elite candidate adapter', () => {
   });
 
   it('feeds a fresh explicit player availability designation into statusKnown', () => {
+    const injuryTime = new Date();
     const reports = parseNFLInjuryReports({ injuries: [{ id: '29', displayName: 'Carolina Panthers', injuries: [
-      { athlete: { id: '1', displayName: 'Test QB', position: { abbreviation: 'QB' } }, status: 'Questionable', date: '2026-09-20T12:00:00Z' },
-    ] }] }, new Date('2026-09-20T16:00:00Z'));
-    const injuryContext = buildNFLInjuryContext({ playerId: 1, player: 'Test QB', teamId: 29, team: 'Carolina Panthers', opponentTeamId: 1, market: 'player_pass_yds', position: 'QB', reports });
+      { athlete: { id: '1', displayName: 'Test QB', position: { abbreviation: 'QB' } }, status: 'Questionable', date: injuryTime.toISOString() },
+    ] }] }, injuryTime);
+    const injuryContext = buildNFLInjuryContext({ playerId: 1, player: 'Test QB', teamId: 29, team: 'Carolina Panthers', opponentTeamId: 1,
+      market: 'player_pass_yds', position: 'QB', reports, now: injuryTime });
     const input = buildNFLEliteCandidate({
       candidateId: 'c4', playerId: 1, player: 'Test QB', market: 'player_pass_yds', line: 250, direction: 'over',
       projection: 275, projectionUncertainty: 30, logs: [], matchupAvailable: true, injuryContext,

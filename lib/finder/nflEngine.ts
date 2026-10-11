@@ -1,36 +1,46 @@
 import { getNFLSchedule } from '../nfl/schedule';
 import { searchNFLPlayers } from '../nfl/players';
-import { getPlayerGameLogs as getNFLPlayerGameLogs, getPlayerRoleWorkloadLogs } from '../nfl/stats';
-import { getNFLMarketMetadata, NFL_MARKET_LABELS, type NFLAnalyzableMarketKey } from '../nfl/oddsTypes';
+import { getPlayerGameLogs as getNFLPlayerGameLogs, nflSeasonYear } from '../nfl/stats';
+import { getNFLMarketMetadata, NFL_ELITE_MARKETS, NFL_MARKET_LABELS, type NFLAnalyzableMarketKey } from '../nfl/oddsTypes';
+import { buildNFLRollingHistory } from '../nfl/rollingHistory';
+import { withNFLResearchSnapshot, memoNFLResearchInput, nflResearchNow } from '../nfl/researchSnapshot';
+import { withNFLSpendTelemetry, getNFLSpendTelemetry } from '../nfl/spendTelemetry';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { getNFLParticipationSnapshot, evaluateNFLParticipation, type NFLParticipationSnapshot } from '../nfl/participation';
+import { getNFLSportsbookEvents, retrieveNFLSportsbookGame, inspectNFLSportsbookCoverage, classifyNFLProviderFailure, type NFLProviderFailure } from '../nfl/sportsbook';
+import { createNFLSlateLedger, finishNFLSlateLedger, type NFLSlateLedger } from '../nfl/slateLedger';
 import { findNFLOddsEvent } from '../nfl/odds';
 import {
-  getOddsEventsForSport, getDiscoveredEventPlayerProps, getLastOddsCreditInfo,
+  getLastOddsCreditInfo,
   OddsBudgetGuardError, OddsRefreshNotAuthorizedError,
-  beginOddsSpendTrackingAsync, getActiveOddsSpendTracker,
-  inspectEventPlayerPropsCacheState, isPaidRefreshAllowed,
 } from '../odds/client';
-import { classifyPriceFreshness, analyzePickCandidate, type PriceFreshness, type EliteResearchAnalysis } from '../ai/eliteResearchFilter';
-import { projectNFLMarket } from '../nfl/projection';
-import { buildNFLEliteCandidate, type NFLResearchCandidate } from '../nfl/research';
+import { classifyPriceFreshness, ELITE_THRESHOLDS, type PriceFreshness, type EliteResearchAnalysis } from '../ai/eliteResearchFilter';
+import { applyNFLGameEnvironmentToProjection, applyNFLMatchupToProjection, projectNFLMarket, type NFLMarketProjection } from '../nfl/projection';
+import { analyzeNFLCandidate, type NFLResearchCandidate } from '../nfl/research';
 import { buildNFLRoleContext, type NFLRoleContext } from '../nfl/roleContext';
 import { buildNFLOpponentContext, getNFLOpponentDefenseGames, type NFLDefenseGame, type NFLOpponentContext } from '../nfl/opponentContext';
-import { buildNFLInjuryContext, evaluateNFLPlayerAvailability, getNFLInjuryReports, type NFLInjuryContext, type NFLInjuryReport } from '../nfl/injuries';
+import { buildNFLInjuryContext, evaluateNFLPlayerAvailability, getNFLInjurySnapshot, type NFLInjuryContext, type NFLInjuryReport, type NFLInjurySnapshot } from '../nfl/injuries';
 import { getNFLWeatherContext, type NFLWeatherContext } from '../nfl/weather';
+import { buildNFLResearchProfile, reviewNFLSourceConflicts, type NFLResearchProfile } from '../nfl/researchModel';
+import { buildNFLPlayerIntelligence, getNFLNewsSnapshot, type NFLNewsSnapshot } from '../nfl/intelligence';
+import { buildNFLGameScriptResearch } from '../nfl/gameScript';
+import { recordNFLPropPriceSnapshot, summarizeNFLPropPriceMovement } from '../nfl/marketSnapshots';
 import { evaluateNFLReliabilityPolicy } from '../nfl/reliabilityPolicy';
 import { buildNFLFailureModes } from '../nfl/failureModes';
+import { classifyNFLSeasonPhase } from '../nfl/seasonContext';
+import { matchesNFLLowThreshold, type NFLResearchMode } from '../nfl/researchIntent';
 import { computeNFLOutlierDependency, type NFLOutlierDependency } from '../nfl/outlierAnalysis';
 import { buildNFLHistory, type NFLMarketHistory } from '../nfl/history';
 import { computeAlternateLineOptimizer, type AlternateLineOptimizerResult } from './alternateLineOptimizer';
 import { computeCrossBookThreshold, type CrossBookThresholdResult } from './crossBookThreshold';
 import { computeMarketMovement, type MarketMovementSignal } from './marketMovement';
 import { todaySlateDate } from '../dateModel';
-import type { SportProjection } from '../projection/types';
 import type { NFLGame } from '../nfl/types';
 import type { FinderRunSummary, FinderValidationOptions, ResearchPriorityGame, ValidationPreflight } from './engine';
 import { VALIDATION_COST_PER_EVENT, canAffordNextValidationGame, classifyValidationPreflight } from './engine';
 
 export const NFL_ODDS_SPORT_KEY = 'americanfootball_nfl';
-export const NFL_VALIDATION_COST_PER_EVENT = { low: 31, expected: 61, high: 61 } as const;
+export const NFL_VALIDATION_COST_PER_EVENT = { low: 0, expected: NFL_ELITE_MARKETS.length, high: NFL_ELITE_MARKETS.length } as const;
 
 /** Canonical NFL prop markets used when paid market-discovery is unavailable. */
 export const NFL_FALLBACK_MARKETS = [
@@ -64,9 +74,11 @@ export interface NFLCandidate {
   oddsAmerican: number;
   isAlternate: boolean;
   priceTimestamp: string | null;
+  retrievedAt?: string | null;
+  sourceGameId?: string | null;
   priceFreshness: PriceFreshness;
   history: NFLMarketHistory | null;
-  projection: SportProjection | null;
+  projection: NFLMarketProjection | null;
   roleContext: NFLRoleContext;
   opponentContext: NFLOpponentContext | null;
   injuryContext: NFLInjuryContext | null;
@@ -80,12 +92,27 @@ export interface NFLCandidate {
   howItLoses: string[];
   /** Fail-closed Elite analysis; null only when the player isn't confidently matched (no official research). */
   eliteAnalysis: EliteResearchAnalysis | null;
+  nflResearchProfile?: NFLResearchProfile | null;
 }
 
 export interface NFLFinderSummary extends FinderRunSummary {
+  nflLedger?: NFLSlateLedger;
   nflCandidates: NFLCandidate[];
   playerMatching: { matched: number; ambiguous: number; unmatched: number };
   marketSupport: { full: number; partial: number; unsupported: number };
+}
+
+export interface NFLFinderOptions extends FinderValidationOptions {
+  researchMode?: NFLResearchMode;
+  lowThreshold?: boolean;
+  marketKeys?: NFLAnalyzableMarketKey[];
+  playerId?: number | null;
+}
+
+const researchObserver = new AsyncLocalStorage<(summary: NFLFinderSummary) => void>();
+
+export function observeNFLResearch<T>(observer: (summary: NFLFinderSummary) => void, operation: () => Promise<T>): Promise<T> {
+  return researchObserver.run(observer, operation);
 }
 
 const COMPLETED_UNUSED = /final|completed|postponed|cancell?ed|suspended/i;
@@ -164,28 +191,39 @@ export function rankNFLResearchPriority(
  * Real NFL Finder run: schedule -> odds event match -> cached props -> normalization -> player
  * matching -> ESPN game-log history -> baseline projection.
  *
- * Cost behaviour is identical to MLB: every sportsbook read goes through the shared odds client, so
- * the persistent cache, freshness states, reserve guard and paid-refresh authorization all apply.
- * With ODDS_ALLOW_PAID_REFRESH=false this can only serve cached data and spends 0 credits.
+ * NFL sportsbook reads use the scoped shared-cache pipeline and request-local header telemetry.
+ * Research qualification remains independent of whether markets came from cache or a refresh.
  */
 export async function runNFLFinderDeepSearch(
   slateDate: string = todaySlateDate(),
-  options: FinderValidationOptions = {},
+  options: NFLFinderOptions = {},
 ): Promise<NFLFinderSummary> {
-  await beginOddsSpendTrackingAsync();
-  const scheduled = await getNFLSchedule({ date: slateDate }).catch(() => []);
-  const bettable = scheduled.filter((game) => !game.completed);
+  return withNFLSpendTelemetry(() => withNFLResearchSnapshot(async () => {
+    const summary = await runNFLFinderResearch(slateDate, options);
+    if (!options.preflight) researchObserver.getStore()?.(summary);
+    return summary;
+  }));
+}
+
+async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions): Promise<NFLFinderSummary> {
+  const scheduled = await getNFLSchedule({ date: slateDate });
+  const selectedScheduled = options.validationGameIds != null ? scheduled.filter((game) => options.validationGameIds!.includes(game.id)) : scheduled;
+  const markets = (options.marketKeys ?? NFL_ELITE_MARKETS).filter((market) => NFL_ELITE_MARKETS.includes(market));
+  let nflLedger = createNFLSlateLedger(selectedScheduled, slateDate, markets);
+  const eligibleIds = new Set(nflLedger.games.filter((game) => game.eligibility === 'PREGAME').map((game) => game.gameId));
+  const bettable = selectedScheduled.filter((game) => eligibleIds.has(game.id));
   const slateComplete = scheduled.length > 0 && bettable.length === 0;
 
-  let oddsEvents: Awaited<ReturnType<typeof getOddsEventsForSport>> = [];
+  let oddsEvents: Awaited<ReturnType<typeof getNFLSportsbookEvents>> = [];
+  let eventFailure: NFLProviderFailure | null = null;
   let budgetLimited = false;
   let blockReason: 'RESERVE' | 'NOT_AUTHORIZED' | 'VALIDATION_CREDIT_CAP' | null = null;
   try {
-    oddsEvents = await getOddsEventsForSport(NFL_ODDS_SPORT_KEY);
+    if (bettable.length > 0) oddsEvents = await getNFLSportsbookEvents();
   } catch (error) {
     if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
     else if (error instanceof OddsRefreshNotAuthorizedError) { budgetLimited = true; blockReason = 'NOT_AUTHORIZED'; }
-    else throw error;
+    else eventFailure = classifyNFLProviderFailure(error);
   }
 
   const selectable = bettable
@@ -193,7 +231,12 @@ export async function runNFLFinderDeepSearch(
     // Monday). Teams uniquely identify an NFL event on a slate, while forcing the local slate date
     // against the provider's UTC date incorrectly drops that event.
     .map((game) => ({ game, event: findNFLOddsEvent(game.homeTeam.displayName, game.awayTeam.displayName, oddsEvents) }))
-    .filter((entry): entry is { game: (typeof bettable)[number]; event: NonNullable<ReturnType<typeof findNFLOddsEvent>> } => entry.event != null);
+    .filter((entry): entry is { game: (typeof bettable)[number]; event: NonNullable<ReturnType<typeof findNFLOddsEvent>> } => entry.event != null
+      && Math.abs(Date.parse(entry.event.commenceTime) - Date.parse(entry.game.gameTime)) <= 15 * 60000);
+  for (const row of nflLedger.games.filter((row) => row.eligibility === 'PREGAME')) {
+    row.eventId = selectable.find((entry) => entry.game.id === row.gameId)?.event.id ?? null;
+    if (!row.eventId) { row.state = 'FAILED'; row.failure = eventFailure ?? 'EVENT_UNAVAILABLE'; }
+  }
   const explicitlySelected = options.validationGameIds?.length
     ? selectable.filter((entry) => options.validationGameIds!.includes(entry.game.id))
     : selectable;
@@ -204,10 +247,10 @@ export async function runNFLFinderDeepSearch(
   if (options.preflight) {
     // Inspected once per matched game and reused everywhere below: the cache state drives the cost
     // estimate, the per-game rows and the research-priority ranking, and it must not disagree.
-    const propsCacheStateByGameId = new Map(await Promise.all(selectable.map(async (entry) => (
-      [entry.game.id, (await inspectEventPlayerPropsCacheState(entry.event.id, NFL_ODDS_SPORT_KEY)).props] as const
-    ))));
+    const cacheCoverage = new Map(await Promise.all(selectable.map(async (entry) => [entry.game.id, await inspectNFLSportsbookCoverage({ date: slateDate, gameId: entry.game.id, eventId: entry.event.id, kickoff: entry.game.gameTime, markets })] as const)));
+    const propsCacheStateByGameId = new Map([...cacheCoverage].map(([id, coverage]) => [id, coverage.state]));
     const needsPaid = games.filter((entry) => propsCacheStateByGameId.get(entry.game.id) !== 'CACHE_FRESH');
+    const missingMarkets = needsPaid.reduce((total, entry) => total + (cacheCoverage.get(entry.game.id)?.missingMarkets ?? markets.length), 0);
     const eventListUnavailable = bettable.length > 0 && selectable.length === 0;
     const preflight: ValidationPreflight = {
       eligibleGames: bettable.length,
@@ -215,13 +258,13 @@ export async function runNFLFinderDeepSearch(
       selectedValidationGames: games.length,
       cacheHits: games.length - needsPaid.length,
       cacheMisses: needsPaid.length,
-      estimatedPaidSubRequests: needsPaid.length * 2,
+      estimatedPaidSubRequests: needsPaid.length,
       estimatedCreditCostLow: eventListUnavailable ? null : needsPaid.length * NFL_VALIDATION_COST_PER_EVENT.low,
-      estimatedCreditCostExpected: eventListUnavailable ? null : needsPaid.length * NFL_VALIDATION_COST_PER_EVENT.expected,
-      estimatedCreditCostHigh: eventListUnavailable ? null : needsPaid.length * NFL_VALIDATION_COST_PER_EVENT.high,
+      estimatedCreditCostExpected: eventListUnavailable ? null : missingMarkets,
+      estimatedCreditCostHigh: eventListUnavailable ? null : missingMarkets,
       estimatedCostStatus: eventListUnavailable ? 'UNKNOWN_UNTIL_EVENT_LIST' : 'KNOWN',
       preflightState: classifyValidationPreflight({ scheduledGames: bettable.length, matchedEvents: selectable.length, cacheMisses: needsPaid.length }),
-      paidRefreshAuthorized: isPaidRefreshAllowed(),
+      paidRefreshAuthorized: true,
       // Lets the caller pick the minimum set of high-priority games to refresh instead of being
       // forced to authorize the entire slate before any research can start.
       researchPriorityGames: rankNFLResearchPriority(
@@ -232,7 +275,7 @@ export async function runNFLFinderDeepSearch(
         })),
         games.map((entry) => entry.game.id),
       ),
-      games: bettable.map((game) => {
+      games: selectedScheduled.map((game) => {
         const matched = selectable.find((entry) => entry.game.id === game.id);
         return {
           gameId: game.id,
@@ -246,11 +289,12 @@ export async function runNFLFinderDeepSearch(
       }),
     };
     return {
+      nflLedger: finishNFLSlateLedger(nflLedger),
       results: [], nflCandidates: [], playerMatching: { matched: 0, ambiguous: 0, unmatched: 0 }, marketSupport: { full: 0, partial: 0, unsupported: 0 },
       gamesAnalyzed: 0, gamesEligible: bettable.length, gamesScheduled: scheduled.length, slateComplete,
       propsAnalyzed: 0, eventsMatched: 0, rawPropsTotal: 0, booksAnalyzed: 0,
       analyzedAt: new Date().toISOString(), slateDate, credits: getLastOddsCreditInfo(),
-      fromCache: true, cacheAgeMs: null, budgetLimited: false, blockReason: null, oddsSpend: getActiveOddsSpendTracker(),
+      fromCache: true, cacheAgeMs: null, budgetLimited: false, blockReason: null, oddsSpend: getNFLSpendTelemetry(),
       validationPreflight: preflight,
     };
   }
@@ -259,13 +303,19 @@ export async function runNFLFinderDeepSearch(
   const booksSeen = new Set<string>();
   const matchCache = new Map<string, Awaited<ReturnType<typeof matchNFLPlayer>>>();
   const logCache = new Map<number, Awaited<ReturnType<typeof getNFLPlayerGameLogs>>>();
-  const roleLogCache = new Map<number, Awaited<ReturnType<typeof getPlayerRoleWorkloadLogs>>>();
+  const previousLogCache = new Map<number, Awaited<ReturnType<typeof getNFLPlayerGameLogs>>>();
   const opponentDefenseCache = new Map<number, Promise<NFLDefenseGame[]>>();
   const weatherContextCache = new Map<string, Promise<NFLWeatherContext>>();
+  const participationCache = new Map<string, Promise<NFLParticipationSnapshot>>();
   let injuryReports: NFLInjuryReport[] = [];
+  let injurySnapshot: NFLInjurySnapshot | null = null;
+  let newsSnapshot: NFLNewsSnapshot | null = null;
+  let newsSnapshotAttempted = false;
   let injurySourceAvailable = true;
   try {
-    injuryReports = await getNFLInjuryReports();
+    injurySnapshot = await getNFLInjurySnapshot();
+    injuryReports = injurySnapshot.reports;
+    injurySourceAvailable = injurySnapshot.complete;
   } catch {
     injurySourceAvailable = false;
   }
@@ -279,11 +329,12 @@ export async function runNFLFinderDeepSearch(
   let unsupportedProps = 0;
 
   for (const { game, event } of games) {
+    const ledgerRow = nflLedger.games.find((row) => row.gameId === game.id)!;
     // TRUE hard ceiling, computed BEFORE any paid work starts for this game (see
     // canAffordNextValidationGame's doc comment for why an after-the-fact check let 2 games
     // together exceed a 40-credit cap even though neither game alone did).
     if (options.validationMaxCredits != null) {
-      const spent = getActiveOddsSpendTracker()?.creditsSpent ?? 0;
+      const spent = getNFLSpendTelemetry()?.creditsSpent ?? 0;
       const estimatedNextGameCost = NFL_VALIDATION_COST_PER_EVENT.high;
       if (!canAffordNextValidationGame(spent, options.validationMaxCredits, estimatedNextGameCost)) {
         budgetLimited = true;
@@ -296,12 +347,17 @@ export async function runNFLFinderDeepSearch(
     }
     let props;
     try {
-      props = await getDiscoveredEventPlayerProps(event.id, undefined, NFL_ODDS_SPORT_KEY, NFL_FALLBACK_MARKETS);
-      if (getLastOddsCreditInfo()?.source === 'network') sawNetworkCall = true;
+      const retrieval = await retrieveNFLSportsbookGame({ date: slateDate, gameId: game.id, eventId: event.id, kickoff: game.gameTime, markets });
+      Object.assign(ledgerRow, { returnedMarkets: retrieval.returnedMarkets, zeroMarkets: retrieval.zeroMarkets, failedMarkets: retrieval.failedMarkets,
+        retrievedAt: retrieval.retrievedAt, expiresAt: retrieval.expiresAt, failure: retrieval.failure, fromCache: retrieval.fromCache });
+      if (!retrieval.fromCache) sawNetworkCall = true;
+      if (!retrieval.complete) { ledgerRow.state = 'FAILED'; continue; }
+      props = retrieval.props;
+      ledgerRow.state = props.length ? 'SPORTSBOOK_AVAILABLE' : 'ZERO_MARKETS';
     } catch (error) {
       if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
       else if (error instanceof OddsRefreshNotAuthorizedError) { budgetLimited = true; blockReason ??= 'NOT_AUTHORIZED'; }
-      else throw error;
+      else { ledgerRow.failure = classifyNFLProviderFailure(error); ledgerRow.state = 'FAILED'; }
       continue;
     }
     eventsMatched += 1;
@@ -311,55 +367,54 @@ export async function runNFLFinderDeepSearch(
     for (const prop of props) {
       const meta = getNFLMarketMetadata(prop.marketKey);
       // Unsupported markets (kicking) fail closed — never turned into fake zero-history candidates.
-      if (!meta || meta.historicalSupport === 'unsupported') { unsupportedProps += 1; continue; }
+      if (!meta || meta.historicalSupport !== 'full' || prop.isAlternate || !markets.includes(meta.canonicalMarketKey as NFLAnalyzableMarketKey)) { unsupportedProps += 1; continue; }
 
       for (const [side, odds] of [['over', prop.overOdds] as const, ['under', prop.underOdds] as const]) {
         if (odds == null) continue;
-        const key = `${prop.player}|${meta.canonicalMarketKey}|${prop.line}|${side}`;
+        const key = `${prop.player}|${meta.canonicalMarketKey}|${prop.line}|${side}|${prop.sportsbookKey}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        propsAnalyzed += 1;
-        booksSeen.add(prop.sportsbookKey);
 
         if (!matchCache.has(prop.player)) matchCache.set(prop.player, await matchNFLPlayer(prop.player));
         const match = matchCache.get(prop.player)!;
+        if (options.playerId != null && match.playerId !== options.playerId) continue;
+        if (match.state === 'MATCHED' && match.teamId !== game.homeTeam.id && match.teamId !== game.awayTeam.id) continue;
+        propsAnalyzed += 1;
+        booksSeen.add(prop.sportsbookKey);
+        ledgerRow.propsEvaluated += 1;
 
         const market = meta.canonicalMarketKey as NFLAnalyzableMarketKey;
         let history: NFLMarketHistory | null = null;
-        let projection: SportProjection | null = null;
+        let projection: NFLMarketProjection | null = null;
         let eliteAnalysis: EliteResearchAnalysis | null = null;
         let howItLoses: string[] = [];
         let roleContext: NFLRoleContext | null = null;
         let opponentContext: NFLOpponentContext | null = null;
         let injuryContext: NFLInjuryContext | null = null;
         let weatherContext: NFLWeatherContext | null = null;
+        let nflResearchProfile: NFLResearchProfile | null = null;
         let outlierDependency: NFLOutlierDependency | null = null;
+        let playerPriceHistory: Awaited<ReturnType<typeof recordNFLPropPriceSnapshot>> = [];
         // Reuses the MLB-proven, already sport-agnostic optimizer/cross-book functions — they operate
         // on NormalizedProp[] only, never on MLB-specific types.
         const alternateLines = computeAlternateLineOptimizer(props, prop.player, market, side);
         const crossBookThreshold = computeCrossBookThreshold(props, prop.player, market);
         // Only a confidently matched player may carry official research.
         if (match.state === 'MATCHED' && match.playerId != null) {
+          const playerId = match.playerId;
+          const season = nflSeasonYear(new Date(game.gameTime));
           if (!logCache.has(match.playerId)) {
-            logCache.set(match.playerId, await getNFLPlayerGameLogs(match.playerId).catch(() => []));
+            logCache.set(match.playerId, await getNFLPlayerGameLogs(match.playerId, season).catch(() => { ledgerRow.failure = 'RESEARCH_FAILED'; return []; }));
           }
-          const logs = logCache.get(match.playerId)!;
-          if (!roleLogCache.has(match.playerId)) {
-            roleLogCache.set(match.playerId, await getPlayerRoleWorkloadLogs(match.playerId).catch(() => logs));
+          const current = logCache.get(match.playerId)!.filter((log) => new Date(log.date).getTime() < new Date(game.gameTime).getTime());
+          const currentSample = buildNFLRollingHistory({ current, previous: [], season, teamId: match.teamId, position: match.position, market });
+          if (currentSample.observations < ELITE_THRESHOLDS.minSampleSize && !previousLogCache.has(match.playerId)) {
+            previousLogCache.set(match.playerId, await getNFLPlayerGameLogs(match.playerId, season - 1).catch(() => []));
           }
-          roleContext = buildNFLRoleContext(roleLogCache.get(match.playerId)!, market);
+          const historySample = await memoNFLResearchInput(`history:${game.id}:${playerId}:${market}`, async () => buildNFLRollingHistory({ current, previous: previousLogCache.get(playerId) ?? [], season, teamId: match.teamId, position: match.position, market }));
+          const logs = historySample.logs;
+          roleContext = await memoNFLResearchInput(`role:${game.id}:${match.playerId}:${market}`, async () => buildNFLRoleContext(logs, market));
           const opponentTeamId = match.teamId === game.homeTeam.id ? game.awayTeam.id : match.teamId === game.awayTeam.id ? game.homeTeam.id : null;
-          if (opponentTeamId != null) {
-            if (!opponentDefenseCache.has(opponentTeamId)) {
-              opponentDefenseCache.set(opponentTeamId, getNFLOpponentDefenseGames(opponentTeamId).catch(() => []));
-            }
-            opponentContext = buildNFLOpponentContext({
-              opponentTeamId,
-              games: await opponentDefenseCache.get(opponentTeamId)!,
-              market,
-              position: match.position,
-            });
-          }
           injuryContext = buildNFLInjuryContext({
             playerId: match.playerId,
             player: prop.player,
@@ -370,11 +425,17 @@ export async function runNFLFinderDeepSearch(
             position: match.position,
             reports: injuryReports,
             sourceAvailable: injurySourceAvailable,
+            snapshot: injurySnapshot,
+            now: new Date(nflResearchNow()),
+            participation: await (async () => {
+              if (!participationCache.has(game.id)) participationCache.set(game.id, getNFLParticipationSnapshot(game));
+              const snapshot = await participationCache.get(game.id)!;
+              return snapshot ? memoNFLResearchInput(`availability:${game.id}:${match.playerId}`, async () => evaluateNFLParticipation({ playerId: match.playerId!, teamId: match.teamId, position: match.position, snapshot, injuries: injurySnapshot, now: new Date(nflResearchNow()) })) : null;
+            })(),
           });
-          if (!weatherContextCache.has(game.id)) weatherContextCache.set(game.id, getNFLWeatherContext(game));
-          weatherContext = await weatherContextCache.get(game.id)!;
-          history = buildNFLHistory(logs, market, prop.line, side);
-          projection = projectNFLMarket({ logs, market, roleContext });
+          history = buildNFLHistory(logs, market, prop.line, side, historySample);
+          const seasonPhase = classifyNFLSeasonPhase({ season: game.season ?? season, week: game.week, seasonType: game.seasonType ?? null, playoffRound: game.playoffRound ?? null });
+          projection = projectNFLMarket({ logs, market, roleContext, historySample, injuryContext, position: match.position, seasonPhase });
           outlierDependency = computeNFLOutlierDependency(logs, market);
 
           const researchCandidate: NFLResearchCandidate = {
@@ -387,7 +448,8 @@ export async function runNFLFinderDeepSearch(
             projection: projection.status === 'OK' ? projection.projection : null,
             projectionUncertainty: projection.status === 'OK' ? projection.uncertainty : null,
             logs,
-            matchupAvailable: opponentContext?.status !== 'UNAVAILABLE',
+            historySample,
+            matchupAvailable: false,
             oddsAmerican: odds,
             lastUpdatedAt: prop.lastUpdate ?? null,
             isAlternate: prop.isAlternate,
@@ -396,17 +458,43 @@ export async function runNFLFinderDeepSearch(
             injuryContext,
             weatherContext,
           };
-          eliteAnalysis = analyzePickCandidate(buildNFLEliteCandidate(researchCandidate));
-          const availability = evaluateNFLPlayerAvailability(injuryContext);
-          if (!availability.eligible) {
-            eliteAnalysis = {
-              ...eliteAnalysis,
-              eliteQualified: false,
-              researchQualified: false,
-              qualification: 'REJECT',
-              rejectedReasons: [...eliteAnalysis.rejectedReasons, availability.reason!],
-            };
+          eliteAnalysis = analyzeNFLCandidate(researchCandidate);
+          const linePreferred = !options.lowThreshold || matchesNFLLowThreshold({ marketKey: market, direction: side, line: prop.line, projection: projection.projection });
+          const preliminaryEligible = evaluateNFLPlayerAvailability(injuryContext).eligible && linePreferred
+            && odds >= -900 && eliteAnalysis.priceCurrent && eliteAnalysis.valueQualified
+            && eliteAnalysis.rawEdge != null && eliteAnalysis.rawEdge > 0
+            && (roleContext.status === 'STABLE' || roleContext.status === 'CHANGING')
+            && history.gamesUsed >= 5 && eliteAnalysis.trapRisk <= ELITE_THRESHOLDS.trapRisk;
+          if (preliminaryEligible) {
+            if (opponentTeamId != null) {
+              if (!opponentDefenseCache.has(opponentTeamId)) opponentDefenseCache.set(opponentTeamId, getNFLOpponentDefenseGames(opponentTeamId).catch(() => []));
+              opponentContext = buildNFLOpponentContext({ opponentTeamId, games: await opponentDefenseCache.get(opponentTeamId)!, market, position: match.position });
+            }
+            if (!weatherContextCache.has(game.id)) weatherContextCache.set(game.id, getNFLWeatherContext(game));
+            weatherContext = await weatherContextCache.get(game.id)!;
+            if (options.researchMode === 'DEEP') {
+              if (!newsSnapshotAttempted) {
+                newsSnapshotAttempted = true;
+                try { newsSnapshot = await getNFLNewsSnapshot(new Date(nflResearchNow())); } catch { newsSnapshot = null; }
+              }
+              playerPriceHistory = await recordNFLPropPriceSnapshot({ eventId: event.id, player: prop.player, marketKey: market,
+                sportsbookKey: prop.sportsbookKey, side, line: prop.line, odds, retrievedAt: prop.retrievedAt ?? ledgerRow.retrievedAt ?? null,
+                quoteUpdatedAt: prop.lastUpdate ?? null });
+            }
           }
+          projection = applyNFLMatchupToProjection(projection, { market, position: match.position, season, before: game.gameTime,
+            researchMode: options.researchMode ?? 'STANDARD', opponentContext, injuryContext, now: new Date(nflResearchNow()) });
+          const gameScript = buildNFLGameScriptResearch(game, match.teamId, new Date(nflResearchNow()).toISOString(), market, side, {
+            position: match.position, season, researchMode: options.researchMode ?? 'STANDARD',
+            projectionModel: projection.projectionModel, phase3Projection: projection.projection, phase3Uncertainty: projection.uncertainty,
+            injuryContext, weatherContext, now: new Date(nflResearchNow()),
+          });
+          projection = applyNFLGameEnvironmentToProjection(projection, { market, position: match.position, teamId: match.teamId,
+            direction: side, season, researchMode: options.researchMode ?? 'STANDARD', gameScript, injuryContext, weatherContext, now: new Date(nflResearchNow()) });
+          if (gameScript.value) gameScript.value.environmentModel = projection.projectionModel?.gameEnvironmentModel;
+          researchCandidate.projection = projection.status === 'OK' ? projection.projection : null;
+          researchCandidate.projectionUncertainty = projection.status === 'OK' ? projection.uncertainty : null;
+          eliteAnalysis = analyzeNFLCandidate({ ...researchCandidate, matchupAvailable: opponentContext?.status !== 'UNAVAILABLE' && opponentContext != null, weatherContext });
           // Deterministic NFL reliability policy (Phase 5): a market-aware, role-derived override
           // on top of the shared Elite Filter — never changes researchScore/thresholds themselves.
           if (eliteAnalysis.eliteQualified) {
@@ -432,6 +520,53 @@ export async function runNFLFinderDeepSearch(
             projectionUncertainty: researchCandidate.projectionUncertainty,
             projection: researchCandidate.projection,
             outlierDependency,
+            historySample, injuryContext, opponentContext, weatherContext,
+          });
+          howItLoses = [...new Set([...howItLoses, ...(projection.projectionModel?.matchupModel?.counterCase ?? [])])];
+          howItLoses = [...new Set([...howItLoses, ...(projection.projectionModel?.gameEnvironmentModel?.counterCase ?? [])])];
+          const intelligenceItems = newsSnapshot ? buildNFLPlayerIntelligence({ snapshot: newsSnapshot, playerId,
+            player: prop.player, teamId: match.teamId, team: match.teamName, opponentTeamId, market,
+            retrievedAt: newsSnapshot.fetchedAt }) : [];
+          const sourceConflictReview = reviewNFLSourceConflicts({ intelligence: intelligenceItems, injuryContext,
+            practiceEvidence: [], candidatePlayer: prop.player, candidateTeam: match.teamName, now: new Date(nflResearchNow()) });
+          const marketIntelligence = summarizeNFLPropPriceMovement({ history: playerPriceHistory, currentLine: prop.line, currentPrice: odds,
+            retrievedAt: prop.retrievedAt ?? ledgerRow.retrievedAt ?? null, valueQualified: eliteAnalysis.valueQualified, priceCurrent: eliteAnalysis.priceCurrent });
+          const sampleConfidence = (count: number | null | undefined): 'HIGH' | 'MEDIUM' | 'LOW' | null => count == null ? null : count >= 10 ? 'HIGH' : count >= 5 ? 'MEDIUM' : 'LOW';
+          const scoreRatings = {
+            roleOpportunity: { rating: null, evidenceCoverage: roleContext.evidence.length ? 30 : 0, confidence: roleContext.confidence === 'NONE' ? null : roleContext.confidence },
+            matchupScheme: { rating: null, evidenceCoverage: opponentContext?.metrics?.length ? Math.min(60, opponentContext.metrics.length * 15) : 0, confidence: opponentContext?.sampleSize ? sampleConfidence(opponentContext.sampleSize) : null },
+            expectedGameScript: { rating: null, evidenceCoverage: gameScript.value?.spread != null && gameScript.value.total != null ? 50 : gameScript.value?.spread != null || gameScript.value?.total != null ? 25 : 0, confidence: gameScript.value?.confidence === 'LOW' ? 'LOW' as const : null },
+            projectionVsLine: { rating: eliteAnalysis.modelProbability, evidenceCoverage: projection.status === 'OK' && eliteAnalysis.modelProbability != null ? 100 : 0, confidence: projection.status === 'OK' ? projection.reliability === 'HIGH' ? 'HIGH' as const : projection.reliability === 'MEDIUM' ? 'MEDIUM' as const : 'LOW' as const : null },
+            injuryLineupImpact: { rating: null, evidenceCoverage: injuryContext?.sourceStatus.status === 'CURRENT' ? 70 : 0, confidence: injuryContext?.sourceStatus.status === 'CURRENT' ? 'MEDIUM' as const : null },
+            recentUnderlyingPerformance: { rating: eliteAnalysis.historicalHitRatePercent, evidenceCoverage: Math.min(100, (history?.windows.l10.decisions ?? 0) * 10), confidence: sampleConfidence(history?.windows.l10.decisions) },
+            intelligence: { rating: null, evidenceCoverage: newsSnapshot?.status === 'AVAILABLE' ? 100 : 0, confidence: newsSnapshot?.status === 'AVAILABLE' ? 'LOW' as const : null },
+            marketMovementPrice: { rating: null, evidenceCoverage: playerPriceHistory.length >= 2 ? 50 : playerPriceHistory.length ? 20 : 0, confidence: playerPriceHistory.length >= 2 ? 'LOW' as const : null },
+            weather: { rating: null, evidenceCoverage: weatherContext?.sourceStatus === 'AVAILABLE' || weatherContext?.sourceStatus === 'NOT_APPLICABLE' ? 100 : 0, confidence: weatherContext?.sourceStatus === 'AVAILABLE' ? 'MEDIUM' as const : null },
+            historicalContext: { rating: history?.windows.season.hitRate ?? null, evidenceCoverage: Math.min(100, (history?.windows.season.decisions ?? 0) * 10), confidence: sampleConfidence(history?.windows.season.decisions) },
+          };
+          nflResearchProfile = buildNFLResearchProfile({
+            researchMode: options.researchMode ?? 'STANDARD',
+            candidateId: `${event.id}|${prop.player}|${meta.canonicalMarketKey}|${prop.line}|${side}|${prop.sportsbookKey}`,
+            player: prop.player, team: match.teamName, market, direction: side, line: prop.line, sportsbook: prop.sportsbookName,
+            gameSeason: game.season ?? nflSeasonYear(new Date(game.gameTime)), gameWeek: game.week, gameSeasonType: game.seasonType ?? null, playoffRound: game.playoffRound ?? null,
+            oddsAmerican: odds, priceTimestamp: prop.lastUpdate ?? null, retrievedAt: prop.retrievedAt ?? null,
+            priceCurrent: eliteAnalysis.priceCurrent, priceFreshness: eliteAnalysis.priceFreshness,
+            trueProbability: eliteAnalysis.trueProbability, priceEdge: eliteAnalysis.priceEdgePercent,
+            valueQualified: eliteAnalysis.valueQualified, existingEliteQualified: eliteAnalysis.eliteQualified,
+            dataQuality: eliteAnalysis.dataQuality, rawEdge: eliteAnalysis.rawEdge,
+            position: match.position, roleContext, roleLogs: logs, projectionModel: projection.projectionModel ?? null,
+            opponentContext, injuryContext, weatherContext, marketSupport: meta.historicalSupport,
+            historyGames: history?.gamesUsed ?? null, projectionAvailable: projection.status === 'OK',
+            availabilityEligible: evaluateNFLPlayerAvailability(injuryContext).eligible,
+            alternatePrices: alternateLines.options.map((option) => ({ sportsbook: option.bestBook, price: option.bestOdds, line: option.line })),
+            supportingReasons: [...eliteAnalysis.whyQualified, ...(eliteAnalysis.rawEdge == null ? [] : [`Current-line projection edge: ${eliteAnalysis.rawEdge.toFixed(2)}.`])],
+            counterReasons: [...howItLoses, ...roleContext.unavailableEvidence.map((field) => `Role evidence unavailable: ${field}.`),
+              ...(opponentContext?.missingFields ?? []).map((field) => `Scheme evidence unavailable: ${field}.`)],
+            intelligenceItems, intelligenceStatus: newsSnapshot?.status ?? 'UNAVAILABLE',
+            intelligenceMissingFields: newsSnapshot?.missingFields ?? ['ESPN NFL news feed unavailable'],
+            sourceConflictReview, marketIntelligence,
+            scoreRatings,
+            layerOverrides: { gameScript },
           });
         }
         roleContext ??= buildNFLRoleContext([], market);
@@ -458,6 +593,8 @@ export async function runNFLFinderDeepSearch(
           oddsAmerican: odds,
           isAlternate: prop.isAlternate,
           priceTimestamp: prop.lastUpdate ?? null,
+          retrievedAt: prop.retrievedAt,
+          sourceGameId: prop.sourceGameId,
           priceFreshness: classifyPriceFreshness(prop.lastUpdate ?? null),
           history,
           projection,
@@ -471,12 +608,27 @@ export async function runNFLFinderDeepSearch(
           marketMovement: computeMarketMovement([]),
           howItLoses,
           eliteAnalysis,
+          nflResearchProfile,
         });
       }
     }
+    if (ledgerRow.state !== 'ZERO_MARKETS') ledgerRow.state = ledgerRow.failure ? 'FAILED' : 'RESEARCHED';
   }
 
+  for (const row of nflLedger.games) {
+    if (row.eligibility === 'PREGAME' && Date.parse(row.kickoff) <= Date.now()) row.eligibility = 'STARTED';
+    else if (row.state === 'RESEARCHED' && row.expiresAt != null && row.expiresAt <= Date.now()) { row.state = 'FAILED'; row.failure = 'STALE_PRICE'; }
+  }
+  nflLedger = finishNFLSlateLedger(nflLedger);
+  for (const candidate of candidates) {
+    const row = nflLedger.games.find((game) => game.gameId === candidate.gameId);
+    if (candidate.eliteAnalysis && (!nflLedger.researchComplete || row?.eligibility !== 'PREGAME')) candidate.eliteAnalysis = {
+      ...candidate.eliteAnalysis, eliteQualified: false, researchQualified: false, qualification: 'REJECT', whyQualified: [],
+      rejectedReasons: [...candidate.eliteAnalysis.rejectedReasons, 'The requested NFL research is incomplete or the game is no longer pregame.'],
+    };
+  }
   return {
+    nflLedger,
     // Elite-ranked FinderResults (the rich MLB-parity scorecard) stay empty until NFL has its own
     // signal modules; researched NFL candidates carry a real EliteResearchAnalysis each so nothing
     // is presented as an official pick without going through the shared qualification gates.
@@ -492,9 +644,9 @@ export async function runNFLFinderDeepSearch(
       partial: candidates.filter((c) => c.historicalSupport === 'partial').length,
       unsupported: unsupportedProps,
     },
-    gamesAnalyzed: games.length,
+    gamesAnalyzed: nflLedger.researchedGames,
     gamesEligible: bettable.length,
-    gamesScheduled: scheduled.length,
+    gamesScheduled: selectedScheduled.length,
     slateComplete,
     propsAnalyzed,
     eventsMatched,
@@ -507,7 +659,7 @@ export async function runNFLFinderDeepSearch(
     cacheAgeMs: null,
     budgetLimited,
     blockReason,
-    oddsSpend: getActiveOddsSpendTracker(),
+    oddsSpend: getNFLSpendTelemetry(),
     ...(gamesSkippedByCreditCap > 0 ? {
       gamesSkippedByCreditCap,
       estimatedNextGameCost: estimatedNextGameCostReported,

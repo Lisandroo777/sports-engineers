@@ -16,6 +16,7 @@ const NAV_ICONS: Record<string, string> = {
   Insights: 'M4 19V5m0 14h16M8 16l3-4 3 2 4-6',
   '+EV': 'M12 4v16m8-8H4',
   Matchups: 'M13 10V3L4 14h7v7l9-11h-7z',
+  Performance: 'M3 3v18h18M7 14l4-4 4 3 5-7',
   Settings:
     'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z',
 };
@@ -36,7 +37,7 @@ interface AppSidebarProps {
 export function AppSidebar({ currentPath, footer }: AppSidebarProps) {
   const [isOpen, setIsOpen] = useState(false);
 
-  const renderNavigation = (items: typeof mainNavigation) => (
+  const renderNavigation = (items: readonly { label: string; href: string }[]) => (
     <div className="space-y-1">
       {items.map(({ label, href }) => {
         const isActive = currentPath === href || (href !== '/dashboard' && currentPath.startsWith(href));
@@ -83,6 +84,8 @@ export function AppSidebar({ currentPath, footer }: AppSidebarProps) {
       <nav className="flex-1 overflow-y-auto px-2 py-4">
         <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Core</p>
         {renderNavigation(mainNavigation)}
+        <p className="mb-2 mt-5 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Tracking</p>
+        {renderNavigation([{ label: 'Performance', href: '/performance' }])}
       </nav>
 
       <div className="border-t border-[var(--se-border)] px-2 py-3">

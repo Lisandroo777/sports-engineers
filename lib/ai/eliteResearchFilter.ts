@@ -76,6 +76,18 @@ export interface EliteCandidateInput {
   marketSupport?: MarketSupport;
   /** Signals with no connected data source for this sport — treated as neutral, never as risk. */
   unsupportedSignals?: Array<keyof typeof ELITE_RESEARCH_WEIGHTS>;
+  /** NBA_MODEL_V1 only. When absent or used by another sport, the existing shared probability path is unchanged. */
+  nbaProbabilityOverride?: {
+    over: number;
+    under: number;
+    push: number;
+    expectedValuePercent: number | null;
+    fairAmericanOdds: number | null;
+    noVigMarketProbability: number | null;
+    eligibleForReview: boolean;
+    modelVersion: 'NBA_MODEL_V1';
+    validationStatus: 'UNVALIDATED';
+  };
 }
 
 export interface SignalBreakdown {
@@ -127,7 +139,7 @@ export interface EliteResearchAnalysis {
   modelProbability: number | null;
   /** Observed hit rate, supporting evidence only. Never returned as trueProbability. */
   historicalHitRatePercent: number | null;
-  /** Model probability after bounded historical calibration. This is DeepSide's true probability. */
+  /** Model probability after the frozen bounded historical-evidence blend; empirically UNVALIDATED. */
   trueProbability: number | null;
   trueProbabilityBasis: string | null;
   distributionUsed: DistributionUsed | null;
@@ -150,6 +162,11 @@ export interface EliteResearchAnalysis {
   riskFactors: string[];
   adapter: string;
   marketSupport: MarketSupport;
+  pushProbabilityPercent?: number | null;
+  fairAmericanOdds?: number | null;
+  marketFairProbability?: number | null;
+  modelVersion?: string | null;
+  validationStatus?: string | null;
 }
 
 function clamp(value: number) {
@@ -222,12 +239,15 @@ export function analyzePickCandidate(input: EliteCandidateInput): EliteResearchA
     ? rawEdge / input.projectionUncertainty
     : null;
 
-  // ── probability: modelled distribution first, historical only as bounded calibration ──
+  // ── probability: modelled distribution first, historical hit rate as a bounded UNVALIDATED blend ──
   const priceFreshness = classifyPriceFreshness(input.lastUpdatedAt);
   const priceCurrent = priceFreshness === 'LIVE' || priceFreshness === 'FRESH';
   const breakEvenProbability = input.oddsAmerican != null ? americanToImpliedProbability(input.oddsAmerican) : null;
 
-  const model = modelProbability({
+  const rawNBAOverride = input.sport === 'nba' ? input.nbaProbabilityOverride : undefined;
+  const nbaOverride = rawNBAOverride && [rawNBAOverride.over, rawNBAOverride.under, rawNBAOverride.push].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)
+    && Math.abs(rawNBAOverride.over + rawNBAOverride.under + rawNBAOverride.push - 1) <= 0.001 ? rawNBAOverride : undefined;
+  const model = input.sport === 'nba' ? null : modelProbability({
     marketKey: input.market,
     line: input.line,
     direction: input.direction,
@@ -242,10 +262,15 @@ export function analyzePickCandidate(input: EliteCandidateInput): EliteResearchA
     sampleSize: input.sampleSize,
   }) : null;
   // Fails closed: no defensible distribution -> no probability, no EV.
-  const trueProbability = calibrated?.calibratedProbability ?? null;
+  const nbaSelectedWin = nbaOverride == null ? null : input.direction === 'over' ? nbaOverride.over : nbaOverride.under;
+  const nbaSelectedNonPush = nbaOverride == null ? null : nbaOverride.over + nbaOverride.under;
+  const nbaConditionalProbability = nbaSelectedWin != null && nbaSelectedNonPush != null && nbaSelectedNonPush > 0
+    ? nbaSelectedWin / nbaSelectedNonPush : null;
+  const trueProbability = input.sport === 'nba' ? nbaConditionalProbability : calibrated?.calibratedProbability ?? null;
 
   const decimal = input.oddsAmerican != null ? americanToDecimalOdds(input.oddsAmerican) : null;
-  const rawEv = trueProbability != null && decimal != null ? (trueProbability * decimal - 1) * 100 : null;
+  const rawEv = input.sport === 'nba' ? nbaOverride?.expectedValuePercent ?? null
+    : trueProbability != null && decimal != null ? (trueProbability * decimal - 1) * 100 : null;
   const rawPriceEdge = trueProbability != null && breakEvenProbability != null
     ? (trueProbability - breakEvenProbability) * 100
     : null;
@@ -370,6 +395,7 @@ export function analyzePickCandidate(input: EliteCandidateInput): EliteResearchA
   // valueQualified is independent of price age: a stale price can still tell us the bet WOULD be
   // good value if the price were current. priceCurrent is what gates whether that value is real NOW.
   const valueQualified = trueProbability != null && breakEvenProbability != null && rawEv != null && rawEv >= ELITE_THRESHOLDS.minEvPercent;
+  if (input.sport === 'nba' && (!nbaOverride || !nbaOverride.eligibleForReview)) rejectedReasons.push('NBA_MODEL_V1 projection/price did not pass its reliability and value pre-screen');
   const researchGatesPass =
     rejectedReasons.length === 0
     && !input.isAlternate
@@ -428,10 +454,12 @@ export function analyzePickCandidate(input: EliteCandidateInput): EliteResearchA
     priceCurrent,
     valueQualified,
     breakEvenProbability: breakEvenProbability != null ? Number((breakEvenProbability * 100).toFixed(1)) : null,
-    modelProbability: model != null ? Number((model.probability * 100).toFixed(1)) : null,
+    modelProbability: model != null ? Number((model.probability * 100).toFixed(1))
+      : nbaConditionalProbability != null ? Number((nbaConditionalProbability * 100).toFixed(1)) : null,
     historicalHitRatePercent: observedHitRate != null ? Number((observedHitRate * 100).toFixed(1)) : null,
     trueProbability: trueProbability != null ? Number((trueProbability * 100).toFixed(1)) : null,
-    trueProbabilityBasis: model != null && calibrated != null ? `${model.basis}; ${calibrated.basis}` : null,
+    trueProbabilityBasis: nbaOverride != null ? `${nbaOverride.modelVersion} ${nbaOverride.validationStatus}; conditional on no push`
+      : model != null && calibrated != null ? `${model.basis}; ${calibrated.basis}` : null,
     distributionUsed: model?.distribution ?? null,
     marketFamily: model?.family ?? null,
     zSeparation: model?.zSeparation ?? null,
@@ -449,6 +477,11 @@ export function analyzePickCandidate(input: EliteCandidateInput): EliteResearchA
     riskFactors: [...rejectedReasons, ...trapReasons],
     adapter: adapter?.label ?? 'Unavailable',
     marketSupport: input.marketSupport ?? 'SUPPORTED',
+    pushProbabilityPercent: nbaOverride == null ? null : Number((nbaOverride.push * 100).toFixed(1)),
+    fairAmericanOdds: nbaOverride?.fairAmericanOdds ?? null,
+    marketFairProbability: nbaOverride?.noVigMarketProbability == null ? null : Number((nbaOverride.noVigMarketProbability * 100).toFixed(1)),
+    modelVersion: nbaOverride?.modelVersion ?? null,
+    validationStatus: nbaOverride?.validationStatus ?? null,
   };
 }
 

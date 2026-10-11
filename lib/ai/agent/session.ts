@@ -5,6 +5,12 @@ import { ELITE_THRESHOLDS } from '../eliteResearchFilter';
 import { buildEvidenceBoard } from '../../finder/evidenceBoard';
 import type { CrossBookThresholdResult } from '../../finder/crossBookThreshold';
 import type { MarketMovementSignal } from '../../finder/marketMovement';
+import type { NFLMarketHistory } from '../../nfl/history';
+import type { NFLResearchProfile } from '../../nfl/researchModel';
+import type { NBAProjectionResult } from '../../nba/prediction/types';
+import { classifyPickTier } from './pickTiers';
+import type { PickTier } from './pickTiers';
+import { getSportFilterRegistration } from '../sportFilterRegistry';
 
 /** Generic, sport-agnostic outlier-dependence summary (MLB/NFL/NBA all shape their own module to this). */
 export interface GenericOutlierAnalysis {
@@ -27,6 +33,8 @@ export interface GenericRoleContext {
 
 /** NBA-only opponent defensive/pace context (see lib/nba/opponentContext.ts). Null for sports without one. */
 export interface GenericOpponentContext {
+  efficiencyGames?: import('../../nfl/opponentContext').NFLDefenseGame[];
+  opponentTeamId?: number;
   status: string;
   availableMetrics: string[];
   unavailableMetrics: string[];
@@ -39,6 +47,7 @@ export interface GenericOpponentContext {
 
 /** One fully researched candidate, flattened for storage and for follow-up tool answers. */
 export interface ResearchCandidateRecord {
+  recommendationType?: 'PLAYER_PROP';
   candidateId: string;
   /** Position when all researched candidates are ordered by researchScore descending (1 = best). */
   rank: number;
@@ -76,6 +85,11 @@ export interface ResearchCandidateRecord {
   qualification: string;
   eliteQualified: boolean;
   rejectionReasons: string[];
+  pickTier?: PickTier;
+  tierReason?: string;
+  tierScore?: number;
+  tierRequirementsPassed?: string[];
+  tierRequirementsFailed?: string[];
   /** Deep research: confidence grade, failure modes, alternate-line recommendation, evidence board. */
   grade: DeepResearchCard['grade'];
   priceGrade: DeepResearchCard['priceGrade'];
@@ -112,6 +126,18 @@ export interface ResearchCandidateRecord {
   opponentContext: GenericOpponentContext | null;
   injuryContext: unknown | null;
   weatherContext: unknown | null;
+  nflHistory?: NFLMarketHistory | null;
+  gameId?: string;
+  eventId?: string;
+  retrievedAt?: string | null;
+  sourceGameId?: string | null;
+  underlyingPlayId?: string;
+  availablePrices?: import('../../nfl/underlyingPlays').NFLSportsbookPrice[];
+  correlationGroups?: import('../../nfl/correlation').NFLCorrelationGroup[];
+  nflResearchProfile?: NFLResearchProfile;
+  /** Present only on NBA records using the isolated NBA_MODEL_V1 engine. */
+  nbaPrediction?: NBAProjectionResult | null;
+  nbaInjuryEvidence?: import('../../nba/prediction/types').NBAInjuryEvidence;
 }
 
 export interface ResearchSessionToolMeta {
@@ -124,11 +150,20 @@ export interface ResearchSessionToolMeta {
   cached: boolean;
   dataFreshnessSeconds: number | null;
   budgetLimited: boolean;
+  researchComplete?: boolean;
+  nflLedger?: import('../../nfl/slateLedger').NFLSlateLedger;
 }
 
 /** The AI's persistent memory of the last successful research run — the source of truth for follow-ups. */
 export interface ResearchSession {
+  nbaPresentationResearch?: import('../../nba/presentation').PickPresentationInput[];
+  gameCandidates?: import('../../nba/prediction/gameLines/recommendations').GameRecommendation[];
+  modeledGames?: import('../../nba/prediction/gameLines/recommendations').ModeledGameResearch[];
+  conversation?: import('../../../communication/intent').BettingConversation;
   sport: string;
+  sportFilter?: string;
+  sportFilterId?: import('../sportFilterRegistry').SportFilterId;
+  sportFilterVersion?: string | null;
   date: string;
   /** The user request that produced this session, so follow-ups can reference what was originally asked. */
   queryIntent: string;
@@ -138,11 +173,23 @@ export interface ResearchSession {
   candidates: ResearchCandidateRecord[];
   /** Set when only specific games were researched; absent means the complete slate. */
   scopeGameIds?: string[] | null;
+  nflResearchProfile?: NFLResearchProfile;
+}
+
+function sportFilterIdentity(sport: string) {
+  const registration = getSportFilterRegistration(sport);
+  return registration ? {
+    sportFilter: registration.sportFilter,
+    sportFilterId: registration.filterId,
+    sportFilterVersion: registration.version,
+  } : { sportFilter: sport.toUpperCase(), sportFilterId: undefined, sportFilterVersion: null };
 }
 
 function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: number): ResearchCandidateRecord {
   const deep = buildDeepResearchCard(result, analysis);
-  return {
+  const historicalSampleSizes = [result.historical.l5, result.historical.l10, result.historical.l20, result.historical.season]
+    .map((window) => Number(window.split('/')[1])).filter(Number.isFinite);
+  const record: ResearchCandidateRecord = {
     candidateId: result.id,
     rank,
     playerId: result.playerId,
@@ -190,6 +237,7 @@ function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: n
     position: null,
     modelProbability: analysis.modelProbability,
     historicalHitRate: analysis.historicalHitRatePercent,
+    sampleSize: historicalSampleSizes.length ? Math.max(...historicalSampleSizes) : null,
     // MLB does not use the shared SportProjection contract, so no reliability grade exists yet.
     projectionReliability: null,
     priceCurrent: analysis.priceCurrent,
@@ -207,6 +255,7 @@ function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: n
     injuryContext: null,
     weatherContext: null,
   };
+  return { ...record, ...classifyPickTier(record, result.sport) };
 }
 
 /** Builds a fresh structured session from real Finder results. Never invents a field — everything traces to a FinderResult. */
@@ -223,6 +272,7 @@ export function buildResearchSession(params: {
 
   return {
     sport: params.sport,
+    ...sportFilterIdentity(params.sport),
     date: params.date,
     queryIntent: params.queryIntent,
     generatedAt: new Date().toISOString(),
@@ -313,11 +363,19 @@ export interface GenericResearchCandidate {
   opponentContext?: GenericOpponentContext | null;
   injuryContext?: unknown | null;
   weatherContext?: unknown | null;
+  nflHistory?: NFLMarketHistory | null;
+  nbaPrediction?: NBAProjectionResult | null;
+  nbaInjuryEvidence?: import('../../nba/prediction/types').NBAInjuryEvidence;
+  gameId?: string;
+  eventId?: string;
+  retrievedAt?: string | null;
+  sourceGameId?: string | null;
+  nflResearchProfile?: NFLResearchProfile;
 }
 
 function toGenericRecord(candidate: GenericResearchCandidate, rank: number): ResearchCandidateRecord {
   const { analysis } = candidate;
-  const breakEvenProbability = analysis.breakEvenProbability != null ? Number((analysis.breakEvenProbability * 100).toFixed(1)) : null;
+  const breakEvenProbability = analysis.breakEvenProbability;
   const playerEdgePercent = candidate.l10Rate != null && breakEvenProbability != null
     ? Number((candidate.l10Rate - breakEvenProbability).toFixed(1))
     : null;
@@ -336,7 +394,7 @@ function toGenericRecord(candidate: GenericResearchCandidate, rank: number): Res
     crossBookDiscrepancy: candidate.crossBookDiscrepancy ?? null,
     marketMovementAvailable: candidate.marketMovementAvailable ?? false,
   });
-  return {
+  const record: ResearchCandidateRecord = {
     candidateId: candidate.candidateId,
     rank,
     playerId: candidate.playerId ?? null,
@@ -403,7 +461,13 @@ function toGenericRecord(candidate: GenericResearchCandidate, rank: number): Res
     opponentContext: candidate.opponentContext ?? null,
     injuryContext: candidate.injuryContext ?? null,
     weatherContext: candidate.weatherContext ?? null,
+    nflHistory: candidate.nflHistory ?? null,
+      ...(candidate.sport?.toLowerCase() === 'nba' && candidate.nbaPrediction ? { nbaPrediction: candidate.nbaPrediction } : {}),
+      ...(candidate.sport?.toLowerCase() === 'nba' && candidate.nbaInjuryEvidence ? { nbaInjuryEvidence: candidate.nbaInjuryEvidence } : {}),
+    gameId: candidate.gameId, eventId: candidate.eventId, retrievedAt: candidate.retrievedAt, sourceGameId: candidate.sourceGameId,
+    nflResearchProfile: candidate.nflResearchProfile,
   };
+  return { ...record, ...classifyPickTier(record, candidate.sport) };
 }
 
 /**
@@ -420,6 +484,7 @@ export function buildResearchSessionFromCandidates(params: {
   const ranked = [...params.candidates].sort((a, b) => b.analysis.researchScore - a.analysis.researchScore);
   return {
     sport: params.sport,
+    ...sportFilterIdentity(params.sport),
     date: params.date,
     queryIntent: params.queryIntent,
     generatedAt: new Date().toISOString(),

@@ -69,7 +69,7 @@ export function getSportResearchAdapter(sport: string): SportResearchAdapter | n
 export function normalizeSport(sport: string): SupportedSport | null {
   const normalized = sport.toLowerCase();
   if (normalized === 'mls' || normalized === 'soccer' || normalized === 'football') return normalized === 'football' ? 'nfl' : 'soccer';
-  return normalized in SPORT_RESEARCH_ADAPTERS ? normalized as SupportedSport : null;
+  return Object.hasOwn(SPORT_RESEARCH_ADAPTERS, normalized) ? normalized as SupportedSport : null;
 }
 
 /** Sport named in a free-text request, or null when the request spans sports. */

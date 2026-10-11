@@ -3,7 +3,7 @@
  *
  * Estimates P(stat clears the sportsbook line) from the modelled distribution of a player's
  * expected outcome — NOT from historical hit rate, and never from researchScore. Historical
- * performance enters only later, as bounded calibration evidence (see calibrateProbability).
+ * performance enters only later as a bounded evidence blend; this is not held-out calibration.
  *
  * Every market is mapped to a distribution family appropriate to the underlying stat. When the
  * inputs required by that family are missing, the model returns null and the caller fails closed.
@@ -184,7 +184,8 @@ export function modelProbability(params: {
   const probability = direction === 'over' ? probabilityOver : 1 - probabilityOver;
   // Epistemic bound: the projection itself is estimated from `sampleSize` games, so no finite sample
   // can justify more confidence than a Laplace-style 1 - 1/(n+2). Without this, a projection of ~0 in
-  // a rare-event market returns ~99.9%, which the calibration backtest showed to be overconfident.
+  // a rare-event market returns ~99.9%. This finite-sample safety bound is a model assumption,
+  // not a threshold fitted or demonstrated by a held-out validation study.
   const maxConfidence = 1 - 1 / (sampleSize + 2);
   const bounded = Math.max(1 - maxConfidence, Math.min(maxConfidence, probability));
   const zSeparation = projectionUncertainty != null && projectionUncertainty > 0
@@ -211,11 +212,12 @@ export interface CalibratedProbability {
   basis: string;
 }
 
-/** Historical evidence may nudge the modelled probability, but is capped so it can never replace it. */
+/** The bounded historical-evidence blend is part of the frozen model and remains empirically UNVALIDATED. */
 export const MAX_HISTORICAL_WEIGHT = 0.35;
 
 /**
- * Blends the modelled probability with the observed hit rate as SUPPORTING evidence only.
+ * Blends the modelled probability with the observed hit rate as SUPPORTING evidence only; the
+ * fixed weights below have not been selected or validated on a held-out NFL outcome set.
  *   w = min(MAX_HISTORICAL_WEIGHT, n / (n + 20))
  *   calibrated = (1 - w) * model + w * historical
  * Clamped to [0.02, 0.98] so nothing is ever asserted as a near-certainty.
@@ -237,6 +239,6 @@ export function calibrateProbability(params: {
     calibratedProbability: Math.max(0.02, Math.min(0.98, blended)),
     historicalWeight: Number(weight.toFixed(3)),
     divergence: historicalHitRate != null ? Number(Math.abs(model - historicalHitRate).toFixed(3)) : null,
-    basis: `Model probability calibrated with ${(weight * 100).toFixed(0)}% weight on ${n}-game historical hit rate`,
+    basis: `UNVALIDATED model probability blended with ${(weight * 100).toFixed(0)}% supporting ${n}-game historical hit rate`,
   };
 }

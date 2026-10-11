@@ -2,10 +2,50 @@ import type { NFLGameLogEntry } from './types';
 import { getNFLMarketHistoricalValue, type NFLAnalyzableMarketKey } from './oddsTypes';
 import { buildNFLRoleContext, type NFLRoleContext } from './roleContext';
 import { getMarketFamily } from '../ai/probabilityModel';
+import type { NFLHistorySample } from './rollingHistory';
+import { nflAvailabilityRisk, type NFLInjuryContext } from './injuries';
+import { buildNFLProjectionExplanation, isNFLProjectionObservationValid, type NFLProjectionExplanation } from './opportunityProjection';
+import { buildNFLMatchupEfficiency } from './matchupEfficiency';
+import { buildNFLGameEnvironment } from './gameEnvironment';
 import {
-  mean, standardDeviation, unavailableProjection,
+  standardDeviation, unavailableProjection,
   type ProjectionReliability, type ProjectionReliabilityReason, type SportProjection,
 } from '../projection/types';
+
+export interface NFLMarketProjection extends SportProjection {
+  projectionModel?: NFLProjectionExplanation;
+}
+
+export function applyNFLGameEnvironmentToProjection(projection: NFLMarketProjection, params: Omit<Parameters<typeof buildNFLGameEnvironment>[0], 'projectionModel' | 'phase3Projection' | 'phase3Uncertainty'>): NFLMarketProjection {
+  if (projection.status !== 'OK' || !projection.projectionModel) return projection;
+  const previous = projection.projectionModel.gameEnvironmentModel;
+  const environment = buildNFLGameEnvironment({ ...params, projectionModel: projection.projectionModel,
+    phase3Projection: previous?.phase3Projection ?? projection.projection,
+    phase3Uncertainty: previous?.phase3Uncertainty ?? projection.uncertainty });
+  return { ...projection, projection: environment.finalProjection, uncertainty: environment.phase3Uncertainty,
+    projectionModel: { ...projection.projectionModel, gameEnvironmentModel: environment, finalProjection: environment.finalProjection },
+    inputs: { ...projection.inputs, projectionModelVersion: 'nfl_opportunity_matchup_environment_v1',
+      historicalModelVersion: environment.historicalModelVersion, gameEnvironmentModelVersion: environment.modelVersion,
+      gameScriptConfidence: environment.confidence, volumeAdjustment: environment.volumeAdjustment,
+      finalProjection: environment.finalProjection, missingGameScriptInputs: environment.missingInputs.join(', ') },
+  };
+}
+
+export function applyNFLMatchupToProjection(projection: NFLMarketProjection, params: Omit<Parameters<typeof buildNFLMatchupEfficiency>[0], 'projectionModel' | 'phase2Projection' | 'phase2Uncertainty'>): NFLMarketProjection {
+  if (projection.status !== 'OK' || !projection.projectionModel) return projection;
+  const phase2Uncertainty = projection.projectionModel.matchupModel?.phase2Uncertainty ?? projection.uncertainty;
+  const matchup = buildNFLMatchupEfficiency({ ...params, projectionModel: projection.projectionModel,
+    phase2Projection: projection.projectionModel.matchupModel?.phase2Projection ?? projection.projection, phase2Uncertainty });
+  const uncertainty = matchup.projectionAdjustment === 0 ? phase2Uncertainty
+    : phase2Uncertainty == null ? null : Number(Math.hypot(phase2Uncertainty, matchup.projectionAdjustment).toFixed(2));
+  return { ...projection, projection: matchup.finalProjection, uncertainty,
+    projectionModel: { ...projection.projectionModel, matchupModel: matchup, finalProjection: matchup.finalProjection, uncertainty },
+    inputs: { ...projection.inputs, projectionModelVersion: matchup.projectionModelVersion,
+      opportunityModelVersion: matchup.opportunityModelVersion, matchupModelVersion: matchup.modelVersion,
+      matchupConfidence: matchup.confidence, matchupAdjustment: matchup.projectionAdjustment,
+      missingMatchupInputs: matchup.missingInputs.join(', '), finalProjection: matchup.finalProjection },
+  };
+}
 
 /**
  * NFL baseline projection — a FOUNDATION, not a production-grade NFL projection.
@@ -60,11 +100,16 @@ export function projectNFLMarket(params: {
   logs: NFLGameLogEntry[];
   market: NFLAnalyzableMarketKey;
   roleContext?: NFLRoleContext;
-}): SportProjection {
+  historySample?: NFLHistorySample;
+  injuryContext?: NFLInjuryContext | null;
+  position?: string | null;
+  seasonPhase?: string;
+}): NFLMarketProjection {
   const { logs, market } = params;
   const roleContext = params.roleContext ?? buildNFLRoleContext(logs, market);
   const values = logs
     .filter((log) => log.result != null)
+    .filter((log) => isNFLProjectionObservationValid(market, log.stats))
     .map((log) => getNFLMarketHistoricalValue(market, log.stats))
     .filter((value): value is number => value != null);
 
@@ -75,20 +120,43 @@ export function projectNFLMarket(params: {
     ], { market, gamesUsed: values.length });
   }
 
-  const windows: Array<[number[], number]> = getMarketFamily(market) === 'RARE_COUNT'
-    ? [[values, 1]]
+  const completed = logs.filter((log) => log.result != null).sort((first, second) => new Date(first.date).getTime() - new Date(second.date).getTime());
+  const weightedMean = (entries: NFLGameLogEntry[]) => {
+    const usable = entries.filter((log) => isNFLProjectionObservationValid(market, log.stats));
+    const weight = usable.reduce((total, log) => total + (log.historyWeight ?? 1), 0);
+    return weight ? usable.reduce((total, log) => total + getNFLMarketHistoricalValue(market, log.stats)! * (log.historyWeight ?? 1), 0) / weight : null;
+  };
+  const windows: Array<[NFLGameLogEntry[], number]> = getMarketFamily(market) === 'RARE_COUNT'
+    ? [[completed, 1]]
     : [
-      [values.slice(-3), 0.45],
-      [values.slice(-5), 0.35],
-      [values, 0.20],
+      [completed.slice(-3), 0.45],
+      [completed.slice(-5), 0.35],
+      [completed, 0.20],
     ];
-  const present = windows.filter(([w]) => w.length > 0);
+  const present = windows.filter(([entries]) => weightedMean(entries) != null);
   const weightTotal = present.reduce((s, [, w]) => s + w, 0);
-  const projection = present.reduce((s, [w, weight]) => s + mean(w)! * weight, 0) / weightTotal;
-  const uncertainty = standardDeviation(values);
+  const historicalBaseline = present.reduce((total, [entries, weight]) => total + weightedMean(entries)! * weight, 0) / weightTotal;
+  const explanation: NFLProjectionExplanation = buildNFLProjectionExplanation({
+    market, position: params.position, logs: completed, historicalBaseline, finalProjection: historicalBaseline,
+    seasonPhase: params.seasonPhase,
+  });
+  const projection = explanation.finalProjection ?? historicalBaseline;
+  const rawUncertainty = standardDeviation(values);
+  const availability = params.injuryContext ? nflAvailabilityRisk(params.injuryContext) : { uncertaintyMultiplier: 1, points: 0 };
+  const opportunityDisagreement = explanation.uncertaintyFromBaselineDisagreement ?? 0;
+  const opportunitySpread = explanation.expectedEfficiency != null
+    ? (roleContext.opportunity.volatility ?? 0) * Math.abs(explanation.expectedEfficiency) : 0;
+  const roleSeparation = explanation.expectedEfficiency != null && roleContext.stability?.recentMean != null
+    && roleContext.stability.earlierSeasonMean != null && roleContext.stability.status !== 'STABLE'
+    ? Math.abs(roleContext.stability.recentMean - roleContext.stability.earlierSeasonMean) * Math.abs(explanation.expectedEfficiency) : 0;
+  const modelUncertainty = rawUncertainty == null ? null : Math.sqrt(Math.max(rawUncertainty, opportunitySpread, roleSeparation) ** 2 + opportunityDisagreement ** 2);
+  const uncertainty = modelUncertainty == null ? null : modelUncertainty
+    * (params.historySample?.uncertaintyMultiplier ?? 1) * availability.uncertaintyMultiplier;
+  explanation.uncertainty = uncertainty != null ? Number(uncertainty.toFixed(2)) : null;
 
   const reasons: ProjectionReliabilityReason[] = [];
   if (values.length < NFL_PREFERRED_SAMPLE) reasons.push('SHORT_SEASON_SAMPLE');
+  if (availability.points > 0) reasons.push('INJURY_LISTED');
   const cv = uncertainty != null && projection > 0 ? uncertainty / projection : null;
   if (cv != null && cv > 0.6) reasons.push('HIGH_RATE_VOLATILITY');
   if (roleContext.workloadTrend === 'HIGH_WORKLOAD_VOLATILITY') reasons.push('HIGH_RATE_VOLATILITY');
@@ -108,14 +176,37 @@ export function projectNFLMarket(params: {
     sampleSize: values.length,
     reliability,
     reliabilityReasons: [...new Set(reasons)],
-    method: 'nfl_weighted_history',
+    method: params.historySample?.supplemented ? 'nfl_rolling_history' : 'nfl_weighted_history',
+    projectionModel: explanation,
     inputs: {
       market,
       gamesUsed: values.length,
-      seasonMean: mean(values) != null ? Number(mean(values)!.toFixed(2)) : null,
-      l3Mean: mean(values.slice(-3)) != null ? Number(mean(values.slice(-3))!.toFixed(2)) : null,
+      seasonMean: weightedMean(completed.filter((log) => log.historySource !== 'PREVIOUS_SEASON')),
+      rollingMean: weightedMean(completed),
+      previousSeasonGames: params.historySample?.previousObservations ?? 0,
+      currentSeasonGames: params.historySample?.currentObservations ?? values.length,
+      historyConfidence: params.historySample?.confidence ?? 'CURRENT_ONLY',
+      uncertaintyMultiplier: params.historySample?.uncertaintyMultiplier ?? 1,
+      availabilityUncertaintyMultiplier: availability.uncertaintyMultiplier,
+      l3Mean: weightedMean(completed.slice(-3)),
       roleRequirement: roleContext.requirement,
       roleStatus: roleContext.status,
+      projectionModelVersion: explanation.modelVersion,
+      probabilityModelVersion: explanation.probabilityModelVersion,
+      projectionModelType: explanation.modelType,
+      historicalBaseline: explanation.historicalBaseline,
+      opportunityProjection: explanation.opportunityProjection,
+      opportunityBlendWeight: explanation.opportunityBlendWeight,
+      expectedOpportunity: explanation.expectedOpportunity,
+      expectedEfficiency: explanation.expectedEfficiency,
+      opportunityGames: explanation.opportunityGames,
+      currentSeasonOpportunityGames: explanation.currentSeasonOpportunityGames,
+      priorSeasonOpportunityGames: explanation.priorSeasonOpportunityGames,
+      opportunityUncertainty: opportunityDisagreement,
+      opportunitySpread,
+      roleSeparation,
+      missingOpportunityInputs: explanation.missingInputs.join(', '),
+      calibrationStatus: explanation.calibrationStatus,
     },
   };
 }

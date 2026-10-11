@@ -1,14 +1,16 @@
 import { espnSiteFetch } from './client';
 import { nflSeasonYear } from './stats';
+import { normalizedNFLInput } from './researchSnapshot';
 import type { NFLAnalyzableMarketKey } from './oddsTypes';
 
-export type NFLDefenseMetricKey = 'passingYardsAllowed' | 'completionsAllowed' | 'passAttemptsAllowed' | 'sacksGenerated' | 'rushingYardsAllowed' | 'rushingAttemptsAllowed' | 'yardsPerRushAttemptAllowed';
+export type NFLDefenseMetricKey = 'passingYardsAllowed' | 'completionsAllowed' | 'passAttemptsAllowed' | 'sacksGenerated' | 'rushingYardsAllowed' | 'rushingAttemptsAllowed' | 'yardsPerRushAttemptAllowed' | 'yardsPerPassAttemptAllowed' | 'completionRateAllowed' | 'sackRate';
 export type NFLOpponentTrend = 'INCREASING' | 'DECREASING' | 'STABLE' | 'INSUFFICIENT_SAMPLE';
 
 export interface NFLDefenseGame {
   eventId: string;
   date: string;
   season: number;
+  offenseTeamId?: number;
   metrics: Partial<Record<NFLDefenseMetricKey, number>>;
 }
 
@@ -32,6 +34,7 @@ export interface NFLOpponentContext {
   availableMetrics: string[];
   missingFields: string[];
   evidence: string[];
+  efficiencyGames?: NFLDefenseGame[];
 }
 
 interface RawSummary {
@@ -53,6 +56,9 @@ const LABELS: Record<NFLDefenseMetricKey, string> = {
   rushingYardsAllowed: 'Rushing yards allowed',
   rushingAttemptsAllowed: 'Rushing attempts faced',
   yardsPerRushAttemptAllowed: 'Yards per rush allowed',
+  yardsPerPassAttemptAllowed: 'Gross passing yards per attempt allowed',
+  completionRateAllowed: 'Completion rate allowed',
+  sackRate: 'Sacks per recorded attempt plus sack',
 };
 
 const PASS_MARKETS = new Set<NFLAnalyzableMarketKey>(['player_pass_yds', 'player_pass_tds', 'player_pass_completions', 'player_pass_attempts', 'player_pass_interceptions', 'player_pass_longest_completion']);
@@ -60,6 +66,7 @@ const RUSH_MARKETS = new Set<NFLAnalyzableMarketKey>(['player_rush_yds', 'player
 const RECEIVING_MARKETS = new Set<NFLAnalyzableMarketKey>(['player_reception_yds', 'player_receptions', 'player_reception_tds', 'player_reception_longest']);
 
 function numeric(value: unknown): number | null {
+  if (value == null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -89,33 +96,57 @@ export function parseNFLDefenseGame(summary: RawSummary, defenseTeamId: number, 
   let attempts = 0;
   let passingYards = 0;
   let sacks = 0;
-  let hasPassing = false;
+  let hasAttempts = false;
+  let hasYards = false;
+  let hasSacks = false;
+  let missingAttempts = false;
+  let missingYards = false;
+  let missingSacks = false;
   for (const athlete of passing?.athletes ?? []) {
     const completionAttempts = completionIndex >= 0 ? pair(athlete.stats?.[completionIndex]) : null;
     const yards = yardsIndex >= 0 ? numeric(athlete.stats?.[yardsIndex]) : null;
     const sacksTaken = sacksIndex >= 0 ? firstNumber(athlete.stats?.[sacksIndex]) : null;
-    if (completionAttempts) { completions += completionAttempts[0]; attempts += completionAttempts[1]; hasPassing = true; }
-    if (yards != null) { passingYards += yards; hasPassing = true; }
-    if (sacksTaken != null) sacks += sacksTaken;
+    if (completionAttempts) { completions += completionAttempts[0]; attempts += completionAttempts[1]; hasAttempts = true; }
+    if (yards != null) { passingYards += yards; hasYards = true; }
+    if (sacksTaken != null) { sacks += sacksTaken; hasSacks = true; }
+    if (!completionAttempts) missingAttempts = true;
+    if (yards == null) missingYards = true;
+    if (sacksTaken == null) missingSacks = true;
   }
   const statValue = (name: string) => {
     const stat = teamStats.get(name);
     return numeric(stat?.value) ?? numeric(stat?.displayValue);
   };
   const metrics: NFLDefenseGame['metrics'] = {};
-  if (hasPassing) {
-    metrics.passingYardsAllowed = passingYards;
+  if (hasYards && !missingYards) metrics.passingYardsAllowed = passingYards;
+  if (hasAttempts && !missingAttempts) {
     metrics.completionsAllowed = completions;
     metrics.passAttemptsAllowed = attempts;
-    metrics.sacksGenerated = sacks;
   }
+  if (hasSacks && !missingSacks) metrics.sacksGenerated = sacks;
   const rushingYards = statValue('rushingYards');
   const rushingAttempts = statValue('rushingAttempts');
   const yardsPerRush = statValue('yardsPerRushAttempt');
   if (rushingYards != null) metrics.rushingYardsAllowed = rushingYards;
   if (rushingAttempts != null) metrics.rushingAttemptsAllowed = rushingAttempts;
   if (yardsPerRush != null) metrics.yardsPerRushAttemptAllowed = yardsPerRush;
-  return Object.keys(metrics).length ? { eventId, date, season, metrics } : null;
+  return Object.keys(metrics).length ? { eventId, date, season, offenseTeamId: offenseId, metrics: deriveNFLDefenseEfficiency(metrics) } : null;
+}
+
+export function deriveNFLDefenseEfficiency(metrics: NFLDefenseGame['metrics']): NFLDefenseGame['metrics'] {
+  const result = { ...metrics };
+  const ratio = (numerator: NFLDefenseMetricKey, denominator: NFLDefenseMetricKey, output: NFLDefenseMetricKey) => {
+    const production = metrics[numerator];
+    const opportunities = metrics[denominator];
+    if (production != null && Number.isFinite(production) && opportunities != null && Number.isFinite(opportunities) && opportunities > 0) result[output] = production / opportunities;
+  };
+  ratio('passingYardsAllowed', 'passAttemptsAllowed', 'yardsPerPassAttemptAllowed');
+  ratio('completionsAllowed', 'passAttemptsAllowed', 'completionRateAllowed');
+  ratio('rushingYardsAllowed', 'rushingAttemptsAllowed', 'yardsPerRushAttemptAllowed');
+  const sacks = metrics.sacksGenerated;
+  const attempts = metrics.passAttemptsAllowed;
+  if (sacks != null && attempts != null && Number.isFinite(sacks) && sacks >= 0 && Number.isFinite(attempts) && attempts >= 0 && sacks + attempts > 0) result.sackRate = sacks / (attempts + sacks);
+  return result;
 }
 
 function summarize(games: NFLDefenseGame[], key: NFLDefenseMetricKey, size: number | null, season?: number) {
@@ -140,11 +171,12 @@ function metricKeysFor(market: NFLAnalyzableMarketKey): NFLDefenseMetricKey[] {
 export function buildNFLOpponentContext(params: { opponentTeamId: number; games: NFLDefenseGame[]; market: NFLAnalyzableMarketKey; position?: string | null; season?: number }): NFLOpponentContext {
   const season = params.season ?? nflSeasonYear();
   const keys = metricKeysFor(params.market);
+  const orderedGames = [...params.games].sort((first, second) => Date.parse(first.date) - Date.parse(second.date));
   const metrics = keys.map((key) => {
-    const l3 = summarize(params.games, key, 3);
-    const l5 = summarize(params.games, key, 5);
-    const l10 = summarize(params.games, key, 10);
-    const seasonWindow = summarize(params.games, key, null, season);
+    const l3 = summarize(orderedGames, key, 3);
+    const l5 = summarize(orderedGames, key, 5);
+    const l10 = summarize(orderedGames, key, 10);
+    const seasonWindow = summarize(orderedGames, key, null, season);
     return { key, label: LABELS[key], l3, l5, l10, season: seasonWindow, trend: metricTrend(l3, l10) };
   }).filter((metric) => metric.l10.games > 0 || metric.season.games > 0);
   const missingFields = ['coverage grade', 'pressure rate', 'pass-rush win rate'];
@@ -168,15 +200,20 @@ export function buildNFLOpponentContext(params: { opponentTeamId: number; games:
     availableMetrics,
     missingFields,
     evidence,
+    efficiencyGames: orderedGames.map((game) => ({ ...game, metrics: deriveNFLDefenseEfficiency(game.metrics) })),
   };
 }
 
 async function scheduleEvents(teamId: number, season: number) {
-  const data = await espnSiteFetch<RawSchedule>(`teams/${teamId}/schedule`, { season: String(season) }, 3600);
+  const data = await espnSiteFetch<RawSchedule>(`teams/${teamId}/schedule`, { season: String(season) }, 0);
   return (data.events ?? []).filter((event) => event.competitions?.[0]?.status?.type?.completed).map((event) => ({ ...event, season }));
 }
 
 export async function getNFLOpponentDefenseGames(teamId: number, season = nflSeasonYear()): Promise<NFLDefenseGame[]> {
+  return normalizedNFLInput(`defense:${teamId}:${season}`, 15 * 60000, () => loadNFLOpponentDefenseGames(teamId, season));
+}
+
+async function loadNFLOpponentDefenseGames(teamId: number, season: number): Promise<NFLDefenseGame[]> {
   const [current, previous] = await Promise.all([
     scheduleEvents(teamId, season).catch(() => []),
     scheduleEvents(teamId, season - 1).catch(() => []),
@@ -184,7 +221,7 @@ export async function getNFLOpponentDefenseGames(teamId: number, season = nflSea
   const events = [...previous, ...current].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()).slice(-10);
   const games = await Promise.all(events.map(async (event) => {
     try {
-      const summary = await espnSiteFetch<RawSummary>('summary', { event: event.id }, 3600);
+      const summary = await espnSiteFetch<RawSummary>('summary', { event: event.id }, 0);
       return parseNFLDefenseGame(summary, teamId, event.id, event.date, event.season);
     } catch {
       return null;

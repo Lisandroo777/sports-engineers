@@ -18,6 +18,10 @@ export interface NBAPlayer {
 export interface NBAGame {
   id: string;
   gameTime: string;
+  seasonId?: string | null;
+  season?: number | null;
+  phase?: 'PRESEASON' | 'REGULAR' | 'PLAY_IN' | 'POSTSEASON' | 'UNKNOWN';
+  round?: string | null;
   homeTeam: NBATeam;
   awayTeam: NBATeam;
   homeScore: number | null;
@@ -30,6 +34,9 @@ export type NBAGameStatMap = Record<string, number>;
 export interface NBAGameLogEntry {
   gameId: string;
   date: string;
+  season?: number | null;
+  phase?: 'PRESEASON' | 'REGULAR' | 'PLAY_IN' | 'POSTSEASON' | 'UNKNOWN';
+  round?: string | null;
   opponent: string;
   opponentAbbreviation: string;
   homeAway: 'home' | 'away';

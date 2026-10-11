@@ -13,7 +13,7 @@ import {
 } from '../odds/client';
 import { classifyPriceFreshness, analyzePickCandidate, type PriceFreshness, type EliteResearchAnalysis } from '../ai/eliteResearchFilter';
 import { buildNBAEliteCandidate, type NBAResearchCandidate } from '../nba/research';
-import { projectNBAMarket, estimateExpectedMinutes } from '../nba/projection';
+import { estimateExpectedMinutes } from '../nba/projection';
 import { buildNBAHistory, type NBAMarketHistory } from '../nba/history';
 import { computeNBAOutlierDependency, type NBAOutlierDependency } from '../nba/outlierAnalysis';
 import { buildNBAOpponentContextCache, getNBAOpponentContext, type NBAOpponentContext } from '../nba/opponentContext';
@@ -21,6 +21,18 @@ import { computeAlternateLineOptimizer, type AlternateLineOptimizerResult } from
 import { computeCrossBookThreshold, type CrossBookThresholdResult } from './crossBookThreshold';
 import { computeMarketMovement, type MarketMovementSignal } from './marketMovement';
 import { buildNBAFailureModes } from '../nba/failureModes';
+import { createNBAContextProvider } from '../nba/context/provider';
+import { buildNBAResearchContext } from '../nba/context/engine';
+import { buildNBAIntelligence } from '../nba/intelligence/engine';
+import type { NBAContextSnapshot } from '../nba/context/types';
+import type { NBAIntelligenceSnapshot } from '../nba/intelligence/types';
+import { nbaObservedGamesFromAgent2Snapshot, nbaObservedGamesFromLogs, seasonNumberFromAgent2, seasonPhaseForAgent2 } from '../nba/prediction/contextAdapter';
+import { predictNBAMarket } from '../nba/prediction/engine';
+import type { NBAInjuryEvidence, NBAProjectionResult, NBAObservedGame } from '../nba/prediction/types';
+import { selectNBAAsOfHistory } from '../nba/prediction/history';
+import { researchNBAGameLines } from '../nba/prediction/gameLines/pipeline';
+import { loadCachedNBAPlayerProps } from '../nba/prediction/cachedProps';
+import { loadNBAGameIntelligence } from '../nba/prediction/gameLines/intelligenceArchive';
 import { todaySlateDate } from '../dateModel';
 import type { SportProjection } from '../projection/types';
 import type { FinderRunSummary, FinderValidationOptions, ValidationPreflight } from './engine';
@@ -60,6 +72,10 @@ export interface NBACandidate {
   history: NBAMarketHistory | null;
   projection: SportProjection | null;
   injuryTier: NBAInjuryTier | null;
+  injuryEvidence: NBAInjuryEvidence;
+  nbaPrediction: NBAProjectionResult | null;
+  researchContext: import('../nba/context/types').NBAResearchContext | null;
+  intelligenceSnapshot: NBAIntelligenceSnapshot | null;
   outlierDependency: NBAOutlierDependency | null;
   alternateLines: AlternateLineOptimizerResult | null;
   crossBookThreshold: CrossBookThresholdResult | null;
@@ -77,9 +93,44 @@ export interface NBACandidate {
 }
 
 export interface NBAFinderSummary extends FinderRunSummary {
+  gameCandidates?: import('../nba/prediction/gameLines/recommendations').GameRecommendation[];
+  modeledGames?: import('../nba/prediction/gameLines/recommendations').ModeledGameResearch[];
   nbaCandidates: NBACandidate[];
   playerMatching: { matched: number; ambiguous: number; unmatched: number };
   marketSupport: { full: number; partial: number; unsupported: number };
+}
+
+function modelInjuryEvidence(tier: NBAInjuryTier | null, feedAvailable: boolean): NBAInjuryEvidence {
+  if (!feedAvailable) return 'FEED_UNAVAILABLE';
+  if (tier == null) return 'REPORT_MISSING';
+  if (tier === 'OUT' || tier === 'DOUBTFUL' || tier === 'QUESTIONABLE' || tier === 'UNKNOWN') return tier;
+  return 'REPORTED_AVAILABLE';
+}
+
+function mergeModelObservations(logs: Awaited<ReturnType<typeof getNBAPlayerGameLogs>>, snapshot: NBAContextSnapshot | null, playerId: number, teamId: number): NBAObservedGame[] {
+  const byGame = new Map<string, NBAObservedGame>(nbaObservedGamesFromLogs(logs).map((row) => [row.log.gameId, row]));
+  if (snapshot) {
+    for (const row of nbaObservedGamesFromAgent2Snapshot(snapshot, playerId, teamId)) {
+      if (row.phase === 'UNKNOWN') continue;
+      byGame.set(row.log.gameId, row);
+    }
+  }
+  return [...byGame.values()].sort((first, second) => Date.parse(first.log.date) - Date.parse(second.log.date) || first.log.gameId.localeCompare(second.log.gameId));
+}
+
+function toSportProjection(result: NBAProjectionResult | null): SportProjection | null {
+  if (!result) return null;
+  return {
+    status: result.expectedStat == null ? 'UNAVAILABLE' : 'OK',
+    projection: result.expectedStat,
+    uncertainty: result.statUncertainty,
+    sampleSize: result.sampleSize,
+    reliability: result.reliability,
+    reliabilityReasons: result.reasons as SportProjection['reliabilityReasons'],
+    method: 'nba_model_v1_rate_minutes_distribution',
+    inputs: { modelVersion: result.modelVersion, validationStatus: result.validationStatus, expectedMinutes: result.expectedMinutes,
+      minutesUncertainty: result.minutesUncertainty, quoteStatus: result.quoteStatus },
+  };
 }
 
 /**
@@ -118,9 +169,12 @@ export async function matchNBAPlayer(
  */
 export async function runNBAFinderDeepSearch(
   slateDate: string = todaySlateDate(),
-  options: FinderValidationOptions = {},
+  options: FinderValidationOptions & { gameLines?: boolean; gameLinesOnly?: boolean } = {},
 ): Promise<NBAFinderSummary> {
   await beginOddsSpendTrackingAsync();
+  const contextProvider = createNBAContextProvider({ maxRequests: 100, maxGamesPerTeam: 8 });
+  const contextSnapshotCache = new Map<string, Promise<NBAContextSnapshot>>();
+  const contextBundleCache = new Map<string, Promise<{ context: import('../nba/context/types').NBAResearchContext; intelligence: NBAIntelligenceSnapshot } | null>>();
   const scheduled = await getNBASchedule(slateDate).catch(() => []);
   const bettable = scheduled.filter((game) => !game.completed);
   const slateComplete = scheduled.length > 0 && bettable.length === 0;
@@ -133,7 +187,7 @@ export async function runNBAFinderDeepSearch(
   } catch (error) {
     if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
     else if (error instanceof OddsRefreshNotAuthorizedError) { budgetLimited = true; blockReason = 'NOT_AUTHORIZED'; }
-    else throw error;
+    else if (!options.gameLines && !options.gameLinesOnly) throw error;
   }
 
   const selectable = bettable
@@ -178,10 +232,22 @@ export async function runNBAFinderDeepSearch(
     };
   }
 
+  const gameResearch = options.gameLines || options.gameLinesOnly ? await researchNBAGameLines(bettable, oddsEvents) : null;
+  if (options.gameLinesOnly) return {
+    results: [], nbaCandidates: [], gameCandidates: gameResearch?.recommendations ?? [], modeledGames: gameResearch?.modeledGames ?? [],
+    playerMatching: { matched: 0, ambiguous: 0, unmatched: 0 }, marketSupport: { full: 0, partial: 0, unsupported: 0 },
+    gamesAnalyzed: bettable.length, gamesEligible: bettable.length, gamesScheduled: scheduled.length, slateComplete,
+    propsAnalyzed: 0, eventsMatched: selectable.length, rawPropsTotal: 0, booksAnalyzed: 0,
+    analyzedAt: new Date().toISOString(), slateDate, credits: getLastOddsCreditInfo(), fromCache: true, cacheAgeMs: null,
+    budgetLimited, blockReason, oddsSpend: getActiveOddsSpendTracker(),
+  };
+
   // One injury-feed fetch per run, reused across every candidate — never per-player network calls.
   const injuryByPlayerId = new Map<number, NBAInjuryTier>();
+  let injuryFeedAvailable = false;
   try {
     const injuries = await getNBAInjuryStatuses();
+    injuryFeedAvailable = true;
     for (const injury of injuries) {
       if (injury.playerId != null) injuryByPlayerId.set(injury.playerId, classifyNBAInjuryTier(injury.status));
     }
@@ -226,7 +292,8 @@ export async function runNBAFinderDeepSearch(
     }
     let props;
     try {
-      props = await getDiscoveredEventPlayerProps(event.id, undefined, NBA_ODDS_SPORT_KEY, NBA_FALLBACK_MARKETS);
+      props = options.gameLines ? await loadCachedNBAPlayerProps(event.id)
+        : await getDiscoveredEventPlayerProps(event.id, undefined, NBA_ODDS_SPORT_KEY, NBA_FALLBACK_MARKETS);
       if (getLastOddsCreditInfo()?.source === 'network') sawNetworkCall = true;
     } catch (error) {
       if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
@@ -259,6 +326,10 @@ export async function runNBAFinderDeepSearch(
         let projection: SportProjection | null = null;
         let injuryTier: NBAInjuryTier | null = null;
         let eliteAnalysis: EliteResearchAnalysis | null = null;
+        let nbaPrediction: NBAProjectionResult | null = null;
+        let researchContext: import('../nba/context/types').NBAResearchContext | null = null;
+        let intelligenceSnapshot: NBAIntelligenceSnapshot | null = null;
+        let candidateTeamId: number | null = null;
         let outlierDependency: NBAOutlierDependency | null = null;
         let howItLoses: string[] = [];
         let opponentContext: NBAOpponentContext | null = null;
@@ -272,17 +343,66 @@ export async function runNBAFinderDeepSearch(
             logCache.set(match.playerId, await getNBAPlayerGameLogs(match.playerId).catch(() => []));
           }
           const logs = logCache.get(match.playerId)!;
-          injuryTier = injuryByPlayerId.get(match.playerId) ?? 'ACTIVE';
-          history = buildNBAHistory(logs, market, prop.line, side, slateDate);
-          projection = projectNBAMarket({ logs, market, injuryTier });
-          outlierDependency = computeNBAOutlierDependency(logs, market);
-          const minutesEstimate = estimateExpectedMinutes(logs, injuryTier);
-
           if (!playerTeamCache.has(match.playerId)) {
             const playerTeamId = await getNBAPlayer(match.playerId).then((p) => p.team?.id ?? null).catch(() => null);
             playerTeamCache.set(match.playerId, playerTeamId);
           }
           const playerTeamId = playerTeamCache.get(match.playerId) ?? null;
+          candidateTeamId = playerTeamId;
+          const contextKey = `${game.id}:${playerTeamId ?? 'unknown'}:${match.playerId}`;
+          if (playerTeamId != null && !contextBundleCache.has(contextKey)) {
+            contextBundleCache.set(contextKey, (async () => {
+              try {
+                const snapshotKey = `${game.id}:${playerTeamId}`;
+                if (!contextSnapshotCache.has(snapshotKey)) contextSnapshotCache.set(snapshotKey,
+                  contextProvider.loadSnapshot({ gameId: game.id, teamId: playerTeamId }).catch((error) => { contextSnapshotCache.delete(snapshotKey); throw error; }));
+                const contextSnapshot = await contextSnapshotCache.get(snapshotKey)!;
+                const builtContext = buildNBAResearchContext({ playerId: match.playerId!, teamId: playerTeamId, gameId: game.id, asOf: contextSnapshot.asOf }, contextSnapshot);
+                const intelligenceTarget = { gameId: contextSnapshot.target.gameId, homeTeamId: contextSnapshot.target.homeTeamId,
+                  awayTeamId: contextSnapshot.target.awayTeamId, startsAt: contextSnapshot.target.startsAt,
+                  basketballDate: slateDate, matchupAliases: [`${contextSnapshot.target.awayTeamId}@${contextSnapshot.target.homeTeamId}`] };
+                const archivedIntelligence = await loadNBAGameIntelligence(contextSnapshot).catch(() => null);
+                const builtIntelligence = archivedIntelligence ?? buildNBAIntelligence({ target: intelligenceTarget, asOf: builtContext.asOf, documents: [], claims: [], identities: [],
+                  sources: [], researchContexts: [builtContext], missing: ['No authorized reviewed NBA intelligence archive or dated identity directory is configured; no news/coaching claims were inferred.'] });
+                return { context: builtContext, intelligence: builtIntelligence };
+              } catch {
+                contextBundleCache.delete(contextKey);
+                return null;
+              }
+            })());
+          }
+          const contextBundle = playerTeamId == null ? null : await contextBundleCache.get(contextKey) ?? null;
+          researchContext = contextBundle?.context ?? null;
+          intelligenceSnapshot = contextBundle?.intelligence ?? null;
+          const legacyTier = injuryByPlayerId.get(match.playerId) ?? (injuryFeedAvailable ? 'UNKNOWN' : 'UNKNOWN');
+          injuryTier = researchContext?.sections.availability.status === 'OUT' ? 'OUT'
+            : researchContext?.sections.availability.status === 'DOUBTFUL' ? 'DOUBTFUL'
+              : researchContext?.sections.availability.status === 'QUESTIONABLE' ? 'QUESTIONABLE'
+                : researchContext?.sections.availability.status === 'PROBABLE' ? 'QUESTIONABLE'
+                  : researchContext?.sections.availability.status === 'AVAILABLE' ? 'ACTIVE' : legacyTier;
+          const mergedObservations = mergeModelObservations(logs, contextBundle ? await contextSnapshotCache.get(`${game.id}:${playerTeamId}`)! : null, match.playerId, playerTeamId ?? -1);
+          const targetSeason = game.season ?? seasonNumberFromAgent2(researchContext?.seasonId ?? null);
+          const targetPhase = game.phase && game.phase !== 'UNKNOWN'
+            ? game.phase : researchContext ? seasonPhaseForAgent2(researchContext.sections.season.phase, researchContext.sections.season.round) : 'UNKNOWN';
+          const modelPhase = targetPhase === 'PRESEASON' || targetPhase === 'ALL_STAR' ? 'UNKNOWN' : targetPhase;
+          const safeHistory = targetSeason == null ? [] : selectNBAAsOfHistory({ observations: mergedObservations, targetTipoff: game.gameTime,
+            targetGameId: game.id, targetSeason, targetPhase: modelPhase });
+          const phaseLogs = safeHistory.map((row) => row.log);
+          const marketHistory = buildNBAHistory(phaseLogs, market, prop.line, side);
+          history = marketHistory;
+          try {
+            nbaPrediction = targetSeason == null ? null : predictNBAMarket({ playerId: match.playerId, teamId: playerTeamId ?? -1,
+              playerName: prop.player, market, targetPhase: modelPhase, targetSeason, targetGameId: game.id, targetTipoff: game.gameTime,
+              observations: mergedObservations, injury: modelInjuryEvidence(injuryTier, injuryFeedAvailable), researchContext,
+              intelligenceSnapshot, line: prop.line, direction: side, americanOdds: odds, sportsbook: prop.sportsbookName,
+              quoteTimestamp: prop.lastUpdate, oppositeQuote: (side === 'over' ? prop.underOdds : prop.overOdds) == null ? null : {
+                market, line: prop.line, direction: side === 'over' ? 'under' : 'over', americanOdds: (side === 'over' ? prop.underOdds : prop.overOdds)!,
+                sportsbook: prop.sportsbookName, quoteTimestamp: prop.lastUpdate ?? '',
+              } });
+          } catch { nbaPrediction = null; }
+          projection = toSportProjection(nbaPrediction);
+          outlierDependency = computeNBAOutlierDependency(phaseLogs, market);
+          const minutesEstimate = estimateExpectedMinutes(phaseLogs, injuryTier);
           const opponentTeamId = playerTeamId != null
             ? (playerTeamId === game.homeTeam.id ? game.awayTeam.id : playerTeamId === game.awayTeam.id ? game.homeTeam.id : null)
             : null;
@@ -295,10 +415,10 @@ export async function runNBAFinderDeepSearch(
             market,
             line: prop.line,
             direction: side,
-            projection: projection.status === 'OK' ? projection.projection : null,
-            projectionUncertainty: projection.status === 'OK' ? projection.uncertainty : null,
-            logs,
-            matchupAvailable: true,
+            projection: projection?.status === 'OK' ? projection.projection : null,
+            projectionUncertainty: projection?.status === 'OK' ? projection.uncertainty : null,
+            logs: phaseLogs,
+            matchupAvailable: opponentContext != null && opponentContext.status !== 'UNAVAILABLE',
             injuryTier,
             oddsAmerican: odds,
             lastUpdatedAt: prop.lastUpdate ?? null,
@@ -306,7 +426,26 @@ export async function runNBAFinderDeepSearch(
             marketSupport: meta.historicalSupport,
             opponentContextAvailable: opponentContext != null && opponentContext.status !== 'UNAVAILABLE',
           };
-          eliteAnalysis = analyzePickCandidate(buildNBAEliteCandidate(researchCandidate));
+          const eliteInput = buildNBAEliteCandidate(researchCandidate);
+          const modelRates = nbaPrediction?.historyRates;
+          eliteAnalysis = analyzePickCandidate({ ...eliteInput,
+            projection: nbaPrediction?.expectedStat ?? null,
+            projectionUncertainty: nbaPrediction?.statUncertainty ?? null,
+            sampleSize: nbaPrediction?.sampleSize ?? 0,
+            historicalRates: modelRates ? [modelRates.l5, modelRates.l10, modelRates.l20, modelRates.season].map((rate) => rate == null ? null : rate * 100) : [],
+            matchupAvailable: researchCandidate.matchupAvailable,
+            usageAvailable: (nbaPrediction?.opportunitiesUsed.length ?? 0) > 0,
+            roleKnown: researchContext?.sections.rotation.recentRole !== 'UNKNOWN' && researchContext != null,
+            gameContextAvailable: researchContext != null,
+            statusKnown: researchContext?.sections.availability.state === 'AVAILABLE' && researchContext.sections.availability.status !== 'UNKNOWN',
+            marketFairProbability: nbaPrediction?.noVigMarketProbability ?? null,
+            nbaProbabilityOverride: nbaPrediction?.probabilities == null ? undefined : {
+              over: nbaPrediction.probabilities.over, under: nbaPrediction.probabilities.under, push: nbaPrediction.probabilities.push,
+              expectedValuePercent: nbaPrediction.expectedValuePercent, fairAmericanOdds: nbaPrediction.fairAmericanOdds,
+              noVigMarketProbability: nbaPrediction.noVigMarketProbability, eligibleForReview: nbaPrediction.eligibleForReview, modelVersion: nbaPrediction.modelVersion,
+              validationStatus: nbaPrediction.validationStatus,
+            },
+          });
           howItLoses = buildNBAFailureModes({
             rawEdge: eliteAnalysis.rawEdge,
             sampleSize: history?.windows.season.total ?? null,
@@ -326,8 +465,9 @@ export async function runNBAFinderDeepSearch(
           playerId: match.playerId,
           playerName: prop.player,
           playerMatch: match.state,
-          team: null,
-          opponent: `${game.awayTeam.displayName} @ ${game.homeTeam.displayName}`,
+          team: candidateTeamId === game.homeTeam.id ? game.homeTeam.displayName : candidateTeamId === game.awayTeam.id ? game.awayTeam.displayName : null,
+          opponent: candidateTeamId === game.homeTeam.id ? game.awayTeam.displayName
+            : candidateTeamId === game.awayTeam.id ? game.homeTeam.displayName : `${game.awayTeam.displayName} @ ${game.homeTeam.displayName}`,
           market,
           marketLabel: NBA_MARKET_LABELS[market] ?? market,
           historicalSupport: meta.historicalSupport,
@@ -346,6 +486,10 @@ export async function runNBAFinderDeepSearch(
           crossBookThreshold,
           position: match.position,
           opponentContext,
+          injuryEvidence: modelInjuryEvidence(injuryTier, injuryFeedAvailable),
+          nbaPrediction,
+          researchContext,
+          intelligenceSnapshot,
           marketMovement: computeMarketMovement([]),
           howItLoses,
           eliteAnalysis,
@@ -361,6 +505,7 @@ export async function runNBAFinderDeepSearch(
     // through the shared qualification gates.
     results: [],
     nbaCandidates: candidates,
+    ...(gameResearch ? { gameCandidates: gameResearch.recommendations, modeledGames: gameResearch.modeledGames } : {}),
     playerMatching: {
       matched: candidates.filter((c) => c.playerMatch === 'MATCHED').length,
       ambiguous: candidates.filter((c) => c.playerMatch === 'AMBIGUOUS').length,

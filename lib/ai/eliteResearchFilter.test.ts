@@ -440,6 +440,9 @@ describe('Research Score / Signal Agreement reachability audit — NBA', () => {
       statusKnown: true, lastUpdatedAt: new Date().toISOString(),
       requiredMarketSupported: true, marketSupport: 'SUPPORTED',
       unsupportedSignals: ['projectionAgreement', 'opponentPersonnel'],
+      nbaProbabilityOverride: { over: 0.8, under: 0.2, push: 0, expectedValuePercent: 68,
+        fairAmericanOdds: -400, noVigMarketProbability: null, eligibleForReview: true,
+        modelVersion: 'NBA_MODEL_V1', validationStatus: 'UNVALIDATED' },
     });
     expect(a.researchScore).toBeGreaterThanOrEqual(ELITE_THRESHOLDS.researchScore);
     expect(a.agreementRatio ?? 0).toBeGreaterThanOrEqual(ELITE_THRESHOLDS.minAgreementRatio);

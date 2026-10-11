@@ -56,6 +56,12 @@ export const NFL_DEFENSE_MARKETS: NFLAnalyzableMarketKey[] = [
   'player_tackles_assists', 'player_sacks', 'player_solo_tackles', 'player_defensive_interceptions',
 ];
 
+export const NFL_ELITE_MARKETS: NFLAnalyzableMarketKey[] = [
+  'player_pass_yds', 'player_pass_attempts', 'player_pass_completions', 'player_pass_tds', 'player_pass_interceptions',
+  'player_rush_yds', 'player_rush_attempts', 'player_rush_tds',
+  'player_reception_yds', 'player_receptions', 'player_reception_tds',
+];
+
 export const NFL_ALTERNATE_MARKET_SUFFIX = '_alternate';
 
 export const NFL_MARKET_LABELS: Record<NFLAnalyzableMarketKey, string> = {
@@ -120,36 +126,55 @@ export interface NFLMarketMetadata {
 
 export type NFLHistoricalValue = number | null;
 
+function yardageSourcePairIsValid(marketKey: NFLAnalyzableMarketKey, value: number, stats: Record<string, number>): boolean {
+  const opportunityKey = marketKey === 'player_pass_yds' ? 'passingAttempts'
+    : marketKey === 'player_rush_yds' ? 'rushingAttempts'
+      : marketKey === 'player_reception_yds' ? 'receivingTargets' : null;
+  const opportunity = opportunityKey ? stats[opportunityKey] : null;
+  if (opportunityKey && opportunity != null && (!Number.isFinite(opportunity) || opportunity < 0)) return false;
+  if (value >= 0) return true;
+  if (marketKey === 'player_pass_yds') {
+    // ESPN passing yards can be negative from sacks even when no pass attempt was recorded.
+    return Number.isFinite(opportunity) && opportunity! > 0 || Number.isFinite(stats.sacks) && stats.sacks > 0;
+  }
+  if (marketKey === 'player_rush_yds' || marketKey === 'player_reception_yds') return Number.isFinite(opportunity) && opportunity! > 0;
+  return true;
+}
+
 /** Returns only values that can be calculated from the normalized ESPN game log. */
 export function getNFLMarketHistoricalValue(
   marketKey: NFLAnalyzableMarketKey,
   stats: Record<string, number>,
 ): NFLHistoricalValue {
+  let value: number | null;
   switch (marketKey) {
     case 'player_rush_rec_yds':
-      return stats.rushingYards != null && stats.receivingYards != null ? stats.rushingYards + stats.receivingYards : null;
+      value = stats.rushingYards != null && stats.receivingYards != null ? stats.rushingYards + stats.receivingYards : null;
+      break;
     case 'player_anytime_td':
-      return stats.rushingTouchdowns != null && stats.receivingTouchdowns != null ? stats.rushingTouchdowns + stats.receivingTouchdowns : null;
-    case 'player_pass_yds': return stats.passingYards ?? null;
-    case 'player_pass_tds': return stats.passingTouchdowns ?? null;
-    case 'player_pass_completions': return stats.completions ?? null;
-    case 'player_pass_attempts': return stats.passingAttempts ?? null;
-    case 'player_pass_interceptions': return stats.interceptions ?? null;
-    case 'player_pass_longest_completion': return stats.longPassing ?? null;
-    case 'player_rush_yds': return stats.rushingYards ?? null;
-    case 'player_rush_attempts': return stats.rushingAttempts ?? null;
-    case 'player_rush_longest': return stats.longRushing ?? null;
-    case 'player_rush_tds': return stats.rushingTouchdowns ?? null;
-    case 'player_reception_yds': return stats.receivingYards ?? null;
-    case 'player_receptions': return stats.receptions ?? null;
-    case 'player_reception_longest': return stats.longReception ?? null;
-    case 'player_reception_tds': return stats.receivingTouchdowns ?? null;
-    case 'player_tackles_assists': return stats.totalTackles ?? null;
-    case 'player_sacks': return stats.sacks ?? null;
-    case 'player_solo_tackles': return stats.soloTackles ?? null;
-    case 'player_defensive_interceptions': return stats.interceptions ?? null;
-    default: return null;
+      value = stats.rushingTouchdowns != null && stats.receivingTouchdowns != null ? stats.rushingTouchdowns + stats.receivingTouchdowns : null;
+      break;
+    case 'player_pass_yds': value = stats.passingYards ?? null; break;
+    case 'player_pass_tds': value = stats.passingTouchdowns ?? null; break;
+    case 'player_pass_completions': value = stats.completions ?? null; break;
+    case 'player_pass_attempts': value = stats.passingAttempts ?? null; break;
+    case 'player_pass_interceptions': value = stats.interceptions ?? null; break;
+    case 'player_pass_longest_completion': value = stats.longPassing ?? null; break;
+    case 'player_rush_yds': value = stats.rushingYards ?? null; break;
+    case 'player_rush_attempts': value = stats.rushingAttempts ?? null; break;
+    case 'player_rush_longest': value = stats.longRushing ?? null; break;
+    case 'player_rush_tds': value = stats.rushingTouchdowns ?? null; break;
+    case 'player_reception_yds': value = stats.receivingYards ?? null; break;
+    case 'player_receptions': value = stats.receptions ?? null; break;
+    case 'player_reception_longest': value = stats.longReception ?? null; break;
+    case 'player_reception_tds': value = stats.receivingTouchdowns ?? null; break;
+    case 'player_tackles_assists': value = stats.totalTackles ?? null; break;
+    case 'player_sacks': value = stats.sacks ?? null; break;
+    case 'player_solo_tackles': value = stats.soloTackles ?? null; break;
+    case 'player_defensive_interceptions': value = stats.interceptions ?? null; break;
+    default: value = null;
   }
+  return value != null && (!Number.isFinite(value) || !yardageSourcePairIsValid(marketKey, value, stats)) ? null : value;
 }
 
 function historicalSupportFor(marketKey: NFLAnalyzableMarketKey): NFLMarketMetadata['historicalSupport'] {

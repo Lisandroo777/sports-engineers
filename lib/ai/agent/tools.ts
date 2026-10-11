@@ -1,8 +1,9 @@
-import { runFinderDeepSearch, type FinderResult, type FinderRunSummary, type FinderValidationOptions } from '../../finder/engine';
-import { runNFLFinderDeepSearch, type NFLFinderSummary } from '../../finder/nflEngine';
-import { runNBAFinderDeepSearch, type NBAFinderSummary } from '../../finder/nbaEngine';
+import { runFinderDeepSearch, type FinderResult, type FinderRunSummary } from '../../finder/engine';
+import { runNFLFinderDeepSearch, type NFLFinderSummary, type NFLFinderOptions } from '../../finder/nflEngine';
+import { runNBAFinderDeepSearch, type NBAFinderSummary, type NBACandidate } from '../../finder/nbaEngine';
 import { getMLBSchedule } from '../../mlb/schedule';
-import { getNFLSchedule } from '../../nfl/schedule';
+import { getNFLSchedule, getNFLUpcomingGameDate } from '../../nfl/schedule';
+import { getNFLTeams } from '../../nfl/teams';
 import { getNBASchedule } from '../../nba/schedule';
 import { getMLBPlayer, searchMLBPlayers } from '../../mlb/players';
 import { getPlayerGameLogs } from '../../mlb/stats';
@@ -10,26 +11,90 @@ import { searchNFLPlayers } from '../../nfl/players';
 import { getPlayerGameLogs as getNFLPlayerGameLogs, getPlayerRoleWorkloadLogs } from '../../nfl/stats';
 import { buildNFLPlayerWorkloadProfile } from '../../nfl/roleContext';
 import { buildNFLOpponentContext, getNFLOpponentDefenseGames } from '../../nfl/opponentContext';
-import { buildNFLInjuryContext, getNFLInjuryReports, isNFLPlayerAvailabilityKnown } from '../../nfl/injuries';
+import { buildNFLInjuryContext, getNFLInjurySnapshot, isNFLPlayerAvailabilityKnown } from '../../nfl/injuries';
+import { getNFLParticipationSnapshot, evaluateNFLParticipation } from '../../nfl/participation';
+import { assignNFLDisplayRanks, groupNFLUnderlyingPlays } from '../../nfl/underlyingPlays';
 import { getNFLWeatherContext } from '../../nfl/weather';
 import { searchNBAPlayers } from '../../nba/players';
 import { getNBAPlayerGameLogs } from '../../nba/stats';
-import { NFL_QB_MARKETS, NFL_RB_MARKETS, NFL_WR_TE_MARKETS, NFL_KICKER_MARKETS, NFL_DEFENSE_MARKETS } from '../../nfl/oddsTypes';
+import { classifyNBAMarketIntent, unsupportedNBAGameLineNotice } from '../../nba/prediction/marketIntent';
+import { rankNBARecommendations } from '../../nba/prediction/ranking';
+import { NFL_QB_MARKETS, NFL_RB_MARKETS, NFL_WR_TE_MARKETS, NFL_KICKER_MARKETS, NFL_DEFENSE_MARKETS, NFL_ELITE_MARKETS, type NFLAnalyzableMarketKey } from '../../nfl/oddsTypes';
 import { SPORT_RESEARCH_ADAPTERS, detectSport, normalizeSport, type SupportedSport } from '../sportResearchAdapters';
-import { OddsBudgetGuardError, OddsRefreshNotAuthorizedError, isPaidRefreshAllowed, withOneRunPaidRefresh } from '../../odds/client';
+import { getSportFilterRegistration, isSportResearchImplemented } from '../sportFilterRegistry';
+import { applyNFLHardGatesToAnalysis } from '../../nfl/researchModel';
+import { OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withOneRunPaidRefresh } from '../../odds/client';
 import { addDaysToSlateDate, todaySlateDate, type SlateDate } from '../../dateModel';
 import { resolveDateFromText, type ResolvedDate } from '../dateResolver';
 import { fail, ok, type ToolResult } from './status';
 import { buildResearchSession, buildResearchSessionFromCandidates, getClosestMisses, type ResearchCandidateRecord, type ResearchSession, type GenericResearchCandidate } from './session';
 import { saveResearchSession } from './sessionStore';
+import { nflNameMatches, parseNFLRequestScope, type NFLMarketFamily, type NFLRequestScope } from './nflRequestScope';
+import { classifyPickTier, queryRequestsPasses, qualityFloorFromQuery, tierMeetsFloor, type PickTier } from './pickTiers';
+import { matchesNFLLowThreshold, type NFLResearchMode } from '../../nfl/researchIntent';
+import { evaluateNFLSavedResearchMode } from '../../nfl/researchMode';
+import { isNFLInjuryContextFresh } from '../../nfl/injuries';
 
 export const MAX_RESULTS_CEILING = 15;
+
+export function nbaFinderCandidateToGeneric(candidate: NBACandidate): GenericResearchCandidate {
+  return {
+    candidateId: candidate.id, playerId: candidate.playerId, player: candidate.playerName, team: candidate.team, opponent: candidate.opponent,
+    marketLabel: candidate.marketLabel, marketKey: candidate.market, line: candidate.line, direction: candidate.side,
+    book: candidate.book, odds: candidate.oddsAmerican, projection: candidate.nbaPrediction?.expectedStat ?? null,
+    projectionUncertainty: candidate.nbaPrediction?.statUncertainty ?? null,
+    l5Rate: candidate.history?.windows.l5.rate ?? null, l10Rate: candidate.history?.windows.l10.rate ?? null,
+    l20Rate: candidate.history?.windows.l20.rate ?? null, seasonRate: candidate.history?.windows.season.rate ?? null,
+    sampleSize: candidate.nbaPrediction?.sampleSize ?? 0,
+    analysis: candidate.eliteAnalysis!, nbaPrediction: candidate.nbaPrediction, sport: 'nba',
+    matchupAvailable: candidate.opponentContext != null && candidate.opponentContext.status !== 'UNAVAILABLE',
+    roleKnown: candidate.researchContext?.sections.rotation.recentRole !== 'UNKNOWN' && candidate.researchContext != null,
+    injuryKnown: candidate.researchContext?.sections.availability.state === 'AVAILABLE',
+    nbaInjuryEvidence: candidate.injuryEvidence,
+    injuryContext: candidate.researchContext?.sections.availability.status === 'AVAILABLE'
+      ? { source: 'NBAResearchContext v1', status: candidate.researchContext.sections.availability.status,
+        evidenceIds: candidate.researchContext.sections.availability.evidenceIds }
+      : null,
+    outlierDependencePercent: candidate.outlierDependency?.available ? candidate.outlierDependency.explosiveDependencePercent : null,
+    crossBookDiscrepancy: candidate.crossBookThreshold?.available ? candidate.crossBookThreshold.discrepancy : null,
+    marketMovementAvailable: candidate.marketMovement.available,
+    howItLoses: candidate.howItLoses,
+    position: candidate.position,
+    projectionReliability: candidate.nbaPrediction?.reliability ?? 'UNRELIABLE',
+    crossBookThreshold: candidate.crossBookThreshold,
+    marketMovement: candidate.marketMovement,
+    outlierAnalysis: candidate.outlierDependency ? {
+      applicability: 'APPLICABLE', available: candidate.outlierDependency.available,
+      sampleGames: candidate.outlierDependency.sampleGames, explosiveDependencePercent: candidate.outlierDependency.explosiveDependencePercent,
+    } : null,
+    roleContext: candidate.researchContext ? {
+      requirement: 'Observed role evidence only; no future minutes assignment is asserted.',
+      status: candidate.researchContext.sections.rotation.recentRole,
+      confidence: candidate.nbaPrediction?.reliability ?? 'UNAVAILABLE',
+      workloadTrend: candidate.nbaPrediction?.reasons.find((reason) => reason.includes('ROLE')) ?? 'UNAVAILABLE',
+      reasons: candidate.nbaPrediction?.reasons ?? [],
+      evidence: candidate.researchContext.sections.rotation.evidenceIds.map((id) => candidate.researchContext!.evidence.find((entry) => entry.id === id)?.detail).filter((value): value is string => !!value),
+      unavailableEvidence: candidate.researchContext.coverage.missing,
+    } : null,
+    opponentContext: candidate.opponentContext ? {
+      status: candidate.opponentContext.status, availableMetrics: candidate.opponentContext.availableMetrics,
+      unavailableMetrics: candidate.opponentContext.unavailableMetrics, evidence: candidate.opponentContext.evidence,
+    } : null,
+    bestAlternateLine: candidate.alternateLines?.recommended ? {
+      line: candidate.alternateLines.recommended.line, side: candidate.alternateLines.recommended.side,
+      bestBook: candidate.alternateLines.recommended.bestBook, bestOdds: candidate.alternateLines.recommended.bestOdds,
+      trueProbability: candidate.alternateLines.recommended.trueProbability, breakEvenProbability: candidate.alternateLines.recommended.breakEvenProbability,
+      edgePercent: candidate.alternateLines.recommended.edgePercent, band: candidate.alternateLines.recommended.band,
+    } : null,
+    retrievedAt: candidate.priceTimestamp,
+  };
+}
 
 /** Which sports can actually produce Elite candidates today, and which only have partial data. */
 const SPORT_STATUS: Record<SupportedSport, { props: boolean; schedule: boolean; note: string }> = {
   mlb: { props: true, schedule: true, note: 'Fully operational: schedule, sportsbook props, research and Elite Filter.' },
   nfl: { props: true, schedule: true, note: 'Schedule, sportsbook props (where cached), player matching, ESPN attempt/target workload, baseline projection and Elite Filter are connected. Snap share and depth-chart status remain unavailable.' },
-  nba: { props: true, schedule: true, note: 'Schedule, sportsbook props (where cached), player matching, injury-aware rate x minutes projection and Elite Filter are connected.' },
+  nba: { props: true, schedule: true, note: 'NBA_MODEL_V1 researches supported player props with phase-aware ESPN history, bounded NBAResearchContext and versioned intelligence evidence. Game-line moneylines/spreads/totals are unsupported without timestamped quotes and validated game-line probabilities.' },
   soccer: { props: false, schedule: false, note: 'Research adapter defined only. No data source connected.' },
   tennis: { props: false, schedule: false, note: 'Research adapter defined only. No data source connected.' },
 };
@@ -48,10 +113,12 @@ export interface AgentContext {
   /** Resolved once from the user's message; overrides any date/sport the model passes. */
   canonicalDate: ResolvedDate | null;
   canonicalSport: SupportedSport | null;
+  nflScope: NFLRequestScope | null;
+  nflResearchIncomplete: boolean;
 }
 
 export function createAgentContext(seed?: ResearchSession | null, seedId?: string | null, refreshApproval?: AgentContext['refreshApproval']): AgentContext {
-  return { runs: new Map(), researchSession: seed ?? null, researchSessionId: seedId ?? null, pendingQueryIntent: '', refreshApproval: refreshApproval ?? null, canonicalDate: null, canonicalSport: null };
+  return { runs: new Map(), researchSession: seed ?? null, researchSessionId: seedId ?? null, pendingQueryIntent: '', refreshApproval: refreshApproval ?? null, canonicalDate: null, canonicalSport: null, nflScope: null, nflResearchIncomplete: false };
 }
 
 /** Pins the request's date and sport from the user's own words before any tool runs. */
@@ -59,6 +126,52 @@ export function applyRequestScope(context: AgentContext, query: string, today: S
   context.pendingQueryIntent = query;
   context.canonicalDate = resolveDateFromText(query, today);
   context.canonicalSport = detectSport(query);
+  const scope = parseNFLRequestScope(query);
+  if (!context.canonicalSport && (scope.teams.length > 0 || scope.marketFamily != null || context.researchSession?.sport === 'nfl')) context.canonicalSport = 'nfl';
+  context.nflScope = context.canonicalSport === 'nfl' || (!context.canonicalSport && scope.playerQuery) ? scope : null;
+}
+
+export async function prepareNFLRequestScope(context: AgentContext, search = searchNFLPlayers): Promise<string | null> {
+  const scope = context.nflScope;
+  if (!scope || scope.clarification) return scope?.clarification ?? null;
+  if (scope.playerQuery && !scope.playerName) {
+    const cached = context.researchSession?.sport === 'nfl'
+      ? context.researchSession.candidates.filter((candidate) => nflNameMatches(scope.playerQuery!, candidate.player)) : [];
+    const names = [...new Set(cached.map((candidate) => candidate.player))];
+    const identities = new Set(cached.map((candidate) => `${candidate.playerId}|${candidate.team}|${candidate.player}`));
+    if (names.length === 1 && identities.size === 1 && cached[0].team) {
+      scope.playerId = cached[0].playerId;
+      scope.playerName = names[0];
+      scope.playerTeam = cached[0].team;
+      scope.playerTeamId = cached[0].teamId ?? null;
+    } else {
+      const matches = await search(scope.playerQuery).catch(() => []);
+      const confident = matches.filter((player) => nflNameMatches(scope.playerQuery!, player.name));
+      if (confident.length !== 1 || !confident[0].team) {
+        scope.clarification = `Which NFL player do you mean by "${scope.playerQuery}" (full name and team)?`;
+        return scope.clarification;
+      }
+      scope.playerId = confident[0].id;
+      scope.playerName = confident[0].name;
+      scope.playerTeam = confident[0].team.displayName;
+      scope.playerTeamId = confident[0].team.id;
+    }
+    context.canonicalSport = 'nfl';
+  }
+  if (!context.canonicalDate && (scope.playerTeam || scope.teams.length > 0)) {
+    try {
+      const names = [...new Set([...scope.teams, ...(scope.playerTeam ? [scope.playerTeam] : [])])];
+      const teams = scope.playerTeamId != null && names.length === 1
+        ? [{ id: scope.playerTeamId, displayName: scope.playerTeam! }] : await getNFLTeams();
+      const ids = names.map((name) => teams.find((team) => team.displayName.toLowerCase() === name.toLowerCase())?.id);
+      const date = ids.every((id): id is number => id != null) ? await getNFLUpcomingGameDate(ids) : null;
+      if (date) context.canonicalDate = resolveDateFromText(date);
+      else scope.clarification = 'No upcoming game was found for that player or matchup. Which NFL game or date do you mean?';
+    } catch {
+      scope.clarification = 'DeepSide could not confirm the upcoming game. Which NFL game or date do you mean?';
+    }
+  }
+  return scope.clarification;
 }
 
 export { detectSport };
@@ -78,20 +191,28 @@ function resolveSport(input: string | undefined, context?: AgentContext): Suppor
   return context?.canonicalSport ?? normalizeSport(input ?? 'mlb');
 }
 
-async function loadRun(context: AgentContext, sport: SupportedSport, date: string, options: FinderValidationOptions = {}): Promise<FinderRunSummary> {
-  const key = `${sport}:${date}`;
+async function loadRun(context: AgentContext, sport: SupportedSport, date: string, options: NFLFinderOptions = {}): Promise<FinderRunSummary> {
+  const key = `${sport}:${date}:${JSON.stringify(options)}`;
   const existing = context.runs.get(key);
   if (existing) return existing;
-  const summary = sport === 'nfl' ? await runNFLFinderDeepSearch(date, options) : sport === 'nba' ? await runNBAFinderDeepSearch(date, options) : await runFinderDeepSearch(date, options);
+  const registration = getSportFilterRegistration(sport);
+  if (!registration || !isSportResearchImplemented(sport)) throw new Error(`The ${sport} research filter is not implemented.`);
+  const summary = registration.implementation === 'NFL_RESEARCH_MODEL' ? await runNFLFinderDeepSearch(date, options)
+    : registration.implementation === 'EXISTING_NBA_ENGINE' ? await runNBAFinderDeepSearch(date, options)
+      : registration.implementation === 'EXISTING_MLB_ENGINE' ? await runFinderDeepSearch(date, options)
+        : (() => { throw new Error(`The ${sport} research filter is not implemented.`); })();
   context.runs.set(key, summary);
   return summary;
 }
 
-async function runPreflight(sport: SupportedSport, date: string, forceProviderRefresh = false): Promise<FinderRunSummary> {
-  const options: FinderValidationOptions = { preflight: true, forceProviderRefresh };
-  if (sport === 'nfl') return runNFLFinderDeepSearch(date, options);
-  if (sport === 'nba') return runNBAFinderDeepSearch(date, options);
-  return runFinderDeepSearch(date, options);
+async function runPreflight(sport: SupportedSport, date: string, forceProviderRefresh = false, marketKeys?: NFLAnalyzableMarketKey[] | null): Promise<FinderRunSummary> {
+  const options: NFLFinderOptions = { preflight: true, forceProviderRefresh, ...(sport === 'nfl' && marketKeys ? { marketKeys } : {}) };
+  const registration = getSportFilterRegistration(sport);
+  if (!registration || !isSportResearchImplemented(sport)) throw new Error(`The ${sport} research filter is not implemented.`);
+  if (registration.implementation === 'NFL_RESEARCH_MODEL') return runNFLFinderDeepSearch(date, options);
+  if (registration.implementation === 'EXISTING_NBA_ENGINE') return runNBAFinderDeepSearch(date, options);
+  if (registration.implementation === 'EXISTING_MLB_ENGINE') return runFinderDeepSearch(date, options);
+  throw new Error(`The ${sport} research filter is not implemented.`);
 }
 
 // ── tool implementations ──────────────────────────────────────────────────────
@@ -104,6 +225,10 @@ async function getSportCapabilities(): Promise<ToolResult<unknown>> {
       canProduceCandidates: status.props,
       hasSchedule: status.schedule,
       note: status.note,
+        sportFilter: getSportFilterRegistration(sport)?.sportFilter ?? sport.toUpperCase(),
+        sportFilterId: getSportFilterRegistration(sport)?.filterId ?? null,
+        sportFilterVersion: getSportFilterRegistration(sport)?.version ?? null,
+        implementation: getSportFilterRegistration(sport)?.implementation ?? 'NOT_IMPLEMENTED',
       supportedMarkets: SPORT_RESEARCH_ADAPTERS[sport as SupportedSport].marketSupport,
     })),
   );
@@ -114,6 +239,22 @@ async function getSlate(context: AgentContext, args: { sport?: string; date?: st
   if (!sport) return fail('SPORT_UNAVAILABLE', `"${args.sport}" is not a supported sport.`);
   const resolved = resolveDate(args.date, context);
   if ('error' in resolved) return fail('INVALID_DATE', resolved.error, { sport });
+
+  const nbaMarkets = sport === 'nba' ? classifyNBAMarketIntent(context.pendingQueryIntent) : null;
+  if (nbaMarkets?.gameLineMarkets.length) {
+    const summary = await runNBAFinderDeepSearch(resolved.date, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly });
+    context.researchSession = buildResearchSessionFromCandidates({ sport: 'nba', date: resolved.date, queryIntent: context.pendingQueryIntent,
+      candidates: summary.nbaCandidates.filter(candidate => candidate.playerMatch === 'MATCHED' && candidate.eliteAnalysis != null).map(nbaFinderCandidateToGeneric),
+      toolMeta: { gamesFound: summary.gamesAnalyzed, gamesScheduled: summary.gamesScheduled, propsFound: summary.propsAnalyzed,
+        booksFound: summary.booksAnalyzed, candidatesFound: summary.nbaCandidates.length, cached: summary.fromCache,
+        dataFreshnessSeconds: summary.cacheAgeMs == null ? null : summary.cacheAgeMs / 1000, budgetLimited: summary.budgetLimited } });
+    context.researchSession.gameCandidates = summary.gameCandidates ?? [];
+    context.researchSession.modeledGames = summary.modeledGames ?? [];
+    context.researchSessionId = await saveResearchSession(context.researchSession);
+    return ok({ loaded: true, candidatesFound: context.researchSession.candidates.length + context.researchSession.gameCandidates.length,
+      modeledGames: context.researchSession.modeledGames, nextStep: 'Call rank_candidates; unpriced team research is not a recommendation.' },
+      { sport: 'nba', date: resolved.date, researchComplete: true });
+  }
 
   const status = SPORT_STATUS[sport];
   if (!status.schedule) return fail('SPORT_UNAVAILABLE', status.note, { sport, date: resolved.date });
@@ -137,6 +278,8 @@ async function getSlate(context: AgentContext, args: { sport?: string; date?: st
 }
 
 async function getSportsbookCandidates(context: AgentContext, args: { sport?: string; date?: string }): Promise<ToolResult<unknown>> {
+  const clarification = await prepareNFLRequestScope(context);
+  if (clarification) return fail('NOT_FOUND', clarification, { sport: 'nfl' });
   const sport = resolveSport(args.sport, context);
   if (!sport) return fail('SPORT_UNAVAILABLE', `"${args.sport}" is not a supported sport.`);
   const resolved = resolveDate(args.date, context);
@@ -152,7 +295,11 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   // Reuse first: a stored session for this exact sport+date already holds the full researched pool,
   // so a reworded question never re-runs the slate or risks a paid refresh.
   const existing = context.researchSession;
-  const sessionMatches = !deliberateRefresh && !approvedForRequest && existing != null && existing.sport === sport && existing.date === resolved.date && existing.candidates.length > 0;
+  const sessionMatches = !deliberateRefresh && !approvedForRequest && existing != null && existing.sport === sport && existing.date === resolved.date && existing.candidates.length > 0
+    && (sport !== 'nfl' || existing.toolMeta.researchComplete !== false
+      && existing.candidates.every((candidate) => candidate.priceCurrent && ['LIVE', 'FRESH'].includes(classifyStoredPrice(candidate))
+        && isNFLPlayerAvailabilityKnown(candidate.injuryContext as Parameters<typeof isNFLPlayerAvailabilityKnown>[0])
+        && (context.nflScope?.researchMode !== 'DEEP' || candidate.nflResearchProfile?.researchMode !== 'STANDARD')));
   const reuseSession = () => ok(
     { loaded: true, reusedExistingSession: true, candidatesFound: existing!.candidates.length, nextStep: 'Call rank_candidates to filter and rank the already-researched pool.' },
     { ...existing!.toolMeta, sport, date: resolved.date, reusedExistingSession: true },
@@ -161,26 +308,33 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
 
   let preflight: FinderRunSummary;
   try {
-    preflight = await runPreflight(sport, resolved.date, deliberateRefresh);
+    preflight = await runPreflight(sport, resolved.date, deliberateRefresh, context.nflScope?.marketKeys);
   } catch (error) {
+    if (sport === 'nfl') { context.nflResearchIncomplete = true; context.researchSession = null; context.researchSessionId = null; }
     console.error('[deepside:odds] preflight failed', { sport, date: resolved.date, error: error instanceof Error ? error.message : error });
-    return fail('PROVIDER_ERROR', 'Sportsbook preflight failed.', { sport, date: resolved.date });
+    return fail(sport === 'nfl' ? 'RESEARCH_INCOMPLETE' : 'PROVIDER_ERROR', sport === 'nfl' ? 'The requested NFL slate could not be fully researched.' : 'Sportsbook preflight failed.', { sport, date: resolved.date, researchComplete: false });
   }
 
   const preflightData = preflight.validationPreflight;
-  const requestedGameIds = detectRequestedGames(context.pendingQueryIntent, preflightData?.games ?? []);
+  const scopedTeams = [...new Set([...(context.nflScope?.teams ?? []), ...(context.nflScope?.playerTeam ? [context.nflScope.playerTeam] : [])])];
+  const requestedGameIds = sport === 'nfl' && scopedTeams.length > 0
+    ? (preflightData?.games ?? []).filter((game) => scopedTeams.every((team) => detectRequestedGames(team, [game]).length > 0)).map((game) => game.gameId)
+    : detectRequestedGames(context.pendingQueryIntent, preflightData?.games ?? []);
+  if (sport === 'nfl' && scopedTeams.length > 0 && requestedGameIds.length === 0) {
+    return fail('NOT_FOUND', 'That player or matchup has no game on the requested slate. Which date should DeepSide research?', { sport, date: resolved.date });
+  }
   if (sessionMatches && requestedGameIds.length > 0 && requestedGameIds.every((id) => existing.scopeGameIds!.includes(id))) return reuseSession();
 
-  const autoRefresh = approvedForRequest != null || isPaidRefreshAllowed();
+  const autoRefresh = sport === 'nfl' || approvedForRequest != null;
   const scopeGames = (preflightData?.games ?? []).filter((game) => requestedGameIds.length === 0 || requestedGameIds.includes(game.gameId));
   const cachedGameIds = scopeGames
     .filter((game) => game.eventId != null && game.marketsCacheState === 'CACHE_FRESH')
     .map((game) => game.gameId);
-  if (preflightData?.preflightState === 'EVENT_LIST_REQUIRED') {
+  if (sport !== 'nfl' && preflightData?.preflightState === 'EVENT_LIST_REQUIRED') {
     return fail('EVENT_LIST_REQUIRED', 'Sportsbook markets are not posted for this slate yet.', { sport, date: resolved.date, gamesScheduled: preflight.gamesScheduled, gamesFound: 0 });
   }
   // Without paid-refresh permission (local development default) only already-cached games can be researched.
-  if (!autoRefresh && cachedGameIds.length === 0 && (preflightData?.cacheMisses ?? 0) > 0) {
+  if (!autoRefresh && cachedGameIds.length === 0 && ((preflightData?.cacheMisses ?? 0) > 0 || requestedGameIds.length > 0)) {
     console.info('[deepside:odds] refresh needed but paid refresh disabled', { sport, date: resolved.date, cacheMisses: preflightData?.cacheMisses, estimatedCreditCostHigh: preflightData?.estimatedCreditCostHigh });
     return fail('SPORTSBOOK_DATA_REQUIRED', 'Sportsbook data is temporarily unavailable.', { sport, date: resolved.date });
   }
@@ -190,15 +344,26 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     const scopedIds = requestedGameIds.length > 0
       ? (autoRefresh ? requestedGameIds : requestedGameIds.filter((id) => cachedGameIds.includes(id)))
       : (!autoRefresh && (preflightData?.cacheMisses ?? 0) > 0 ? cachedGameIds : undefined);
-    const load = () => loadRun(context, sport, resolved.date, approvedForRequest ? {
+    const load = () => loadRun(context, sport, resolved.date, sport === 'nfl' ? {
+      ...(context.nflScope?.researchMode === 'DEEP' ? { researchMode: 'DEEP' as const } : {}),
+      ...(context.nflScope?.lowThreshold ? { lowThreshold: true } : {}),
+      ...(scopedIds ? { validationGameIds: scopedIds } : {}),
+      ...(context.nflScope?.marketKeys ? { marketKeys: context.nflScope.marketKeys } : {}),
+      ...(context.nflScope?.playerId != null ? { playerId: context.nflScope.playerId } : {}),
+    } : approvedForRequest ? {
       validationMaxGames: approvedForRequest.maxGames,
-      validationGameIds: approvedForRequest.selectedGameIds,
+      validationGameIds: scopedIds ?? approvedForRequest.selectedGameIds,
       validationMaxCredits: approvedForRequest.maxCredits,
     } : scopedIds ? { validationGameIds: scopedIds } : {});
     // The odds client is cache-first per event: only missing/stale games are fetched, identical
     // concurrent requests share one fetch, and the credit reserve guard still hard-stops spending.
-    summary = autoRefresh ? await withOneRunPaidRefresh(load, { forceFresh: deliberateRefresh }) : await load();
+    summary = approvedForRequest ? await withOneRunPaidRefresh(load, { forceFresh: deliberateRefresh,
+      maxRequests: (approvedForRequest.maxGames ?? 1) * 2, maxCredits: approvedForRequest.maxCredits ?? 7 }) : await load();
   } catch (error) {
+    if (sport === 'nfl') {
+      context.nflResearchIncomplete = true; context.researchSession = null; context.researchSessionId = null;
+      return fail('RESEARCH_INCOMPLETE', 'The requested NFL slate could not be fully researched.', { sport, date: resolved.date, researchComplete: false });
+    }
     console.error('[deepside:odds] research load failed', { sport, date: resolved.date, error: error instanceof Error ? error.message : error });
     if (error instanceof OddsBudgetGuardError) {
       return fail('RESERVE_BLOCKED', 'Sportsbook data is temporarily unavailable.', { sport, date: resolved.date, budgetLimited: true });
@@ -230,7 +395,8 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
           sampleSize: c.history?.gamesUsed ?? null, average: c.history?.mean ?? null,
           median: c.history?.median ?? null, standardDeviation: c.history?.stdDev ?? null,
           homeHitRate: c.history?.splits.home.hitRate ?? null, awayHitRate: c.history?.splits.away.hitRate ?? null,
-          analysis: c.eliteAnalysis!,
+          analysis: c.nflResearchProfile ? applyNFLHardGatesToAnalysis(c.eliteAnalysis!, c.nflResearchProfile) : c.eliteAnalysis!,
+          nflResearchProfile: c.nflResearchProfile ?? undefined,
           sport: 'nfl',
           matchupAvailable: c.opponentContext?.status !== 'UNAVAILABLE',
           roleKnown: c.roleContext.status === 'STABLE' || c.roleContext.status === 'CHANGING',
@@ -253,6 +419,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
             opportunity: c.roleContext.opportunity, evidence: c.roleContext.evidence, unavailableEvidence: c.roleContext.unavailableEvidence,
           },
           opponentContext: c.opponentContext ? {
+            opponentTeamId: c.opponentContext.opponentTeamId, efficiencyGames: c.opponentContext.efficiencyGames,
             status: c.opponentContext.status, sampleSize: c.opponentContext.sampleSize, trend: c.opponentContext.trend,
             sourceStatus: c.opponentContext.sourceStatus, metrics: c.opponentContext.metrics,
             availableMetrics: c.opponentContext.availableMetrics, unavailableMetrics: c.opponentContext.missingFields,
@@ -260,6 +427,8 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
           } : { status: 'UNAVAILABLE', availableMetrics: [], unavailableMetrics: ['opponent defensive boxscores'], evidence: [] },
           injuryContext: c.injuryContext,
           weatherContext: c.weatherContext,
+          nflHistory: c.history,
+          gameId: c.gameId, eventId: c.eventId, retrievedAt: c.retrievedAt, sourceGameId: c.sourceGameId,
           bestAlternateLine: c.alternateLines?.recommended ? {
             line: c.alternateLines.recommended.line, side: c.alternateLines.recommended.side,
             bestBook: c.alternateLines.recommended.bestBook, bestOdds: c.alternateLines.recommended.bestOdds,
@@ -270,42 +439,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
       : sport === 'nba'
         ? (summary as NBAFinderSummary).nbaCandidates
           .filter((c) => c.playerMatch === 'MATCHED' && c.eliteAnalysis != null)
-          .map((c) => ({
-            candidateId: c.id, playerId: c.playerId, player: c.playerName, team: c.team, opponent: c.opponent,
-            marketLabel: c.marketLabel, marketKey: c.market, line: c.line, direction: c.side,
-            book: c.book, odds: c.oddsAmerican, projection: c.projection?.projection ?? null,
-            projectionUncertainty: c.projection?.uncertainty ?? null,
-            l5Rate: c.history?.windows.l5.rate ?? null, l10Rate: c.history?.windows.l10.rate ?? null,
-            l20Rate: c.history?.windows.l20.rate ?? null, seasonRate: c.history?.windows.season.rate ?? null,
-            analysis: c.eliteAnalysis!,
-            sport: 'nba',
-            matchupAvailable: true,
-            roleKnown: c.injuryTier != null && c.injuryTier !== 'UNKNOWN',
-            injuryKnown: c.injuryTier != null && c.injuryTier !== 'UNKNOWN',
-            outlierDependencePercent: c.outlierDependency?.available ? c.outlierDependency.explosiveDependencePercent : null,
-            crossBookDiscrepancy: c.crossBookThreshold?.available ? c.crossBookThreshold.discrepancy : null,
-            marketMovementAvailable: c.marketMovement.available,
-            howItLoses: c.howItLoses,
-            position: c.position,
-            projectionReliability: c.projection?.reliability ?? null,
-            crossBookThreshold: c.crossBookThreshold,
-            marketMovement: c.marketMovement,
-            outlierAnalysis: c.outlierDependency ? {
-              applicability: 'APPLICABLE', available: c.outlierDependency.available,
-              sampleGames: c.outlierDependency.sampleGames, explosiveDependencePercent: c.outlierDependency.explosiveDependencePercent,
-            } : null,
-            roleContext: null,
-            opponentContext: c.opponentContext ? {
-              status: c.opponentContext.status, availableMetrics: c.opponentContext.availableMetrics,
-              unavailableMetrics: c.opponentContext.unavailableMetrics, evidence: c.opponentContext.evidence,
-            } : null,
-            bestAlternateLine: c.alternateLines?.recommended ? {
-              line: c.alternateLines.recommended.line, side: c.alternateLines.recommended.side,
-              bestBook: c.alternateLines.recommended.bestBook, bestOdds: c.alternateLines.recommended.bestOdds,
-              trueProbability: c.alternateLines.recommended.trueProbability, breakEvenProbability: c.alternateLines.recommended.breakEvenProbability,
-              edgePercent: c.alternateLines.recommended.edgePercent, band: c.alternateLines.recommended.band,
-            } : null,
-          }))
+          .map(nbaFinderCandidateToGeneric)
         : null;
 
   const candidatesFound = genericCandidates != null ? genericCandidates.length : summary.results.length;
@@ -322,12 +456,19 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     budgetLimited: summary.budgetLimited,
     blockReason: summary.blockReason,
     oddsSpend: summary.oddsSpend,
+    ...(sport === 'nfl' ? { nflLedger: (summary as NFLFinderSummary).nflLedger,
+      researchComplete: (summary as NFLFinderSummary).nflLedger?.researchComplete ?? false,
+      gamesScheduled: (summary as NFLFinderSummary).nflLedger?.eligiblePregame ?? summary.gamesEligible } : {}),
   };
 
+  if (sport === 'nfl' && !meta.researchComplete) {
+    context.nflResearchIncomplete = true; context.researchSession = null; context.researchSessionId = null;
+    return fail('RESEARCH_INCOMPLETE', 'The requested NFL slate could not be fully researched.', meta);
+  }
   if (summary.slateComplete) {
     return fail('SLATE_COMPLETE', `Every game on ${resolved.date} has already finished, so no props are offered.`, meta);
   }
-  if (summary.propsAnalyzed === 0) {
+  if (sport !== 'nfl' && summary.propsAnalyzed === 0) {
     // Report the ACTUAL blocker. Only say "reserve" when the reserve guard really fired.
     if (summary.blockReason === 'RESERVE') {
       return fail('RESERVE_BLOCKED', 'No sportsbook player props are cached for this slate and the Odds API credit reserve blocked a refresh.', meta);
@@ -337,7 +478,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     }
     return fail('NO_CACHED_SPORTSBOOK_DATA', 'No sportsbook player props are currently available or cached for this slate.', meta);
   }
-  if (candidatesFound === 0) return fail('NO_CANDIDATES', 'Props were loaded but no researchable candidates were produced.', meta);
+  if (sport !== 'nfl' && candidatesFound === 0) return fail('NO_CANDIDATES', 'Props were loaded but no researchable candidates were produced.', meta);
 
   // Successful research replaces the stored session so follow-ups always answer from the latest slate.
   context.researchSession = genericCandidates != null
@@ -362,7 +503,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
 
   // Candidates are NOT returned here — with the per-run cap removed there can be hundreds, which
   // would blow the model's context/rate limit. They are held server-side in the research session;
-  // call rank_candidates next to retrieve the top (Elite-filtered, ranked, max 15) results.
+  // call rank_candidates next to retrieve the top publication-gated, tiered, ranked results.
   return ok({ loaded: true, candidatesFound: meta.candidatesFound, nextStep: 'Call rank_candidates to retrieve the top researched picks.' }, meta);
 }
 
@@ -381,17 +522,21 @@ async function runEliteFilter(context: AgentContext, args: { sport?: string; dat
   const pool = wanted ? session.candidates.filter((c) => wanted.has(c.candidateId)) : session.candidates;
   if (pool.length === 0) return fail('NO_CANDIDATES', 'No matching candidates to analyse.', { sport, date: resolved.date });
 
-  const qualified = pool.filter((c) => c.eliteQualified);
+  const qualified = pool.map((candidate) => sport === 'nfl' ? evaluateNFLSavedResearchMode(candidate, context.nflScope?.researchMode ?? 'STANDARD') : candidate).filter((candidate) => sport === 'nfl'
+    ? isNFLInjuryContextFresh(candidate.injuryContext as Parameters<typeof isNFLInjuryContextFresh>[0]) && classifyPickTier(candidate, sport).pickTier !== 'PASS' : candidate.eliteQualified);
 
   const reasonCounts: Record<string, number> = {};
   for (const candidate of pool) for (const reason of candidate.rejectionReasons) reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
 
-  const meta = { sport, date: resolved.date, candidatesFound: pool.length, eliteFound: qualified.length };
+  const meta = { sport, date: resolved.date, candidatesFound: pool.length,
+    eliteFound: qualified.filter((candidate) => candidate.eliteQualified && (!candidate.nflResearchProfile || candidate.nflResearchProfile.productionEliteQualified)).length,
+    recommendationsFound: qualified.length };
 
   if (qualified.length === 0) {
     return {
       status: 'NO_ELITE_RESULTS',
-      error: `Researched ${pool.length} candidates and none passed the Elite threshold.`,
+      error: sport === 'nfl' ? `Researched ${pool.length} candidates and none passed the publication and research requirements.`
+        : `Researched ${pool.length} candidates and none passed the Elite threshold.`,
       ...meta,
       data: {
         analysed: pool.length,
@@ -405,29 +550,46 @@ async function runEliteFilter(context: AgentContext, args: { sport?: string; dat
 }
 
 export interface CandidateSearchConstraints {
+  researchMode: NFLResearchMode;
+  lowThreshold: boolean;
   sport: SupportedSport | null;
   date: string | null;
   side: 'over' | 'under' | null;
   targetOdds: number | null;
   minOdds: number | null;
   maxOdds: number | null;
-  sort: 'research' | 'value' | 'payout' | 'safety';
+  sort: 'balanced' | 'value' | 'payout' | 'safety';
+  qualityFloor: PickTier;
+  showPasses: boolean;
   maxResults: number;
   player: string | null;
   team: string | null;
   market: string | null;
   sportsbook: string | null;
   selectedCandidateIds: string[] | null;
+  marketFamily: NFLMarketFamily | null;
+  playerUnresolved: boolean;
+  requestedTeams: string[];
 }
 
 type CandidateRankArgs = {
   sport?: string; date?: string; maxResults?: number; eliteOnly?: boolean;
   playerType?: 'hitter' | 'pitcher' | 'any'; side?: 'over' | 'under' | 'any'; team?: string; player?: string; marketContains?: string;
   positionGroup?: string;
+  nflScope?: NFLRequestScope | null;
+  resolvedDate?: string;
+  requireFreshNFLInjury?: boolean;
 };
 
 const MIN_OFFICIAL_ODDS = -900;
 const TARGET_ODDS_TOLERANCE = 50;
+
+function classifyStoredPrice(candidate: ResearchCandidateRecord) {
+  const timestamp = candidate.nflResearchProfile?.market.provenance[0]?.publishedAt;
+  if (!timestamp) return 'UNKNOWN';
+  const age = Date.now() - Date.parse(timestamp);
+  return Number.isFinite(age) && age >= 0 && age <= 3600000 ? 'FRESH' : 'EXPIRED';
+}
 
 function teamAliases(team: string): string[] {
   const words = team.trim().split(/\s+/);
@@ -447,14 +609,21 @@ export function detectRequestedGames(query: string, games: Array<{ gameId: strin
   return (both.length ? both : scored.filter((game) => game.hits === 1)).map((game) => game.gameId);
 }
 
-export function parseCandidateSearchConstraints(query: string, candidates: ResearchCandidateRecord[]): CandidateSearchConstraints {
+export function parseCandidateSearchConstraints(query: string, candidates: ResearchCandidateRecord[], sport?: string): CandidateSearchConstraints {
   const normalized = query.toLowerCase();
+  const nfl = sport === 'nfl' || detectSport(query) === 'nfl' || (detectSport(query) == null && candidates.some((candidate) => NFL_ELITE_MARKETS.includes(candidate.marketKey as NFLAnalyzableMarketKey)));
+  const nflScope = nfl ? parseNFLRequestScope(query) : null;
   const range = normalized.match(/(?:between|from)\s*([+-]\d{2,4})\s*(?:and|to)\s*([+-]\d{2,4})/i);
   const signedPrice = normalized.match(/\b(?:under|below)\s*([+-]\d{2,4})\b/i);
   const overPrice = normalized.match(/\b(?:over|above)\s*([+-]\d{2,4})\b/i);
   const target = range || signedPrice || overPrice ? null : normalized.match(/(?:around|near|at|priced?\s*(?:around|near|at)?)?\s*([+-]\d{2,4})\b/i);
-  const requestedCount = normalized.match(/\b(\d{1,2})\b(?=[^.!?\n]{0,30}\b(?:plays?|picks?|props?)\b)/i);
-  const player = candidates.find((candidate) => normalized.includes(candidate.player.toLowerCase()))?.player ?? null;
+  const requestedCount = normalized.match(/\b([23])[-\s]man\b/i)
+    ?? normalized.match(/\b(\d{1,2})\b(?=[^.!?\n]{0,30}\b(?:plays?|picks?|props?)\b)/i);
+  const matchingRecords = candidates.filter((candidate) => normalized.includes(candidate.player.toLowerCase())
+    || (nflScope?.playerQuery && nflNameMatches(nflScope.playerQuery, candidate.player)));
+  const matchingPlayers = [...new Set(matchingRecords.map((candidate) => candidate.player))];
+  const playerIdentities = new Set(matchingRecords.map((candidate) => `${candidate.playerId}|${candidate.team}|${candidate.player}`));
+  const player = matchingPlayers.length === 1 ? matchingPlayers[0] : null;
   const books = [...new Set(candidates.map((candidate) => candidate.book).filter((book): book is string => Boolean(book)))];
   const sportsbook = books.find((book) => normalized.includes(book.toLowerCase())) ?? null;
   const markets = [...new Set(candidates.flatMap((candidate) => [candidate.market, candidate.marketKey.replaceAll('_', ' ')]))]
@@ -465,7 +634,7 @@ export function parseCandidateSearchConstraints(query: string, candidates: Resea
     return normalized.includes(label) || normalized.includes(singular);
   }) ?? null;
   const teamNames = [...new Set(candidates.flatMap((candidate) => [candidate.team, candidate.opponent]).filter((team): team is string => Boolean(team)))];
-  const mentionedTeams = teamNames.filter((team) => {
+  const mentionedTeams = nflScope?.teams.length ? nflScope.teams : teamNames.filter((team) => {
     const name = team.toLowerCase();
     const words = name.split(/\s+/).filter((word) => word.length >= 4);
     return normalized.includes(name) || words.some((word) => normalized.includes(word));
@@ -476,38 +645,53 @@ export function parseCandidateSearchConstraints(query: string, candidates: Resea
     : null;
 
   return {
-    sport: detectSport(query),
+    researchMode: nflScope?.researchMode ?? 'STANDARD',
+    lowThreshold: nflScope?.lowThreshold ?? false,
+    sport: detectSport(query) ?? (nfl ? 'nfl' : null),
     date: resolveDateFromText(query)?.resolvedDate ?? null,
     side: /\bunders?\b(?!\s*[+-]\d)/i.test(query) ? 'under' : /\bovers?\b(?!\s*[+-]\d)/i.test(query) ? 'over' : null,
     targetOdds: target ? Number(target[1]) : null,
-    minOdds: range ? Math.min(Number(range[1]), Number(range[2])) : overPrice ? Number(overPrice[1]) : null,
-    maxOdds: range ? Math.max(Number(range[1]), Number(range[2])) : signedPrice ? Number(signedPrice[1]) : null,
-    sort: /\bhigher value\b/i.test(query) ? 'value'
+    minOdds: range ? Math.min(Number(range[1]), Number(range[2])) : nfl && signedPrice && Number(signedPrice[1]) < 0 ? Number(signedPrice[1]) : overPrice ? Number(overPrice[1]) : null,
+    maxOdds: range ? Math.max(Number(range[1]), Number(range[2])) : signedPrice && !(nfl && Number(signedPrice[1]) < 0) ? Number(signedPrice[1]) : null,
+    sort: /\b(?:best\s+value|higher\s+value|most\s+valuable)\b/i.test(query) ? 'value'
       : /\b(?:better payout|more upside|higher payout)\b/i.test(query) ? 'payout'
-      : /\b(?:safer|lower risk|safest)\b/i.test(query) ? 'safety' : 'research',
+      : nflScope?.rankingIntent === 'MOST_LIKELY' || /\b(?:safer|safest|most likely|highest probability|highest chance|lower risk)\b/i.test(query) ? 'safety' : 'balanced',
+    qualityFloor: qualityFloorFromQuery(query),
+    showPasses: queryRequestsPasses(query),
     maxResults: Math.min(MAX_RESULTS_CEILING, Math.max(1, requestedCount ? Number(requestedCount[1]) : MAX_RESULTS_CEILING)),
     player,
     team: mentionedTeams.length === 1 ? mentionedTeams[0] : null,
     market,
     sportsbook,
     selectedCandidateIds: selectedGames?.length ? [...new Set(selectedGames)] : null,
+    marketFamily: nflScope?.marketFamily ?? null,
+    playerUnresolved: Boolean(nflScope?.playerQuery && (matchingPlayers.length !== 1 || playerIdentities.size !== 1)),
+    requestedTeams: nflScope?.teams ?? [],
   };
 }
 
 export function selectRankedCandidates(candidates: ResearchCandidateRecord[], query: string, args: CandidateRankArgs = {}): { constraints: CandidateSearchConstraints; pool: ResearchCandidateRecord[]; selected: ResearchCandidateRecord[] } {
-  const constraints = parseCandidateSearchConstraints(query, candidates);
+  const constraints = parseCandidateSearchConstraints(query, candidates, args.sport);
+  if (args.resolvedDate && constraints.date) constraints.date = args.resolvedDate;
+  const nfl = args.sport === 'nfl' || constraints.sport === 'nfl';
   let pool = candidates.filter((candidate) => candidate.odds != null && candidate.odds >= MIN_OFFICIAL_ODDS);
-  const playerType = args.playerType;
+  if (nfl && args.requireFreshNFLInjury) pool = pool.filter((candidate) => isNFLInjuryContextFresh(candidate.injuryContext as Parameters<typeof isNFLInjuryContextFresh>[0]));
+    const playerType = args.playerType ?? null;
   const side = constraints.side ?? (args.side !== 'any' ? args.side : null);
   const team = constraints.team ?? args.team ?? null;
-  const player = constraints.player ?? args.player ?? null;
+  const player = args.nflScope?.playerName ?? constraints.player ?? args.player ?? null;
   const market = constraints.market ?? args.marketContains ?? null;
 
+  if (nfl && (args.nflScope?.clarification || (constraints.playerUnresolved && !args.nflScope?.playerName))) pool = [];
+  if (nfl && constraints.requestedTeams.length > 0) pool = pool.filter((candidate) => constraints.requestedTeams.every((requested) =>
+    [candidate.team, candidate.opponent].some((teamName) => teamName?.toLowerCase() === requested.toLowerCase())));
+  const marketKeys = args.nflScope?.marketKeys ?? (constraints.marketFamily ? parseNFLRequestScope(query).marketKeys : null);
+  if (nfl && marketKeys) pool = pool.filter((candidate) => marketKeys.includes(candidate.marketKey as NFLAnalyzableMarketKey));
   if (playerType === 'pitcher') pool = pool.filter((candidate) => candidate.marketKey.startsWith('pitcher_'));
   if (playerType === 'hitter') pool = pool.filter((candidate) => candidate.marketKey.startsWith('batter_'));
   if (side) pool = pool.filter((candidate) => candidate.direction === side);
   if (team) pool = pool.filter((candidate) => (candidate.team ?? '').toLowerCase().includes(team.toLowerCase()) || (candidate.opponent ?? '').toLowerCase().includes(team.toLowerCase()));
-  if (player) pool = pool.filter((candidate) => candidate.player.toLowerCase().includes(player.toLowerCase()));
+  if (player) pool = pool.filter((candidate) => nfl ? nflNameMatches(player, candidate.player) : candidate.player.toLowerCase().includes(player.toLowerCase()));
   if (market) pool = pool.filter((candidate) => candidate.market.toLowerCase().includes(market.toLowerCase()) || candidate.marketKey.replaceAll('_', ' ').toLowerCase().includes(market.toLowerCase()));
   if (constraints.sportsbook) pool = pool.filter((candidate) => candidate.book?.toLowerCase() === constraints.sportsbook?.toLowerCase());
   if (constraints.selectedCandidateIds) {
@@ -518,24 +702,104 @@ export function selectRankedCandidates(candidates: ResearchCandidateRecord[], qu
   if (constraints.minOdds != null) pool = pool.filter((candidate) => candidate.odds! >= constraints.minOdds!);
   if (constraints.maxOdds != null) pool = pool.filter((candidate) => candidate.odds! <= constraints.maxOdds!);
   if (args.positionGroup) pool = pool.filter((candidate) => (candidate.position ?? '').toLowerCase().includes(args.positionGroup!.toLowerCase()));
+  if (nfl && constraints.lowThreshold) pool = pool.filter(matchesNFLLowThreshold);
+  if (nfl && constraints.researchMode === 'DEEP') pool = pool.filter((candidate) => candidate.nflResearchProfile?.researchMode !== 'STANDARD');
 
-  const eligible = (args.eliteOnly === false ? pool : pool.filter((candidate) => candidate.eliteQualified));
-  const selected = [...eligible].sort((a, b) => constraints.sort === 'payout'
-    ? b.odds! - a.odds! || b.researchScore - a.researchScore
-    : constraints.sort === 'value'
-      ? (b.evPercent ?? -Infinity) - (a.evPercent ?? -Infinity)
-        || (b.priceEdgePercent ?? -Infinity) - (a.priceEdgePercent ?? -Infinity)
-        || b.researchScore - a.researchScore
-    : constraints.sort === 'safety'
-      ? (b.trueProbability ?? -Infinity) - (a.trueProbability ?? -Infinity) || a.trapRisk - b.trapRisk || b.researchScore - a.researchScore
-      : b.researchScore - a.researchScore)
-    .slice(0, Math.min(constraints.maxResults, args.maxResults ?? MAX_RESULTS_CEILING));
-  return { constraints, pool, selected };
+  const eligible = pool.map((candidate) => nfl ? evaluateNFLSavedResearchMode(candidate, constraints.researchMode) : candidate).flatMap((candidate) => {
+    const decision = classifyPickTier(candidate, nfl ? 'nfl' : args.sport ?? constraints.sport ?? undefined);
+    const tier = decision.pickTier;
+    if (constraints.showPasses) return tier === 'PASS' ? [{ ...candidate, ...decision }] : [];
+    const floor = constraints.qualityFloor;
+    return tier !== 'PASS' && tierMeetsFloor(tier, floor)
+      && (!nfl || (!candidate.isAlternate && NFL_ELITE_MARKETS.includes(candidate.marketKey as NFLAnalyzableMarketKey)))
+      ? [{ ...candidate, ...decision }] : [];
+  });
+  const uniqueEligible = nfl ? groupNFLUnderlyingPlays(eligible, pool) : [...eligible];
+  const nba = args.sport === 'nba' || constraints.sport === 'nba';
+  const nbaIntent = constraints.sort === 'value' ? 'BEST_VALUE' as const
+    : constraints.sort === 'safety' ? 'MOST_LIKELY' as const
+      : constraints.sort === 'payout' ? 'PAYOUT' as const : 'BEST' as const;
+  const ordered = nba ? rankNBARecommendations(uniqueEligible, nbaIntent)
+    : constraints.sort === 'balanced'
+      ? rankBalancedFrontier(uniqueEligible)
+      : uniqueEligible.sort((a, b) => constraints.sort === 'payout'
+      ? b.odds! - a.odds! || b.researchScore - a.researchScore
+      : constraints.sort === 'value'
+        ? (b.evPercent ?? -Infinity) - (a.evPercent ?? -Infinity)
+          || (b.priceEdgePercent ?? -Infinity) - (a.priceEdgePercent ?? -Infinity)
+          || (b.playerEdgePercent ?? -Infinity) - (a.playerEdgePercent ?? -Infinity)
+          || (b.trueProbability ?? -Infinity) - (a.trueProbability ?? -Infinity)
+          || a.trapRisk - b.trapRisk || b.researchScore - a.researchScore
+        : (b.trueProbability ?? -Infinity) - (a.trueProbability ?? -Infinity)
+          || (b.evPercent ?? -Infinity) - (a.evPercent ?? -Infinity)
+          || (b.priceEdgePercent ?? -Infinity) - (a.priceEdgePercent ?? -Infinity)
+          || a.trapRisk - b.trapRisk || b.researchScore - a.researchScore);
+  const selected = ordered.slice(0, Math.min(constraints.maxResults, args.maxResults ?? MAX_RESULTS_CEILING));
+  return { constraints, pool, selected: nfl ? assignNFLDisplayRanks(selected) : selected };
+}
+
+const BALANCED_RANK_METRICS: Array<(candidate: ResearchCandidateRecord) => number | null> = [
+  (candidate) => candidate.trueProbability,
+  (candidate) => candidate.evPercent,
+  (candidate) => candidate.priceEdgePercent,
+  (candidate) => candidate.playerEdgePercent,
+  (candidate) => candidate.researchScore,
+  (candidate) => candidate.dataQuality,
+  (candidate) => -candidate.trapRisk,
+];
+
+function rankBalancedFrontier(candidates: ResearchCandidateRecord[]): ResearchCandidateRecord[] {
+  const values = candidates.map((candidate) => BALANCED_RANK_METRICS.map((metric) => metric(candidate)));
+  const scales = BALANCED_RANK_METRICS.map((_, dimension) => {
+    const present = values.map((row) => row[dimension]).filter((value): value is number => value != null && Number.isFinite(value));
+    return { minimum: Math.min(...present), maximum: Math.max(...present) };
+  });
+  const normalized = values.map((row) => row.map((value, dimension) => {
+    const scale = scales[dimension];
+    if (value == null || !Number.isFinite(value)) return 0;
+    return scale.maximum === scale.minimum ? 1 : (value - scale.minimum) / (scale.maximum - scale.minimum);
+  }));
+  const remaining = new Set(candidates.map((_, index) => index));
+  const ranked: ResearchCandidateRecord[] = [];
+
+  while (remaining.size) {
+    const frontier = [...remaining].filter((candidateIndex) => ![...remaining].some((otherIndex) => {
+      if (candidateIndex === otherIndex) return false;
+      let strictlyBetter = false;
+      for (let dimension = 0; dimension < values[candidateIndex].length; dimension++) {
+        const candidateValue = values[candidateIndex][dimension];
+        const otherValue = values[otherIndex][dimension];
+        if (otherValue == null || !Number.isFinite(otherValue)) continue;
+        if (candidateValue == null || !Number.isFinite(candidateValue) || otherValue < candidateValue) return false;
+        if (otherValue > candidateValue) strictlyBetter = true;
+      }
+      return strictlyBetter;
+    }));
+    frontier.sort((left, right) => {
+      const balanced = (index: number) => {
+        const scores = normalized[index];
+        const reciprocalTotal = scores.reduce((total, score) => total + 1 / Math.max(score, 0.01), 0);
+        return scores.length / reciprocalTotal;
+      };
+      return balanced(right) - balanced(left)
+        || (candidates[right].trueProbability ?? -Infinity) - (candidates[left].trueProbability ?? -Infinity)
+        || (candidates[right].evPercent ?? -Infinity) - (candidates[left].evPercent ?? -Infinity)
+        || candidates[left].candidateId.localeCompare(candidates[right].candidateId);
+    });
+    for (const index of frontier) {
+      ranked.push(candidates[index]);
+      remaining.delete(index);
+    }
+  }
+  return ranked;
 }
 
 async function rankCandidates(context: AgentContext, args: CandidateRankArgs): Promise<ToolResult<unknown>> {
+  const clarification = await prepareNFLRequestScope(context);
+  if (clarification) return fail('NOT_FOUND', clarification, { sport: 'nfl' });
   const sport = resolveSport(args.sport, context);
   if (!sport) return fail('SPORT_UNAVAILABLE', `"${args.sport}" is not a supported sport.`);
+  const nbaIntent = sport === 'nba' ? classifyNBAMarketIntent(context.pendingQueryIntent) : null;
   const resolved = resolveDate(args.date, context);
   if ('error' in resolved) return fail('INVALID_DATE', resolved.error, { sport });
 
@@ -543,20 +807,38 @@ async function rankCandidates(context: AgentContext, args: CandidateRankArgs): P
   if (!session || session.sport !== sport || session.date !== resolved.date) {
     return fail('NO_CANDIDATES', 'No candidates are loaded yet. Call get_sportsbook_candidates first.', { sport, date: resolved.date });
   }
+  if (nbaIntent?.gameLineMarkets.length && session.modeledGames != null) {
+    const { selectNBAMixedRecommendations } = await import('../../nba/prediction/gameLines/selection');
+    const results = selectNBAMixedRecommendations(session, context.pendingQueryIntent);
+    return ok({ results, closestMisses: [], modeledGames: session.modeledGames },
+      { sport, date: resolved.date, candidatesFound: results.length, researchComplete: true });
+  }
 
-  const { constraints, pool, selected } = selectRankedCandidates(session.candidates, context.pendingQueryIntent, args);
+  const { constraints, pool, selected } = selectRankedCandidates(session.candidates, context.pendingQueryIntent, { ...args, sport, resolvedDate: resolved.date,
+    nflScope: context.nflScope, requireFreshNFLInjury: sport === 'nfl' });
+  if (sport === 'nfl' && context.nflResearchIncomplete) return fail('RESEARCH_INCOMPLETE', 'The requested NFL slate could not be fully researched.', { sport, date: resolved.date, researchComplete: false });
   if ((constraints.sport && constraints.sport !== session.sport) || (constraints.date && constraints.date !== session.date)) {
     return fail('NO_CANDIDATES', 'The cached research session does not match the requested sport or date.', { sport, date: resolved.date });
   }
-  const eliteOnly = args.eliteOnly !== false;
-
-  const meta = { sport, date: resolved.date, candidatesFound: pool.length, eliteFound: pool.filter((c) => c.eliteQualified).length };
+  const tieredPool = pool.map((candidate) => sport === 'nfl' ? evaluateNFLSavedResearchMode(candidate, constraints.researchMode) : candidate)
+    .map((candidate) => ({ ...candidate, ...classifyPickTier(candidate, sport) }));
+  const uniqueTieredPool = sport === 'nfl' ? groupNFLUnderlyingPlays(tieredPool, pool) : tieredPool;
+  const recommendationTiers = uniqueTieredPool.reduce<Record<string, number>>((counts, candidate) => {
+    counts[candidate.pickTier!] = (counts[candidate.pickTier!] ?? 0) + 1;
+    return counts;
+  }, {});
+  const meta = { sport, date: resolved.date, researchMode: constraints.researchMode, lowThreshold: constraints.lowThreshold, candidatesFound: pool.length, eliteFound: sport === 'nfl'
+    ? groupNFLUnderlyingPlays(pool.filter((candidate) => candidate.eliteQualified)).length : pool.filter((c) => c.eliteQualified).length,
+    recommendedFound: Object.entries(recommendationTiers).reduce((sum, [tier, count]) => sum + (tier === 'PASS' ? 0 : count), 0),
+    recommendationTiers, qualityFloor: constraints.showPasses ? 'PASS' : constraints.qualityFloor, includePasses: constraints.showPasses,
+    ...(nbaIntent?.gameLineMarkets.length ? { unsupportedMarkets: nbaIntent.gameLineMarkets,
+      unsupportedMarketNotice: unsupportedNBAGameLineNotice(nbaIntent.gameLineMarkets) } : {}) };
 
   if (selected.length === 0) {
-    return eliteOnly
-      ? { status: 'NO_ELITE_RESULTS', error: pool.length === 0 ? 'No Elite candidates matched the requested constraints.' : `Researched ${pool.length} matching candidates and none passed the Elite threshold.`, ...meta,
-          data: { constraints, closestMisses: getClosestMisses({ ...session, candidates: pool }, 5) } }
-      : fail('NO_CANDIDATES', 'No candidates matched those filters.', meta);
+    return { status: 'NO_ELITE_RESULTS', error: constraints.showPasses
+      ? 'No rejected candidates matched those constraints.'
+      : pool.length === 0 ? 'No recommendable candidates matched the requested quality floor.' : `Researched ${pool.length} candidates and none passed the requested publication and quality requirements.`, ...meta,
+      data: { constraints, closestMisses: sport !== 'nfl' || /\bclosest\s+(?:misses|plays|picks)\b/i.test(context.pendingQueryIntent) ? getClosestMisses({ ...session, candidates: pool }, 5) : [] } };
   }
 
   return ok({ results: selected, returned: selected.length, constraints }, meta);
@@ -581,10 +863,13 @@ async function researchPlayer(args: { name?: string; season?: number; sport?: st
       const defenseGames = opponent ? await getNFLOpponentDefenseGames(opponent.id, season).catch(() => []) : [];
       const weatherContext = game ? await getNFLWeatherContext(game) : null;
       let injurySourceAvailable = true;
-      const injuryReports = await getNFLInjuryReports().catch(() => {
+      const injurySnapshot = await getNFLInjurySnapshot().catch(() => {
         injurySourceAvailable = false;
-        return [];
+        return null;
       });
+      const injuryReports = injurySnapshot?.reports ?? [];
+      injurySourceAvailable = injurySourceAvailable && injurySnapshot?.complete === true;
+      const participationSnapshot = game ? await getNFLParticipationSnapshot(game) : null;
       const matchupMarkets: Array<[string, Parameters<typeof buildNFLOpponentContext>[0]['market']]> = player.position === 'QB'
         ? [['passing', 'player_pass_yds'], ['rushing', 'player_rush_yds']]
         : player.position === 'RB'
@@ -604,7 +889,8 @@ async function researchPlayer(args: { name?: string; season?: number; sport?: st
         injuryContext: {
           byPropFamily: Object.fromEntries(matchupMarkets.map(([key, market]) => [key, buildNFLInjuryContext({
             playerId: player.id, player: player.name, teamId: player.team?.id ?? null, team: player.team?.displayName ?? null,
-            opponentTeamId: opponent?.id ?? null, market, position: player.position, reports: injuryReports, sourceAvailable: injurySourceAvailable,
+            opponentTeamId: opponent?.id ?? null, market, position: player.position, reports: injuryReports, sourceAvailable: injurySourceAvailable, snapshot: injurySnapshot,
+            participation: participationSnapshot ? evaluateNFLParticipation({ playerId: player.id, teamId: player.team?.id ?? null, position: player.position, snapshot: participationSnapshot, injuries: injurySnapshot }) : null,
           })])),
         },
         weatherContext,
@@ -649,6 +935,14 @@ async function getLastResearchSession(context: AgentContext, args: { limit?: num
   const session = context.researchSession;
   if (!session) return fail('NO_CANDIDATES', 'No research session is stored yet. Call get_sportsbook_candidates for a sport and date first.');
 
+  const candidates = session.sport === 'nfl' ? session.candidates.filter((candidate) => candidate.priceCurrent
+    && ['LIVE', 'FRESH'].includes(candidate.priceFreshness)
+    && classifyStoredPrice(candidate) === 'FRESH'
+    && isNFLInjuryContextFresh(candidate.injuryContext as Parameters<typeof isNFLInjuryContextFresh>[0])) : session.candidates;
+  if (session.sport === 'nfl' && candidates.length === 0) return fail('NO_CANDIDATES', 'The saved NFL research is no longer current; new pregame research is required.', {
+    sport: session.sport, date: session.date, ...session.toolMeta, cached: true,
+  });
+
   // The full structured pool stays server-side for rank_candidates. Sending hundreds of rich
   // records back through the model can exceed its context window before it can issue that rank.
   const limit = args.limit != null ? Math.max(1, Math.min(50, args.limit)) : MAX_RESULTS_CEILING;
@@ -658,7 +952,7 @@ async function getLastResearchSession(context: AgentContext, args: { limit?: num
       date: session.date,
       queryIntent: session.queryIntent,
       generatedAt: session.generatedAt,
-      candidates: session.candidates.slice(0, limit),
+      candidates: candidates.slice(0, limit),
     },
     {
       sport: session.sport,
@@ -674,7 +968,10 @@ async function getClosestMissesTool(context: AgentContext, args: { count?: numbe
   if (!session) return fail('NO_CANDIDATES', 'No research session is stored yet. Call get_sportsbook_candidates for a sport and date first.');
 
   const count = args.count != null ? Math.max(1, Math.min(20, args.count)) : 5;
-  const misses = getClosestMisses(session, count);
+  const { constraints, pool } = selectRankedCandidates(session.candidates, context.pendingQueryIntent, { sport: session.sport, nflScope: context.nflScope,
+    requireFreshNFLInjury: session.sport === 'nfl' });
+  if ((constraints.sport && constraints.sport !== session.sport) || (constraints.date && constraints.date !== session.date)) return fail('NO_CANDIDATES', 'The requested slate does not match the stored research.');
+  const misses = getClosestMisses(session.sport === 'nfl' ? { ...session, candidates: pool } : session, count);
   if (misses.length === 0) {
     return fail('NO_CANDIDATES', 'Every stored candidate already qualified as Elite; there are no misses to show.', {
       sport: session.sport, date: session.date, ...session.toolMeta, cached: true,
@@ -729,7 +1026,7 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function' as const,
     name: 'run_elite_filter',
-    description: 'Run the deterministic Elite Research Filter over loaded candidates. You must never decide qualification yourself; use the eliteQualified flag this returns.',
+    description: 'Apply deterministic research checks over loaded candidates. NFL uses the requested STANDARD or DEEP publication checks and can return any non-PASS tier, even with zero Elite. Elite qualification is separate and must never be inferred or promoted. Other sports retain their existing Elite filter.',
     parameters: {
       type: 'object',
       properties: {
@@ -745,14 +1042,14 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function' as const,
     name: 'rank_candidates',
-    description: 'Filter, rank and limit ALREADY-LOADED candidates from the stored research session. This is the tool for every "best/favorite/strongest/top" or narrowing request (by market, side, team or player) — it reuses the existing pool and never triggers a sportsbook refresh. Applies the Elite Filter first unless eliteOnly is false. maxResults is a ceiling, never a quota.',
+    description: 'Filter, rank and limit ALREADY-LOADED candidates from the stored research session. This is the tool for every best/favorite/strongest/top or narrowing request. It reuses the existing pool, assigns deterministic pick tiers after publication hard gates, and ranks eligible NUKE/ELITE/SHARP/EDGE/LEAN candidates. Honors explicit quality floors from the user; PASS candidates appear only when explicitly requested. maxResults is a ceiling, never a quota.',
     parameters: {
       type: 'object',
       properties: {
         sport: { type: 'string' },
         date: { type: 'string' },
         maxResults: { type: ['integer', 'null'], description: `Ceiling, max ${MAX_RESULTS_CEILING}. Defaults to ${MAX_RESULTS_CEILING}.` },
-        eliteOnly: { type: ['boolean', 'null'], description: 'Default true. Set false to inspect non-qualifying candidates.' },
+        eliteOnly: { type: ['boolean', 'null'], description: 'Legacy compatibility only. Quality floors are determined exclusively from the user request; default is all publishable tiers from LEAN upward.' },
         playerType: { type: ['string', 'null'], enum: ['hitter', 'pitcher', 'any', null] },
         side: { type: ['string', 'null'], enum: ['over', 'under', 'any', null] },
         team: { type: ['string', 'null'], description: 'Matches either side of the matchup.' },
@@ -784,7 +1081,7 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function' as const,
     name: 'get_last_research_session',
-    description: 'Retrieve the previously loaded research session (sport, date, and every researched candidate with its Elite Filter verdict) without making any new sportsbook or provider calls. Always try this FIRST for follow-up questions about candidates, players, or results already discussed in this conversation — only call get_sportsbook_candidates when the user asks about a different sport, date, or slate, or when this returns NO_CANDIDATES.',
+    description: 'Retrieve the previously loaded research session (sport, date, and every researched candidate with its current pick tier and Elite analysis) without making any new sportsbook or provider calls. Always try this FIRST for follow-up questions about candidates, players, tiers, or results already discussed in this conversation — only call get_sportsbook_candidates when the user asks about a different sport, date, or slate, or when this returns NO_CANDIDATES.',
     parameters: {
       type: 'object',
       properties: {
