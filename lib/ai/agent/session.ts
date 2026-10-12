@@ -138,6 +138,8 @@ export interface ResearchCandidateRecord {
   /** Present only on NBA records using the isolated NBA_MODEL_V1 engine. */
   nbaPrediction?: NBAProjectionResult | null;
   nbaInjuryEvidence?: import('../../nba/prediction/types').NBAInjuryEvidence;
+  nbaResearchEvidence?: import('../../nba/researchEvidence').NBAResearchEvidence | null;
+  nbaHistory?: import('../../nba/history').NBAMarketHistory | null;
 }
 
 export interface ResearchSessionToolMeta {
@@ -366,6 +368,8 @@ export interface GenericResearchCandidate {
   nflHistory?: NFLMarketHistory | null;
   nbaPrediction?: NBAProjectionResult | null;
   nbaInjuryEvidence?: import('../../nba/prediction/types').NBAInjuryEvidence;
+  nbaResearchEvidence?: import('../../nba/researchEvidence').NBAResearchEvidence | null;
+  nbaHistory?: import('../../nba/history').NBAMarketHistory | null;
   gameId?: string;
   eventId?: string;
   retrievedAt?: string | null;
@@ -464,6 +468,7 @@ function toGenericRecord(candidate: GenericResearchCandidate, rank: number): Res
     nflHistory: candidate.nflHistory ?? null,
       ...(candidate.sport?.toLowerCase() === 'nba' && candidate.nbaPrediction ? { nbaPrediction: candidate.nbaPrediction } : {}),
       ...(candidate.sport?.toLowerCase() === 'nba' && candidate.nbaInjuryEvidence ? { nbaInjuryEvidence: candidate.nbaInjuryEvidence } : {}),
+      ...(candidate.sport?.toLowerCase() === 'nba' ? { nbaResearchEvidence: candidate.nbaResearchEvidence ?? null, nbaHistory: candidate.nbaHistory ?? null } : {}),
     gameId: candidate.gameId, eventId: candidate.eventId, retrievedAt: candidate.retrievedAt, sourceGameId: candidate.sourceGameId,
     nflResearchProfile: candidate.nflResearchProfile,
   };

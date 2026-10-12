@@ -39,13 +39,16 @@ export const MAX_RESULTS_CEILING = 15;
 
 export function nbaFinderCandidateToGeneric(candidate: NBACandidate): GenericResearchCandidate {
   return {
-    candidateId: candidate.id, playerId: candidate.playerId, player: candidate.playerName, team: candidate.team, opponent: candidate.opponent,
+    candidateId: candidate.id, playerId: candidate.playerId, teamId: candidate.teamId ?? null, player: candidate.playerName, team: candidate.team, opponent: candidate.opponent,
     marketLabel: candidate.marketLabel, marketKey: candidate.market, line: candidate.line, direction: candidate.side,
     book: candidate.book, odds: candidate.oddsAmerican, projection: candidate.nbaPrediction?.expectedStat ?? null,
     projectionUncertainty: candidate.nbaPrediction?.statUncertainty ?? null,
     l5Rate: candidate.history?.windows.l5.rate ?? null, l10Rate: candidate.history?.windows.l10.rate ?? null,
     l20Rate: candidate.history?.windows.l20.rate ?? null, seasonRate: candidate.history?.windows.season.rate ?? null,
     sampleSize: candidate.nbaPrediction?.sampleSize ?? 0,
+    average: candidate.history?.windows.season.mean ?? null, median: candidate.history?.windows.season.median ?? null,
+    homeHitRate: candidate.history?.splits?.home.rate ?? null, awayHitRate: candidate.history?.splits?.away.rate ?? null,
+    nbaHistory: candidate.history, nbaResearchEvidence: candidate.researchEvidence ?? null,
     analysis: candidate.eliteAnalysis!, nbaPrediction: candidate.nbaPrediction, sport: 'nba',
     matchupAvailable: candidate.opponentContext != null && candidate.opponentContext.status !== 'UNAVAILABLE',
     roleKnown: candidate.researchContext?.sections.rotation.recentRole !== 'UNKNOWN' && candidate.researchContext != null,

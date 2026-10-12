@@ -33,6 +33,7 @@ import { selectNBAAsOfHistory } from '../nba/prediction/history';
 import { researchNBAGameLines } from '../nba/prediction/gameLines/pipeline';
 import { loadCachedNBAPlayerProps } from '../nba/prediction/cachedProps';
 import { loadNBAGameIntelligence } from '../nba/prediction/gameLines/intelligenceArchive';
+import { buildNBAResearchEvidence, type NBAResearchEvidence } from '../nba/researchEvidence';
 import { todaySlateDate } from '../dateModel';
 import type { SportProjection } from '../projection/types';
 import type { FinderRunSummary, FinderValidationOptions, ValidationPreflight } from './engine';
@@ -58,6 +59,7 @@ export interface NBACandidate {
   playerName: string;
   playerMatch: NBAPlayerMatchState;
   team: string | null;
+  teamId?: number | null;
   opponent: string | null;
   market: NBAAnalyzableMarket;
   marketLabel: string;
@@ -76,6 +78,7 @@ export interface NBACandidate {
   nbaPrediction: NBAProjectionResult | null;
   researchContext: import('../nba/context/types').NBAResearchContext | null;
   intelligenceSnapshot: NBAIntelligenceSnapshot | null;
+  researchEvidence?: NBAResearchEvidence;
   outlierDependency: NBAOutlierDependency | null;
   alternateLines: AlternateLineOptimizerResult | null;
   crossBookThreshold: CrossBookThresholdResult | null;
@@ -467,6 +470,7 @@ export async function runNBAFinderDeepSearch(
           playerName: prop.player,
           playerMatch: match.state,
           team: candidateTeamId === game.homeTeam.id ? game.homeTeam.displayName : candidateTeamId === game.awayTeam.id ? game.awayTeam.displayName : null,
+          teamId: candidateTeamId != null && [game.homeTeam.id, game.awayTeam.id].includes(candidateTeamId) ? candidateTeamId : null,
           opponent: candidateTeamId === game.homeTeam.id ? game.awayTeam.displayName
             : candidateTeamId === game.awayTeam.id ? game.homeTeam.displayName : `${game.awayTeam.displayName} @ ${game.homeTeam.displayName}`,
           market,
@@ -491,6 +495,11 @@ export async function runNBAFinderDeepSearch(
           nbaPrediction,
           researchContext,
           intelligenceSnapshot,
+          researchEvidence: buildNBAResearchEvidence({ gameId: game.id, market, playerId: match.playerId ?? -1,
+            teamIds: [game.homeTeam.id, game.awayTeam.id], context: researchContext, intelligence: intelligenceSnapshot,
+            asOf: researchContext?.asOf ?? new Date().toISOString(), targetTipoff: game.gameTime,
+            contextUnavailableReason: 'Cutoff-safe ESPN player context unavailable or player/team identity unresolved.',
+            intelligenceUnavailableReason: 'No matching reviewed, timestamped intelligence archive was established.' }),
           marketMovement: computeMarketMovement([]),
           howItLoses,
           eliteAnalysis,

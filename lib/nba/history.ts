@@ -15,6 +15,7 @@ export interface NBAMarketHistory {
   line: number;
   side: 'over' | 'under';
   windows: { l5: NBAHistoricalWindow; l10: NBAHistoricalWindow; l20: NBAHistoricalWindow; season: NBAHistoricalWindow };
+  splits?: { home: NBAHistoricalWindow; away: NBAHistoricalWindow };
 }
 
 const EMPTY_WINDOW: NBAHistoricalWindow = { hits: 0, total: 0, rate: null, mean: null, median: null };
@@ -46,11 +47,16 @@ export function buildNBAHistory(
     .map((log) => getNBAHistoricalValue(marketKey, log.stats))
     .filter((value): value is number => value != null);
   const window = (size: number | null) => summarize(size == null ? historicalValues : historicalValues.slice(-size), line, side);
+  const valuesFor = (homeAway: NBAGameLogEntry['homeAway']) => logs
+    .filter((log) => log.homeAway === homeAway && (selectedSlateDate == null || log.date.slice(0, 10) < selectedSlateDate) && log.result != null)
+    .map((log) => getNBAHistoricalValue(marketKey, log.stats))
+    .filter((value): value is number => value != null);
   return {
     supported: historicalValues.length > 0,
     marketKey,
     line,
     side,
     windows: { l5: window(5), l10: window(10), l20: window(20), season: window(null) },
+    splits: { home: summarize(valuesFor('home'), line, side), away: summarize(valuesFor('away'), line, side) },
   };
 }

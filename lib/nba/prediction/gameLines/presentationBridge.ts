@@ -8,6 +8,34 @@ function evidence(detail: string, index: number, category = 'RESEARCH', observed
   return { id: `${category}.${index}`, category, source: null, detail, observedAt, stance: category === 'RISK' ? 'COUNTER' : 'CONTEXT' };
 }
 
+function descriptiveNBAEvidence(record: ResearchCandidateRecord): PresentationEvidence[] {
+  const result: PresentationEvidence[] = [];
+  const history = record.nbaHistory;
+  if (history) {
+    for (const [name, window] of Object.entries(history.windows)) result.push(evidence(
+      `${name} history: n=${window.total}; mean=${window.mean ?? 'unavailable'}; median=${window.median ?? 'unavailable'}; exact-line hit rate=${window.rate ?? 'unavailable'}.`,
+      result.length, 'HISTORY'));
+    for (const [venue, window] of Object.entries(history.splits ?? {})) result.push(evidence(
+      `${venue} split: n=${window.total}; mean=${window.mean ?? 'unavailable'}; median=${window.median ?? 'unavailable'}; exact-line hit rate=${window.rate ?? 'unavailable'}.`,
+      result.length, 'HISTORY'));
+  }
+  const research = record.nbaResearchEvidence;
+  if (!research) return result;
+  result.push(evidence(`ESPN availability: ${research.context.availability?.status ?? 'UNKNOWN'}/${research.context.availability?.state ?? 'UNAVAILABLE'}. Observed rotation role: ${research.context.rotation?.recentRole ?? 'UNKNOWN'}; this does not confirm the next starting lineup.`,
+    result.length, 'AVAILABILITY', research.context.asOf));
+  for (const entry of research.context.evidence) result.push({ id: `nba.context.${entry.id}`, category: entry.metric,
+    source: entry.sourceRefs[0]?.url ?? null, observedAt: entry.sourceRefs[0]?.fetchedAt ?? null,
+    detail: `${entry.state}: ${entry.detail} Descriptive value: ${entry.value == null ? 'unavailable' : JSON.stringify(entry.value)}.`,
+    stance: 'CONTEXT' });
+  for (const report of research.intelligence.reports) result.push({ id: `nba.report.${report.claimId}`, category: report.topic,
+    source: report.source.url, observedAt: report.source.fetchedAt,
+    detail: `${report.verification}/${report.state}/${report.qualifier}: ${report.value}. Reported ${report.reportedAt ?? 'unknown'}; ${report.excerpt}`,
+    stance: report.state === 'CONFLICTED' || report.state === 'STALE' ? 'COUNTER' : 'CONTEXT' });
+  for (const [index, missing] of [...new Set([...research.context.missing, ...research.intelligence.missing])].entries()) result.push(
+    evidence(missing, index, 'UNAVAILABLE'));
+  return result;
+}
+
 function propInput(record: ResearchCandidateRecord): PickPresentationInput {
   const received = record.retrievedAt == null ? null : Date.parse(record.retrievedAt);
   const current = record.priceCurrent && ['FRESH', 'LIVE'].includes(record.priceFreshness)
@@ -24,8 +52,9 @@ function propInput(record: ResearchCandidateRecord): PickPresentationInput {
     seasonPhaseCertainty: record.nbaPrediction?.targetPhase && record.nbaPrediction.targetPhase !== 'UNKNOWN' ? 'VERIFIED' : 'MISSING',
     researchEvidence: [...(record.nbaPrediction?.contextEvidence ?? []).map(entry => ({ id: entry.id, category: entry.metric,
       source: entry.sourceRefs[0]?.url ?? null, detail: entry.detail, observedAt: entry.sourceRefs[0]?.fetchedAt ?? null, stance: 'CONTEXT' as const })),
-      ...record.howItLoses.map((reason, index) => evidence(reason, index, 'RISK'))],
-    missing: record.rejectionReasons };
+      ...record.howItLoses.map((reason, index) => evidence(reason, index, 'RISK')), ...descriptiveNBAEvidence(record)],
+    missing: [...record.rejectionReasons, ...(record.nbaResearchEvidence?.context.missing ?? []),
+      ...(record.nbaResearchEvidence?.intelligence.missing ?? [])] };
 }
 
 export function unclassifiedNBAPropResearch(candidates: NBACandidate[]): PickPresentationInput[] {
@@ -38,7 +67,10 @@ export function unclassifiedNBAPropResearch(candidates: NBACandidate[]): PickPre
       tierDecision: null, sportsbook: current ? candidate.book : null, americanOdds: current ? candidate.oddsAmerican : null,
       quoteStatus: current ? 'CURRENT' : 'UNAVAILABLE', trueProbability: null, modelProbability: null, evPercent: null, researchScore: null,
       seasonPhase: candidate.nbaPrediction?.targetPhase ?? null, seasonPhaseCertainty: 'MISSING',
-      researchEvidence: [evidence(`Player matching: ${candidate.playerMatch}. No supported qualified model output.`, 0)],
+      researchEvidence: [evidence(`Player matching: ${candidate.playerMatch}. No supported qualified model output.`, 0),
+        ...(candidate.researchEvidence?.context.evidence ?? []).map(entry => ({ id: `nba.context.${entry.id}`, category: entry.metric,
+          source: entry.sourceRefs[0]?.url ?? null, observedAt: entry.sourceRefs[0]?.fetchedAt ?? null,
+          detail: `${entry.state}: ${entry.detail}`, stance: 'CONTEXT' as const }))],
       missing: ['Verified player/model evidence incomplete'] };
   });
 }
