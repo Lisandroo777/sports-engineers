@@ -3,10 +3,10 @@ import "./globals.css";
 import { GlobalPicks } from "../components/GlobalPicks";
 
 export const metadata: Metadata = {
-  title: "DeepSide",
-  description: "Deep sports research, analytics and AI-powered insights.",
+  title: "DeepSide AI",
+  description: "GO DEEPER INTO YOUR PICKS. Deep sports research, analytics and AI-powered insights.",
   openGraph: {
-    title: "DeepSide — Go deeper before you pick.",
+    title: "DeepSide AI — GO DEEPER INTO YOUR PICKS.",
     description: "Deep sports research, analytics and AI-powered insights.",
   },
 };

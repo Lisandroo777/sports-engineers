@@ -5,28 +5,105 @@ import { useState } from 'react';
 import { DeepSideLogo } from './DeepSideLogo';
 import { mainNavigation } from '../lib/navigation';
 
-const NAV_ICONS: Record<string, string> = {
-  Games:
-    'M7 3v18M17 3v18M3 7h18M3 17h18M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z',
-  'Research Lab':
-    'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z',
-  'DeepSide AI':
-    'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z',
-  Picks: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
-  Insights: 'M4 19V5m0 14h16M8 16l3-4 3 2 4-6',
-  '+EV': 'M12 4v16m8-8H4',
-  Matchups: 'M13 10V3L4 14h7v7l9-11h-7z',
-  Performance: 'M3 3v18h18M7 14l4-4 4 3 5-7',
-  Settings:
-    'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z',
+interface NavItem {
+  label: string;
+  href: string;
+  icon: 'ai' | 'games' | 'research' | 'matchups' | 'picks' | 'favorites' | 'ev' | 'settings' | 'performance';
+}
+
+const NAV_MAP: Record<string, NavItem['icon']> = {
+  'DeepSide AI': 'ai',
+  Games: 'games',
+  'Research Lab': 'research',
+  'AI Favorites': 'favorites',
+  'Best +EV Plays': 'ev',
+  Matchups: 'matchups',
+  Picks: 'picks',
+  Performance: 'performance',
+  Settings: 'settings',
 };
 
-function NavIcon({ label }: { label: string }) {
-  return (
-    <svg aria-hidden="true" className="h-[17px] w-[17px] shrink-0" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.7} viewBox="0 0 24 24">
-      <path d={NAV_ICONS[label] ?? ''} />
-    </svg>
-  );
+function NavItemIcon({ icon, isActive }: { icon: NavItem['icon']; isActive: boolean }) {
+  if (icon === 'ai') {
+    return (
+      <span
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all ${
+          isActive
+            ? 'border border-cyan-400/90 bg-cyan-950/80 text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.6)]'
+            : 'border border-cyan-500/30 bg-cyan-950/30 text-cyan-400/80 group-hover:border-cyan-400/60 group-hover:text-cyan-300'
+        }`}
+      >
+        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="6" />
+          <line x1="12" y1="2" x2="12" y2="5" />
+          <line x1="12" y1="19" x2="12" y2="22" />
+          <line x1="2" y1="12" x2="5" y2="12" />
+          <line x1="19" y1="12" x2="22" y2="12" />
+          <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+        </svg>
+      </span>
+    );
+  }
+
+  const iconClass = `h-[18px] w-[18px] shrink-0 transition-colors ${
+    isActive ? 'text-white' : 'text-slate-400 group-hover:text-slate-200'
+  }`;
+
+  switch (icon) {
+    case 'games':
+      return (
+        <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+          <line x1="16" y1="2" x2="16" y2="6" />
+          <line x1="8" y1="2" x2="8" y2="6" />
+          <line x1="3" y1="10" x2="21" y2="10" />
+        </svg>
+      );
+    case 'research':
+      return (
+        <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="18" y1="20" x2="18" y2="10" />
+          <line x1="12" y1="20" x2="12" y2="4" />
+          <line x1="6" y1="20" x2="6" y2="14" />
+        </svg>
+      );
+    case 'favorites':
+    case 'picks':
+      return (
+        <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+        </svg>
+      );
+    case 'matchups':
+      return (
+        <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      );
+    case 'ev':
+      return (
+        <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+          <polyline points="17 6 23 6 23 12" />
+        </svg>
+      );
+    case 'performance':
+      return (
+        <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 3v18h18" />
+          <path d="M7 14l4-4 4 3 5-7" />
+        </svg>
+      );
+    case 'settings':
+      return (
+        <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      );
+    default:
+      return null;
+  }
 }
 
 interface AppSidebarProps {
@@ -37,72 +114,124 @@ interface AppSidebarProps {
 export function AppSidebar({ currentPath, footer }: AppSidebarProps) {
   const [isOpen, setIsOpen] = useState(false);
 
-  const renderNavigation = (items: readonly { label: string; href: string }[]) => (
-    <div className="space-y-1">
-      {items.map(({ label, href }) => {
-        const isActive = currentPath === href || (href !== '/dashboard' && currentPath.startsWith(href));
-        return (
-          <Link
-            key={label}
-            href={href}
-            onClick={() => setIsOpen(false)}
-            className={`group relative flex min-h-9 items-center gap-3 rounded-lg border px-3 py-2 text-[13px] font-medium tracking-[-0.01em] transition duration-200 ease-out ${isActive ? 'border-white/[0.09] bg-[#111a14] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.03),0_6px_18px_rgba(0,0,0,0.14)]' : 'border-transparent text-[var(--se-muted)] hover:border-white/[0.05] hover:bg-[var(--se-panel-hover)] hover:text-white'}`}
-          >
-            <span className={`flex h-[17px] w-[17px] items-center justify-center transition-colors ${isActive ? 'text-[var(--se-green)]' : 'text-[var(--se-muted)] group-hover:text-slate-200'}`}>
-              <NavIcon label={label} />
-            </span>
-            <span className="truncate">{label}</span>
-            {isActive ? <span aria-hidden="true" className="absolute left-0 h-4 w-0.5 rounded-full bg-[var(--se-green)] shadow-[0_0_10px_rgba(57,242,127,0.65)]" /> : null}
-          </Link>
-        );
-      })}
-    </div>
-  );
+  // Reference sidebar approved list:
+  // DeepSide AI, Games, Research Lab, AI Favorites, Best +EV Plays, Settings
+  const sidebarItems: { label: string; href: string }[] = [
+    { label: 'DeepSide AI', href: '/ai' },
+    { label: 'Games', href: '/dashboard' },
+    { label: 'Research Lab', href: '/research' },
+    { label: 'AI Favorites', href: '/picks' },
+    { label: 'Best +EV Plays', href: '/ai?query=Best+%2BEV+Plays' },
+    { label: 'Settings', href: '/settings' },
+  ];
 
   return (
     <>
+      {/* Mobile Hamburger Button matching reference top-right */}
       <button
         type="button"
         aria-label="Open navigation"
         aria-expanded={isOpen}
         onClick={() => setIsOpen(true)}
-        className="fixed left-3 top-3 z-30 flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--se-border)] bg-[var(--se-bg-elevated)] text-[var(--se-muted)] shadow-lg transition hover:border-[var(--se-border-strong)] hover:text-white md:hidden"
+        className="fixed right-4 top-4 z-30 flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-[#060d1b]/90 text-slate-300 shadow-lg backdrop-blur-md transition hover:border-cyan-500/40 hover:text-white md:hidden"
       >
-        <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+        <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24">
+          <line x1="4" y1="6" x2="20" y2="6" />
+          <line x1="4" y1="12" x2="20" y2="12" />
+          <line x1="4" y1="18" x2="20" y2="18" />
+        </svg>
       </button>
-      {isOpen ? <button type="button" aria-label="Close navigation" onClick={() => setIsOpen(false)} className="fixed inset-0 z-30 bg-black/55 md:hidden" /> : null}
-      <aside className={`fixed inset-y-0 left-0 z-40 flex w-[204px] shrink-0 flex-col border-r border-[var(--se-border)] bg-[var(--se-bg-elevated)] shadow-2xl transition-transform duration-200 ease-out md:relative md:z-auto md:translate-x-0 md:shadow-none ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
-      {/* Logo */}
-      <div className="flex items-center justify-between border-b border-[var(--se-border)] px-3 py-3">
-        <DeepSideLogo className="block h-auto w-[148px] max-w-full object-contain" priority />
-        <button type="button" aria-label="Close navigation" onClick={() => setIsOpen(false)} className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--se-muted)] transition hover:bg-[var(--se-panel-hover)] hover:text-white md:hidden">
-          <span aria-hidden="true" className="text-lg leading-none">×</span>
-        </button>
-      </div>
 
-      {/* Nav */}
-      <nav className="flex-1 overflow-y-auto px-2 py-4">
-        <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Core</p>
-        {renderNavigation(mainNavigation)}
-        <p className="mb-2 mt-5 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Tracking</p>
-        {renderNavigation([{ label: 'Performance', href: '/performance' }])}
-      </nav>
+      {/* Backdrop */}
+      {isOpen ? (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          onClick={() => setIsOpen(false)}
+          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm md:hidden"
+        />
+      ) : null}
 
-      <div className="border-t border-[var(--se-border)] px-2 py-3">
-        <div className="mb-2 flex items-center gap-2 px-2">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--se-green-soft)] text-[10px] font-bold text-[var(--se-green)]">LR</div>
-          <div className="min-w-0">
-            <p className="truncate text-xs font-semibold text-white">Pro Plan</p>
-            <p className="text-[10px] text-[var(--se-green)]">Active</p>
-          </div>
+      {/* Sidebar Container */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex w-[214px] shrink-0 flex-col border-r border-white/[0.07] bg-[#030612]/95 backdrop-blur-xl transition-transform duration-200 ease-out md:relative md:z-auto md:translate-x-0 ${
+          isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+        }`}
+      >
+        {/* Brand Header */}
+        <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-4">
+          <Link href="/ai" onClick={() => setIsOpen(false)} className="block w-full">
+            <DeepSideLogo size="sm" showTagline taglineClassName="tracking-[0.16em] text-[7px]" />
+          </Link>
+          <button
+            type="button"
+            aria-label="Close navigation"
+            onClick={() => setIsOpen(false)}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-white md:hidden"
+          >
+            <span aria-hidden="true" className="text-xl leading-none">×</span>
+          </button>
         </div>
-        <div className="grid grid-cols-2 gap-1">
-          <Link href="/account" onClick={() => setIsOpen(false)} className="rounded-lg px-2 py-1.5 text-center text-[11px] text-[var(--se-muted)] transition hover:bg-[var(--se-panel-hover)] hover:text-white">Account</Link>
-          <Link href="/settings" onClick={() => setIsOpen(false)} className="rounded-lg px-2 py-1.5 text-center text-[11px] text-[var(--se-muted)] transition hover:bg-[var(--se-panel-hover)] hover:text-white">Settings</Link>
-        </div>
-      </div>
 
-      {footer}
+        {/* Navigation Items matching reference */}
+        <nav className="flex-1 space-y-1.5 overflow-y-auto px-2.5 py-4">
+          {sidebarItems.map(({ label, href }) => {
+            const icon = NAV_MAP[label] ?? 'ai';
+            const isDeepSideAI = icon === 'ai';
+            const isActive = isDeepSideAI
+              ? currentPath === '/ai' || currentPath === '/'
+              : currentPath === href || (href !== '/dashboard' && href !== '/ai?query=Best+%2BEV+Plays' && currentPath.startsWith(href));
+
+            if (isActive && isDeepSideAI) {
+              return (
+                <Link
+                  key={label}
+                  href={href}
+                  onClick={() => setIsOpen(false)}
+                  className="group relative flex items-center gap-3 rounded-2xl border border-[#00b4d8]/80 bg-gradient-to-r from-[#0d2246] to-[#071329] px-3.5 py-2.5 text-[13px] font-semibold text-white shadow-[0_0_18px_rgba(0,180,216,0.35),inset_0_0_10px_rgba(0,180,216,0.12)] transition"
+                >
+                  <NavItemIcon icon={icon} isActive={true} />
+                  <span className="truncate">{label}</span>
+                </Link>
+              );
+            }
+
+            return (
+              <Link
+                key={label}
+                href={href}
+                onClick={() => setIsOpen(false)}
+                className={`group relative flex items-center gap-3 rounded-xl border border-transparent px-3 py-2 text-[13px] font-medium tracking-tight transition duration-150 ${
+                  isActive
+                    ? 'border-white/10 bg-white/[0.06] text-white'
+                    : 'text-slate-400 hover:border-white/5 hover:bg-white/[0.03] hover:text-white'
+                }`}
+              >
+                <NavItemIcon icon={icon} isActive={isActive} />
+                <span className="truncate">{label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Account at bottom matching reference */}
+        <div className="border-t border-white/[0.06] p-3">
+          <Link
+            href="/account"
+            onClick={() => setIsOpen(false)}
+            className="group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2 text-[13px] font-medium text-slate-300 transition hover:border-white/5 hover:bg-white/[0.03] hover:text-white"
+          >
+            <span className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-600/40 bg-white/5 text-slate-300 group-hover:border-cyan-400/50 group-hover:text-cyan-300">
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </span>
+            <span className="truncate">Account</span>
+          </Link>
+        </div>
+
+        {footer}
       </aside>
     </>
   );

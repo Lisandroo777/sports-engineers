@@ -1,4 +1,5 @@
 import { AppSidebar } from './AppSidebar';
+import { FuturisticBackground } from './FuturisticBackground';
 
 interface PageShellProps {
   currentPath: string;
@@ -11,7 +12,8 @@ interface PageShellProps {
 
 export function PageShell({ currentPath, title, subtitle, rightRail, children, action }: PageShellProps) {
   return (
-    <div className="flex min-h-screen bg-[var(--se-bg)] text-[var(--se-text)]">
+    <div className="relative flex min-h-screen bg-[#02040a] text-[var(--se-text)]">
+      <FuturisticBackground />
       <AppSidebar currentPath={currentPath} />
 
       <div className="flex flex-1 flex-col overflow-hidden">

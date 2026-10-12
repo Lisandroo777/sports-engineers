@@ -4,6 +4,9 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppSidebar } from "../../components/AppSidebar";
+import { FuturisticBackground } from "../../components/FuturisticBackground";
+import { MobileBottomNav } from "../../components/MobileBottomNav";
+import { DeepSideLogo } from "../../components/DeepSideLogo";
 import { NewsUnavailablePanel } from "../../components/NewsUnavailablePanel";
 import { PlayerAvatar } from "../../components/PlayerAvatar";
 import { PlayerHeadshot } from "../../components/PlayerHeadshot";
@@ -1553,95 +1556,220 @@ function AiFinderPageContent() {
     .map(([key, label]) => ({ label, value: String(agentMeta?.[key]) }));
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#060d18] text-white">
-      <AppSidebar currentPath="/ai" footer={sidebarFooter} />
+    <div className="relative flex h-screen overflow-hidden bg-[#02040a] p-0 md:p-3 text-white">
+      <FuturisticBackground />
+      <div className="relative flex h-full w-full overflow-hidden md:rounded-[24px] md:border md:border-white/[0.08] md:shadow-[0_0_50px_rgba(0,0,0,0.85)]">
+        <AppSidebar currentPath="/ai" footer={sidebarFooter} />
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* ── Top nav ── */}
-        <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-white/5 bg-[#0b1522] px-3 py-2.5 sm:px-4">
-          <div className="flex min-w-0 w-full items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-sm text-slate-600 sm:w-auto sm:flex-1 sm:basis-32">
-            <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-            <span>DeepSide AI</span>
-          </div>
-          <div className="scrollbar-hidden ml-0 flex w-full min-w-0 items-center gap-2 overflow-x-auto sm:ml-auto sm:w-auto sm:max-w-full">
-            <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
-              <button onClick={() => setFinderSport('MLB')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'MLB' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>⚾ MLB</button>
-              <button onClick={() => setFinderSport('NBA')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'NBA' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>NBA</button>
-              <button onClick={() => setFinderSport('NFL')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'NFL' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>NFL</button>
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {/* ── Top nav ── */}
+          <header className={`flex shrink-0 items-center justify-between px-4 py-3 sm:px-6 transition-all ${
+            conversation.length === 0 && !isSearching
+              ? 'bg-transparent border-b border-transparent'
+              : 'border-b border-white/[0.06] bg-[#030612]/80 backdrop-blur-md'
+          }`}>
+            <div className="flex items-center gap-2">
+              {(conversation.length > 0 || isSearching || results.length > 0) ? (
+                <div className="flex items-center gap-2 rounded-xl border border-white/8 bg-white/[0.03] px-3 py-1.5 text-xs text-slate-400">
+                  <svg className="h-3.5 w-3.5 shrink-0 text-cyan-400" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                  <span className="font-medium text-slate-300">DeepSide AI</span>
+                </div>
+              ) : null}
             </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/8 bg-white/5 p-1 text-sm font-medium">
-              <button onClick={() => setFinderDate(todaySlateDate())} className={`rounded-lg px-2.5 py-1 transition ${presetForSlateDate(finderDate) === 'today' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>Today</button>
-              <button onClick={() => setFinderDate(tomorrowSlateDate())} className={`rounded-lg px-2.5 py-1 transition ${presetForSlateDate(finderDate) === 'tomorrow' ? 'bg-teal-500/20 text-teal-300' : 'text-slate-400 hover:text-white'}`}>Tomorrow</button>
-            </div>
-            <button onClick={resetSearchSession} title="Clear the saved DeepSide AI session" className="rounded-xl border border-rose-500/20 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reset</button>
-            <button disabled title="Notifications are not connected yet" className="relative flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-full border border-white/8 bg-white/5 text-slate-300 opacity-50">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} viewBox="0 0 24 24"><path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
-            </button>
-            <Link href="/account" className="flex h-8 w-8 items-center justify-center rounded-full bg-teal-500/20 text-xs font-bold text-teal-400 transition hover:bg-teal-500/30">LR</Link>
-          </div>
-        </header>
 
-        <main className="min-w-0 flex-1 overflow-y-auto">
-          <div className={`flex min-w-0 gap-3 p-3 pb-10 sm:gap-5 sm:p-5 ${criteria ? "" : "min-h-full"}`}>
+            <div className="ml-auto flex items-center gap-2">
+              {(conversation.length > 0 || isSearching || results.length > 0) && (
+                <>
+                  <div className="hidden sm:flex shrink-0 items-center gap-1 rounded-xl border border-white/8 bg-white/[0.03] p-1 text-xs font-medium">
+                    <button onClick={() => setFinderSport('MLB')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'MLB' ? 'bg-cyan-500/20 text-cyan-300 font-semibold' : 'text-slate-400 hover:text-white'}`}>⚾ MLB</button>
+                    <button onClick={() => setFinderSport('NBA')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'NBA' ? 'bg-cyan-500/20 text-cyan-300 font-semibold' : 'text-slate-400 hover:text-white'}`}>NBA</button>
+                    <button onClick={() => setFinderSport('NFL')} className={`rounded-lg px-2.5 py-1 transition ${finderSport === 'NFL' ? 'bg-cyan-500/20 text-cyan-300 font-semibold' : 'text-slate-400 hover:text-white'}`}>NFL</button>
+                  </div>
+                  <div className="hidden sm:flex shrink-0 items-center gap-1 rounded-xl border border-white/8 bg-white/[0.03] p-1 text-xs font-medium">
+                    <button onClick={() => setFinderDate(todaySlateDate())} className={`rounded-lg px-2.5 py-1 transition ${presetForSlateDate(finderDate) === 'today' ? 'bg-cyan-500/20 text-cyan-300 font-semibold' : 'text-slate-400 hover:text-white'}`}>Today</button>
+                    <button onClick={() => setFinderDate(tomorrowSlateDate())} className={`rounded-lg px-2.5 py-1 transition ${presetForSlateDate(finderDate) === 'tomorrow' ? 'bg-cyan-500/20 text-cyan-300 font-semibold' : 'text-slate-400 hover:text-white'}`}>Tomorrow</button>
+                  </div>
+                  <button onClick={resetSearchSession} title="Clear the saved DeepSide AI session" className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reset</button>
+                </>
+              )}
+
+              {/* Notification bell matching reference image */}
+              <button
+                type="button"
+                title="Notifications"
+                className="relative flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-400/50 hover:text-white"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-amber-400 shadow-[0_0_8px_#f59e0b]" />
+              </button>
+            </div>
+          </header>
+
+        <main className="min-w-0 flex-1 overflow-y-auto pb-20 md:pb-6">
+          <div className={`flex min-w-0 gap-3 p-3 sm:gap-5 sm:p-5 ${criteria ? "" : "min-h-full items-center justify-center"}`}>
 
             {/* ── Center column ── */}
             <div className="flex min-w-0 flex-1 flex-col gap-5">
 
-              {/* DeepSide AI hero */}
+              {/* DeepSide AI hero matching reference image */}
               {conversation.length === 0 && !isSearching && (
-                <div className="mx-auto flex w-full max-w-[1000px] flex-1 flex-col justify-center pb-12 pt-16 text-center">
-                  <p className="text-5xl font-black tracking-[-0.06em] text-white sm:text-7xl">DeepSide <span className="text-[#39f27f]">AI</span></p>
-                  <p className="mt-5 text-base text-slate-400 sm:text-lg">Research any prop. Find your edge.</p>
+                <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col items-center justify-center pb-6 pt-6 sm:pt-14 text-center">
+                  <DeepSideLogo size="hero" showTagline={true} />
+
+                  {/* ── Search Bar matching reference image ── */}
+                  <div className="mt-8 w-full">
+                    <div className="relative flex h-14 sm:h-[58px] items-center rounded-full border border-[#00b4d8]/70 bg-[#050b18]/85 px-3 sm:px-4 shadow-[0_0_25px_rgba(0,180,216,0.3),inset_0_0_12px_rgba(0,180,216,0.08)] backdrop-blur-xl focus-within:border-[#38bdf8] focus-within:shadow-[0_0_35px_rgba(56,189,248,0.45)] transition-all">
+                      <svg className="h-5 w-5 shrink-0 text-slate-400 ml-2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      </svg>
+                      <input
+                        ref={inputRef as unknown as React.RefObject<HTMLInputElement>}
+                        type="text"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            handleSubmit();
+                          }
+                        }}
+                        placeholder="Ask anything..."
+                        className="min-w-0 flex-1 bg-transparent px-3 text-sm sm:text-base text-white outline-none placeholder:text-slate-400 font-normal"
+                      />
+                      <button
+                        onClick={handleSubmit}
+                        disabled={isSearching || !query.trim()}
+                        aria-label="Search"
+                        title="Search with DeepSide AI"
+                        className="flex h-10 w-10 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-[#0284c7] via-[#0ea5e9] to-[#38bdf8] text-white shadow-[0_0_20px_rgba(14,165,233,0.85)] search-button-glow transition hover:scale-105 active:scale-95 disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed disabled:scale-100"
+                      >
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                          <line x1="5" y1="12" x2="19" y2="12" />
+                          <polyline points="12 5 19 12 12 19" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* ── Feature Cards matching reference image ── */}
+                  <div className="mt-6 grid w-full grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5">
+                    {/* Card 1: AI Favorites */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQuery("Show me 5 high confidence MLB props 80%+");
+                        runSearch("Show me 5 high confidence MLB props 80%+");
+                      }}
+                      className="group relative flex items-center justify-between rounded-2xl border border-[#00b4d8]/65 bg-gradient-to-b from-[#0b172d]/90 to-[#040916]/95 p-4 sm:p-5 text-left backdrop-blur-md shadow-[0_0_25px_rgba(0,180,216,0.22),inset_0_0_15px_rgba(0,180,216,0.06)] hover:border-[#38bdf8] hover:shadow-[0_0_35px_rgba(56,189,248,0.4)] transition-all cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3.5 sm:gap-4 min-w-0">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[#00b4d8]/50 bg-[#071936]/80 text-cyan-300 shadow-[0_0_12px_rgba(0,180,216,0.35)] group-hover:border-[#38bdf8] group-hover:text-cyan-200 transition">
+                          <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="4" y="3" width="16" height="18" rx="2" />
+                            <line x1="8" y1="8" x2="16" y2="8" />
+                            <line x1="8" y1="12" x2="16" y2="12" />
+                            <line x1="8" y1="16" x2="12" y2="16" />
+                          </svg>
+                        </div>
+                        <div className="min-w-0">
+                          <h3 className="text-base sm:text-[17px] font-bold tracking-tight text-white group-hover:text-cyan-100 transition">AI Favorites</h3>
+                          <p className="text-xs text-slate-300/80 truncate">Your saved picks and top targets.</p>
+                        </div>
+                      </div>
+                      <svg className="h-5 w-5 shrink-0 text-slate-400 group-hover:text-cyan-300 transition-colors ml-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+
+                    {/* Card 2: Best +EV Plays */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQuery("Find me 15 plus-money MLB value plays");
+                        runSearch("Find me 15 plus-money MLB value plays");
+                      }}
+                      className="group relative flex items-center justify-between rounded-2xl border border-[#eab308]/65 bg-gradient-to-b from-[#1c1608]/90 to-[#0a0702]/95 p-4 sm:p-5 text-left backdrop-blur-md shadow-[0_0_25px_rgba(234,179,8,0.22),inset_0_0_15px_rgba(234,179,8,0.06)] hover:border-[#fde047] hover:shadow-[0_0_35px_rgba(234,179,8,0.4)] transition-all cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3.5 sm:gap-4 min-w-0">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[#eab308]/50 bg-[#2b1f07]/80 text-amber-300 shadow-[0_0_12px_rgba(234,179,8,0.35)] group-hover:border-[#fde047] group-hover:text-amber-200 transition">
+                          <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="20" x2="18" y2="9" />
+                            <line x1="12" y1="20" x2="12" y2="4" />
+                            <line x1="6" y1="20" x2="6" y2="14" />
+                          </svg>
+                        </div>
+                        <div className="min-w-0">
+                          <h3 className="text-base sm:text-[17px] font-bold tracking-tight text-white group-hover:text-amber-100 transition">Best +EV Plays</h3>
+                          <p className="text-xs text-amber-100/70 truncate">Highest value opportunities.</p>
+                        </div>
+                      </div>
+                      <svg className="h-5 w-5 shrink-0 text-amber-400/80 group-hover:text-amber-300 transition-colors ml-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* Secondary suggestions */}
+                  <div className="flex flex-wrap justify-center gap-2 pt-5">
+                    {SECONDARY_SUGGESTIONS.map((s) => (
+                      <button
+                        key={s.label}
+                        onClick={() => {
+                          setQuery(s.query);
+                          runSearch(s.query);
+                        }}
+                        className="rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 text-xs text-slate-400 transition hover:border-[#00b4d8]/50 hover:bg-[#00b4d8]/10 hover:text-cyan-300"
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* ── Search ── */}
-              {(
-                <div className={`mx-auto w-full max-w-[1000px] space-y-3 ${criteria ? "" : "mt-8"}`}>
-                  <div className="flex min-h-[150px] flex-col gap-3 rounded-[18px] border border-[#39f27f]/30 bg-[#0a0e0c]/95 p-3 shadow-[0_0_28px_rgba(57,242,127,0.06)] sm:flex-row sm:p-4">
-                    <textarea
-                      ref={inputRef}
+              {/* ── Search when in conversation or results state ── */}
+              {(conversation.length > 0 || isSearching || results.length > 0) && (
+                <div className="mx-auto w-full max-w-[900px]">
+                  <div className="relative flex h-13 items-center rounded-full border border-[#00b4d8]/65 bg-[#050b18]/85 px-4 shadow-[0_0_20px_rgba(0,180,216,0.2)] backdrop-blur-xl focus-within:border-[#38bdf8] focus-within:shadow-[0_0_30px_rgba(56,189,248,0.35)] transition-all">
+                    <svg className="h-4 w-4 shrink-0 text-slate-400 ml-1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <input
+                      type="text"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
-                      placeholder="Ask DeepSide AI — e.g. Best NFL plays Sunday"
-                      rows={4}
-                      className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-base text-white outline-none placeholder:text-slate-600"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSubmit();
+                        }
+                      }}
+                      placeholder="Ask anything..."
+                      className="min-w-0 flex-1 bg-transparent px-3 text-sm text-white outline-none placeholder:text-slate-400 font-normal"
                     />
-                    <button type="button" disabled title="Attaching extra context isn't supported yet" aria-label="Add context" className="flex h-10 w-10 shrink-0 cursor-not-allowed items-center justify-center self-end rounded-xl border border-white/10 text-xl text-slate-600 opacity-40">+</button>
-                    <button type="button" disabled title="Voice input isn't supported yet" aria-label="Use microphone" className="flex h-10 w-10 shrink-0 cursor-not-allowed items-center justify-center self-end rounded-xl border border-white/10 text-slate-600 opacity-40">
-                      <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="10" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></svg>
-                    </button>
-                    <button onClick={handleSubmit} disabled={isSearching || !query.trim()} aria-label="Search" title="Search with DeepSide AI"
-                      className="flex h-10 shrink-0 items-center justify-center gap-2 self-end rounded-xl bg-[#39f27f] px-3 text-sm font-bold text-[#041008] transition hover:bg-[#63f99a] disabled:cursor-not-allowed disabled:opacity-40">
-                      <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-                      <span>Search</span>
+                    <button
+                      onClick={handleSubmit}
+                      disabled={isSearching || !query.trim()}
+                      aria-label="Search"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-[#0284c7] via-[#0ea5e9] to-[#38bdf8] text-white shadow-[0_0_15px_rgba(14,165,233,0.85)] search-button-glow transition hover:scale-105 active:scale-95 disabled:opacity-50"
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                        <polyline points="12 5 19 12 12 19" />
+                      </svg>
                     </button>
                   </div>
-                  <p className="text-center text-xs text-slate-500">✦ Ask naturally. For example: <span className="text-slate-400">&quot;Best NFL plays Sunday&quot;</span> or <span className="text-slate-400">&quot;Best MLB pitcher props tomorrow under -200&quot;</span></p>
-                  {conversation.length === 0 && (
-                    <>
-                      <div className="grid gap-3 pt-3 sm:grid-cols-2">
-                        <button onClick={() => { setQuery("Find me the 15 best MLB plays tonight"); runSearch("Find me the 15 best MLB plays tonight"); }} className="rounded-[14px] border border-white/10 bg-white/3 px-4 py-4 text-left text-sm font-semibold text-white transition hover:-translate-y-px hover:border-[#39f27f]/35 hover:bg-[#101712]">⚡ Best Props for the Day</button>
-                        <button onClick={() => { setQuery("Find me 15 plus-money MLB value plays"); runSearch("Find me 15 plus-money MLB value plays"); }} className="rounded-[14px] border border-white/10 bg-white/3 px-4 py-4 text-left text-sm font-semibold text-white transition hover:-translate-y-px hover:border-[#39f27f]/35 hover:bg-[#101712]">💎 Best Value Props</button>
-                      </div>
-                      <div className="flex flex-wrap justify-center gap-2 pt-2">
-                        {SECONDARY_SUGGESTIONS.map((s) => <button key={s.label} onClick={() => { setQuery(s.query); runSearch(s.query); }} className="rounded-full border border-white/8 px-3 py-1.5 text-[11px] text-slate-500 transition hover:border-[#39f27f]/30 hover:text-[#39f27f]">{s.label}</button>)}
-                      </div>
-                    </>
-                  )}
                   {agentError && process.env.NODE_ENV !== 'production' && (
                     <div className="mt-4 rounded-2xl border border-amber-500/25 bg-amber-500/8 p-4 text-left">
                       <p className="text-sm font-semibold text-amber-200">AI research agent unavailable</p>
                       <p className="mt-1 text-xs text-amber-200/80">{agentError}</p>
-                      {agentError.includes("OPENAI_API_KEY") && (
-                        <p className="mt-2 text-xs text-amber-200/60">
-                          Add <span className="font-mono">OPENAI_API_KEY=…</span> to <span className="font-mono">.env.local</span> in the project root, then restart the dev server.
-                        </p>
-                      )}
                     </div>
                   )}
-                  {restrictionMessage && process.env.NODE_ENV !== 'production' && <p className="pt-6 text-center text-xs text-slate-500">{restrictionMessage}</p>}
                 </div>
               )}
 
@@ -1653,10 +1781,10 @@ function AiFinderPageContent() {
                       <p className="max-w-[85%] rounded-2xl rounded-br-md border border-white/8 bg-white/5 px-4 py-2.5 text-sm text-slate-200">{lastUserQuery || query}</p>
                     </div>
                   )}
-                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-4" role="status" aria-live="polite">
+                  <div className="rounded-2xl border border-cyan-400/25 bg-cyan-950/20 p-4 shadow-[0_0_20px_rgba(0,180,216,0.15)]" role="status" aria-live="polite">
                     <div className="flex items-center gap-2">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">DeepSide AI is researching</p>
+                      <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-400" />
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">DeepSide AI is researching</p>
                     </div>
                     {researchScope && <p className="mt-2 text-base font-bold text-white">{researchScope.label}</p>}
                     <p className="mt-1 text-sm text-slate-300">{researchScope?.games != null ? `Analyzing ${researchScope.games} game${researchScope.games === 1 ? '' : 's'} — loading sportsbook markets, researching candidates and applying DeepSide filters…` : 'Loading sportsbook markets, researching candidates and applying DeepSide filters…'}</p>
@@ -1895,44 +2023,50 @@ function AiFinderPageContent() {
             </div>
 
             {/* ── Right sidebar ── */}
-            <aside className="hidden w-[240px] shrink-0 space-y-4 xl:flex xl:flex-col">
-              <NewsUnavailablePanel />
-              {/* Recent searches */}
-              {recentSearches.length > 0 && (
-                <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
-                  <h3 className="mb-3 text-sm font-semibold text-white">Recent AI Searches</h3>
-                  <div className="space-y-1.5">
-                    {recentSearches.map((s) => (
-                      <button key={s} onClick={() => { setQuery(s); runSearch(s); }}
-                        className="block w-full truncate rounded-lg px-2.5 py-2 text-left text-[11px] text-slate-400 transition hover:bg-white/8 hover:text-white">
-                        {s}
-                      </button>
-                    ))}
+            {(conversation.length > 0 || isSearching || results.length > 0) && (
+              <aside className="hidden w-[240px] shrink-0 space-y-4 xl:flex xl:flex-col">
+                <NewsUnavailablePanel />
+                {/* Recent searches */}
+                {recentSearches.length > 0 && (
+                  <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
+                    <h3 className="mb-3 text-sm font-semibold text-white">Recent AI Searches</h3>
+                    <div className="space-y-1.5">
+                      {recentSearches.map((s) => (
+                        <button key={s} onClick={() => { setQuery(s); runSearch(s); }}
+                          className="block w-full truncate rounded-lg px-2.5 py-2 text-left text-[11px] text-slate-400 transition hover:bg-white/8 hover:text-white">
+                          {s}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Last analysis */}
-              {analysisChips.length > 0 && (
-                <div className="rounded-2xl border border-teal-500/15 bg-teal-500/5 p-4">
-                  <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-white">Last Analysis</h3>
-                    <button onClick={() => { setResults([]); setNbaPresentation(null); setToolTrace([]); }} className="text-[10px] text-slate-500 hover:text-white">Clear</button>
+                {/* Last analysis */}
+                {analysisChips.length > 0 && (
+                  <div className="rounded-2xl border border-teal-500/15 bg-teal-500/5 p-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-white">Last Analysis</h3>
+                      <button onClick={() => { setResults([]); setNbaPresentation(null); setToolTrace([]); }} className="text-[10px] text-slate-500 hover:text-white">Clear</button>
+                    </div>
+                    <div className="space-y-1">
+                      {analysisChips.map(({ label, value }) => (
+                        <div key={label} className="flex items-center justify-between text-[10px]">
+                          <span className="text-slate-500">{label}</span>
+                          <span className="font-semibold text-teal-400">{value}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="space-y-1">
-                    {analysisChips.map(({ label, value }) => (
-                      <div key={label} className="flex items-center justify-between text-[10px]">
-                        <span className="text-slate-500">{label}</span>
-                        <span className="font-semibold text-teal-400">{value}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </aside>
+                )}
+              </aside>
+            )}
           </div>
         </main>
       </div>
+      </div>
+
+      {/* Mobile Bottom Navigation Bar */}
+      <MobileBottomNav currentPath="/ai" />
     </div>
   );
 }
