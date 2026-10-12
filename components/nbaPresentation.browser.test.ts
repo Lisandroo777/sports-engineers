@@ -43,6 +43,7 @@ interface BrowserResponse {
 }
 
 interface Page {
+  emulateMedia(options: { reducedMotion: 'reduce' | 'no-preference' }): Promise<void>;
   locator(selector: string): Locator;
   getByRole(role: string, options?: { name?: string; exact?: boolean }): Locator;
   getByText(text: string, options?: { exact?: boolean }): Locator;
@@ -212,7 +213,24 @@ describe.skipIf(process.env.NBA_PRESENTATION_BROWSER !== '1')('NBA presentation 
           pageUrl.searchParams.set('sport', 'nba');
           pageUrl.searchParams.set('date', slateDate);
           await page.goto(pageUrl.href, { waitUntil: 'domcontentloaded' });
-          const query = page.locator('textarea').first();
+          const query = page.locator('input[type="text"]').first();
+          await query.waitFor({ state: 'visible' });
+          const animation = await page.evaluate(async () => {
+            const layer = document.querySelector<HTMLElement>('.deepside-streak-blue-main');
+            if (!layer) return { present: false, advances: false, transformed: false, isolated: false };
+            const active = layer.getAnimations()[0];
+            const beforeTime = Number(active?.currentTime ?? 0);
+            const beforeTransform = getComputedStyle(layer).transform;
+            for (let frame = 0; frame < 12; frame += 1) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+            return { present: true, advances: Number(active?.currentTime ?? 0) > beforeTime,
+              transformed: getComputedStyle(layer).transform !== beforeTransform,
+              isolated: getComputedStyle(layer.parentElement!.parentElement!.parentElement!).isolation === 'isolate' };
+          });
+          expect(animation).toEqual({ present: true, advances: true, transformed: true, isolated: true });
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          expect(await page.evaluate(() => getComputedStyle(document.querySelector('.deepside-streak-blue-main')!).animationName)).toBe('none');
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          await page.screenshot({ path: `.cache/nba-release-ui/design-${name}-initial.png`, fullPage: true });
           const presentation = page.locator('[data-nba-presentation="deepside-nba-pick-presentation/1"]');
           async function search() {
             await query.fill(queryText);

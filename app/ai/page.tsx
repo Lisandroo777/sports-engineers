@@ -1556,7 +1556,7 @@ function AiFinderPageContent() {
     .map(([key, label]) => ({ label, value: String(agentMeta?.[key]) }));
 
   return (
-    <div className="relative flex h-screen overflow-hidden bg-[#02040a] p-0 md:p-3 text-white">
+    <div className="relative isolate flex h-screen overflow-hidden bg-[#02040a] p-0 md:p-3 text-white">
       <FuturisticBackground />
       <div className="relative flex h-full w-full overflow-hidden md:rounded-[24px] md:border md:border-white/[0.08] md:shadow-[0_0_50px_rgba(0,0,0,0.85)]">
         <AppSidebar currentPath="/ai" footer={sidebarFooter} />
