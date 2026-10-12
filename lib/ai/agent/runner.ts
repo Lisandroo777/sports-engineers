@@ -23,6 +23,8 @@ import { selectNBAMixedRecommendations } from '../../nba/prediction/gameLines/se
 import { detectSport } from '../sportResearchAdapters';
 import { buildNBAResearchPresentation, unclassifiedNBAPropResearch } from '../../nba/prediction/gameLines/presentationBridge';
 import { loadCachedNBAEventResearch } from '../../nba/prediction/gameLines/cachedEventResearch';
+import { requestedNBATeams, matchesNBATeams } from '../../nba/prediction/gameLines/requestScope';
+import { getNBASchedule } from '../../nba/schedule';
 
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
 const DEFAULT_MODEL = 'gpt-4.1';
@@ -158,6 +160,10 @@ export function filterRecommendationResults(results: unknown[], sport?: string, 
       return decision.pickTier === 'PASS' && !includePasses ? [] : [{ ...result, ...decision }];
     }
     const candidate = result as ResearchCandidateRecord;
+    if (sport === 'nba' && candidate.retrievedAt != null) {
+      const receipt = Date.parse(candidate.retrievedAt);
+      if (!Number.isFinite(receipt) || receipt > now.getTime() || now.getTime() - receipt > 3600000) return [];
+    }
     const nfl = sport === 'nfl' || (sport == null && getNFLMarketMetadata(candidate.marketKey as NFLAnalyzableMarketKey) != null);
     if (nfl && !includePasses && !isNFLInjuryContextFresh(candidate.injuryContext as Parameters<typeof isNFLInjuryContextFresh>[0], now)) return [];
     const decision = classifyPickTier(candidate, nfl ? 'nfl' : sport);
@@ -308,10 +314,14 @@ export async function runAgentTurn(history: AgentTurnMessage[], researchSessionI
   const nbaMarkets = nbaQuery ? classifyNBAMarketIntent(query) : null;
   if (nbaMarkets && (nbaMarkets.gameLineMarkets.length || nbaMarkets.playerPropsRequested)) {
     const requestedDate = resolveDateFromText(query)?.resolvedDate ?? uiContext?.date ?? storedSession?.date ?? todaySlateDate();
+    const requestedTeams = requestedNBATeams(query);
     let nbaSession = storedSession?.sport === 'nba' && storedSession.date === requestedDate && storedSession.modeledGames != null
       && (nbaMarkets.gameLinesOnly || storedSession.queryIntent === query) ? storedSession : null;
     if (!nbaSession || /\brefresh\b/i.test(query)) {
-      const summary = await runNBAFinderDeepSearch(requestedDate, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly });
+      const gameIds = requestedTeams.length ? (await getNBASchedule(requestedDate).catch(() => []))
+        .filter(game => matchesNBATeams(requestedTeams, [game.homeTeam.displayName, game.awayTeam.displayName])).map(game => game.id) : null;
+      const summary = await runNBAFinderDeepSearch(requestedDate, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly,
+        ...(gameIds ? { validationGameIds: gameIds } : {}) });
       nbaSession = buildResearchSessionFromCandidates({ sport: 'nba', date: requestedDate, queryIntent: query,
         candidates: summary.nbaCandidates.filter(candidate => candidate.playerMatch === 'MATCHED' && candidate.eliteAnalysis != null).map(nbaFinderCandidateToGeneric),
         toolMeta: { gamesFound: summary.gamesAnalyzed, gamesScheduled: summary.gamesScheduled, propsFound: summary.propsAnalyzed,
@@ -322,6 +332,19 @@ export async function runAgentTurn(history: AgentTurnMessage[], researchSessionI
       nbaSession.nbaPresentationResearch = [...unclassifiedNBAPropResearch(summary.nbaCandidates),
         ...await loadCachedNBAEventResearch(requestedDate).catch(() => [])];
       researchSessionId = await saveResearchSession(nbaSession);
+    }
+    if (requestedTeams.length) {
+      const gameIds = new Set([
+        ...(nbaSession.modeledGames ?? []).filter(game => matchesNBATeams(requestedTeams, [game.home.name, game.away.name])).map(game => game.gameId),
+        ...(nbaSession.gameCandidates ?? []).filter(game => matchesNBATeams(requestedTeams, [game.home.name, game.away.name])).map(game => game.gameId),
+        ...nbaSession.candidates.filter(record => matchesNBATeams(requestedTeams, [record.team, record.opponent])).map(record => record.gameId),
+      ]);
+      nbaSession = { ...nbaSession, candidates: nbaSession.candidates.filter(record => gameIds.has(record.gameId)),
+        gameCandidates: nbaSession.gameCandidates?.filter(record => gameIds.has(record.gameId)),
+        modeledGames: nbaSession.modeledGames?.filter(record => gameIds.has(record.gameId)),
+        nbaPresentationResearch: nbaSession.nbaPresentationResearch?.filter(record => record.subject.kind === 'GAME_LINE'
+          ? matchesNBATeams(requestedTeams, [record.subject.home.name, record.subject.away.name])
+          : gameIds.has(record.subject.gameId)) };
     }
     const results = selectNBAMixedRecommendations(nbaSession, query);
     const unsupported = nbaMarkets.gameLineMarkets.filter(market => market === 'FIRST_HALF' || market === 'FIRST_QUARTER');
@@ -347,7 +370,7 @@ export async function runAgentTurn(history: AgentTurnMessage[], researchSessionI
   }
   if (intent.action === 'OUT_OF_SCOPE') return { reply: 'DeepSide AI is designed for sports-betting research. Ask me about picks, odds, markets, or a bet you are considering.', results: [], closestMisses: [], toolTrace: [], meta: null, researchSessionId };
   if (intent.action === 'CLARIFY') return { reply: intent.clarification!, results: [], closestMisses: [], toolTrace: [], meta: null, researchSessionId };
-  if (intent.unsupportedMarket && intent.action !== 'EDUCATION') return { reply: `I can discuss ${intent.unsupportedMarket}, but the connected NFL recommendation engine currently researches player props. I cannot supply a verified pick for that market.`, results: [], closestMisses: [], toolTrace: [], meta: null, researchSessionId };
+  if (intent.unsupportedMarket && intent.action !== 'EDUCATION') return { reply: `I can discuss ${intent.unsupportedMarket}, but the connected ${(intent.sport ?? uiContext?.sport ?? storedSession?.sport ?? 'sports').toUpperCase()} recommendation engine currently researches player props. I cannot supply a verified pick for that market.`, results: [], closestMisses: [], toolTrace: [], meta: null, researchSessionId };
   if (intent.action === 'EDUCATION' && (!apiKey || /supported sports|sports do you|supported markets|markets do you|previous picks|pick results/i.test(query))) {
     const reply = /supported sports|sports do you/i.test(query) ? 'NFL, NBA and MLB have connected research filters. Soccer and tennis are not connected for verified picks yet.'
       : /supported markets|markets do you/i.test(query) ? 'The connected NFL engine researches supported player props, including passing yards and completions, rushing yards and attempts, receiving yards and receptions. Game, half and quarter market recommendations are not connected here yet.'

@@ -80,6 +80,13 @@ describe('standalone transferred presentation contract', () => {
 });
 
 describe('NBA research presentation bridge with actual gates', () => {
+  it.each(['invalid', '2026-01-21T18:00:01Z', '2026-01-21T16:59:59Z'])('does not label a %s prop receipt current', retrievedAt => {
+    const record = prop({ retrievedAt });
+    const result = buildNBAResearchPresentation(session({ candidates: [record] }), 'NBA props', []);
+    expect(result.picks[0].pricing.americanOdds).toBeNull();
+    expect(result.picks[0].metrics.trueProbability).toBeNull();
+    expect(result.picks[0].metrics.evPercent).toBeNull();
+  });
   it.each(['healthy', 'questionable'] as const)('presents actual %s pipeline gates and unchanged model math', async scenario => {
     const { fixture, actualQuote, research, stored } = await gameResearch(scenario);
     expect(research.recommendations).toHaveLength(1);

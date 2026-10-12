@@ -14,7 +14,10 @@ export function selectNBAMixedRecommendations(session: ResearchSession, query: s
     const decision = classifyGameRecommendation(record, now);
     return decision.pickTier !== 'PASS' && tierMeetsFloor(decision.pickTier, qualityFloorFromQuery(qualityQuery)) ? [{ ...record, ...decision }] : [];
   });
-  const props = intent.gameLinesOnly ? [] : selectRankedCandidates(session.candidates, qualityQuery, { sport: 'nba' }).selected;
+  const currentProps = session.candidates.filter(record => record.retrievedAt == null
+    || Number.isFinite(Date.parse(record.retrievedAt)) && Date.parse(record.retrievedAt) <= now.getTime()
+      && now.getTime() - Date.parse(record.retrievedAt) <= 3600000);
+  const props = intent.gameLinesOnly ? [] : selectRankedCandidates(currentProps, qualityQuery, { sport: 'nba' }).selected;
   const records: NBARecommendation[] = [...props, ...games];
   const valueFirst = /best\s+value|value\s+picks|highest\s+ev/i.test(query);
   const likelyFirst = /most\s+likely|safest|highest\s+probability/i.test(query);

@@ -32,7 +32,7 @@ interface BrowserRequest {
 
 interface Route {
   request(): BrowserRequest;
-  fulfill(options: { json: unknown }): Promise<void>;
+  fulfill(options: { json: unknown; status?: number }): Promise<void>;
   abort(): Promise<void>;
   continue(): Promise<void>;
 }
@@ -140,7 +140,7 @@ function populatedPresentation() {
   };
 }
 
-type Scenario = 'populated' | 'empty' | 'legacy-nba' | 'cross-sport';
+type Scenario = 'populated' | 'empty' | 'legacy-nba' | 'cross-sport' | 'http-error' | 'network-error';
 
 function responseFixture(scenario: Scenario) {
   const empty = { ...buildPickPresentation({ picks: [], requestedSort: 'BEST', includePasses: true }),
@@ -196,8 +196,11 @@ describe.skipIf(process.env.NBA_PRESENTATION_BROWSER !== '1')('NBA presentation 
             if (url.pathname.startsWith('/api/')) {
               if (url.pathname === '/api/ai/chat' && request.method() === 'POST') {
                 requests.push(request.postDataJSON());
-                const payload = responseFixture(scenario);
+                const requestScenario = scenario;
+                const payload = responseFixture(requestScenario);
                 await responseGate;
+                if (requestScenario === 'http-error') return route.fulfill({ status: 503, json: { error: 'provider unavailable' } });
+                if (requestScenario === 'network-error') return route.abort();
                 return route.fulfill({ json: payload });
               }
               return route.fulfill({ json: { data: [], games: [], results: [], alerts: [], news: [], scope: null } });
@@ -311,6 +314,39 @@ describe.skipIf(process.env.NBA_PRESENTATION_BROWSER !== '1')('NBA presentation 
             await visible(page.getByText('No recommendable plays', { exact: true }));
             await expect.poll(() => presentation.count()).toBe(0);
             expect(await page.locator('article[data-candidate-id]').count()).toBe(0);
+          }
+          for (const failure of ['http-error', 'network-error'] as const) {
+            scenario = 'populated';
+            await populated();
+            await visible(page.getByText('5 recommended plays', { exact: true }));
+            scenario = failure;
+            responseGate = new Promise<void>(resolve => { releaseResponse = resolve; });
+            try {
+              await search();
+              await page.getByText('DeepSide AI is researching', { exact: true }).waitFor();
+              expect(await presentation.count()).toBe(0);
+              expect(await page.locator('article[data-candidate-id]').count()).toBe(0);
+            } finally {
+              releaseResponse();
+              responseGate = null;
+            }
+            const errorFeedback = page.getByText('Data Connection Issue', { exact: false });
+            const retry = page.getByRole('button', { name: 'Try Again', exact: true });
+            await visible(errorFeedback);
+            await visible(retry);
+            expect(await retry.isEnabled()).toBe(true);
+            expect(await presentation.count()).toBe(0);
+            expect(await page.locator('article[data-candidate-id]').count()).toBe(0);
+            expect(await page.getByRole('heading', { name: 'Recommendations', exact: true }).count()).toBe(0);
+            expect(await page.getByText('5 recommended plays', { exact: true }).count()).toBe(0);
+            await noOverflow(page);
+            scenario = 'populated';
+            await retry.click();
+            await presentation.waitFor({ state: 'visible' });
+            await expect.poll(() => presentation.locator('article').count()).toBe(8);
+            await visible(page.getByText('5 recommended plays', { exact: true }));
+            expect(await errorFeedback.count()).toBe(0);
+            expect(await retry.count()).toBe(0);
           }
           await noOverflow(page);
           expect(errors).toEqual([]);

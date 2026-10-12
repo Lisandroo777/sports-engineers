@@ -176,7 +176,8 @@ export async function runNBAFinderDeepSearch(
   const contextSnapshotCache = new Map<string, Promise<NBAContextSnapshot>>();
   const contextBundleCache = new Map<string, Promise<{ context: import('../nba/context/types').NBAResearchContext; intelligence: NBAIntelligenceSnapshot } | null>>();
   const scheduled = await getNBASchedule(slateDate).catch(() => []);
-  const bettable = scheduled.filter((game) => !game.completed);
+  const bettable = scheduled.filter((game) => !game.completed
+    && (options.validationGameIds == null || options.validationGameIds.includes(game.id)));
   const slateComplete = scheduled.length > 0 && bettable.length === 0;
 
   let oddsEvents: Awaited<ReturnType<typeof getOddsEventsForSport>> = [];

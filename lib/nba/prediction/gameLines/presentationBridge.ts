@@ -9,9 +9,10 @@ function evidence(detail: string, index: number, category = 'RESEARCH', observed
 }
 
 function propInput(record: ResearchCandidateRecord): PickPresentationInput {
+  const received = record.retrievedAt == null ? null : Date.parse(record.retrievedAt);
   const current = record.priceCurrent && ['FRESH', 'LIVE'].includes(record.priceFreshness)
     && (record.nbaPrediction?.quoteStatus == null || record.nbaPrediction.quoteStatus === 'CURRENT')
-    && (record.retrievedAt == null || Date.now() - Date.parse(record.retrievedAt) <= 3600000);
+    && (received == null || Number.isFinite(received) && received <= Date.now() && Date.now() - received <= 3600000);
   const decision = classifyPickTier(current ? record : { ...record, priceCurrent: false, valueQualified: false }, 'nba');
   return { candidateId: record.candidateId, subject: { kind: 'PLAYER_PROP', gameId: record.gameId ?? '',
     player: { id: record.playerId, name: record.player, team: record.team },

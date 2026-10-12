@@ -39,8 +39,8 @@ function candidate() {
     nbaPrediction: prediction(), retrievedAt: '2026-01-21T19:30:00Z' };
 }
 
-beforeEach(() => { runAgentTurnMock.mockReset(); });
-afterEach(() => { vi.restoreAllMocks(); });
+beforeEach(() => { runAgentTurnMock.mockReset(); vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-21T20:00:00Z')); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('NBA DeepSide AI request response', () => {
   it('preserves NBA identity and the V1 structured prediction through the real chat POST handler', async () => {
