@@ -30,6 +30,7 @@ import { resolveDateFromText, type ResolvedDate } from '../dateResolver';
 import { fail, ok, type ToolResult } from './status';
 import { buildResearchSession, buildResearchSessionFromCandidates, getClosestMisses, type ResearchCandidateRecord, type ResearchSession, type GenericResearchCandidate } from './session';
 import { saveResearchSession } from './sessionStore';
+import { getCachedMLBPrimaryMarkets } from '../../finder/engine';
 import { nflNameMatches, parseNFLRequestScope, type NFLMarketFamily, type NFLRequestScope } from './nflRequestScope';
 import { classifyPickTier, queryRequestsPasses, qualityFloorFromQuery, tierMeetsFloor, type PickTier } from './pickTiers';
 import { matchesNFLLowThreshold, type NFLResearchMode } from '../../nfl/researchIntent';
@@ -319,6 +320,13 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   }
 
   const preflightData = preflight.validationPreflight;
+  if (sport === 'mlb' && preflightData && !deliberateRefresh) {
+    for (const game of preflightData.games) {
+      if (game.eventId && await getCachedMLBPrimaryMarkets(game.eventId)) game.marketsCacheState = 'CACHE_FRESH';
+    }
+    preflightData.cacheHits = preflightData.games.filter(game => game.marketsCacheState === 'CACHE_FRESH').length;
+    preflightData.cacheMisses = preflightData.games.length - preflightData.cacheHits;
+  }
   const scopedTeams = [...new Set([...(context.nflScope?.teams ?? []), ...(context.nflScope?.playerTeam ? [context.nflScope.playerTeam] : [])])];
   const requestedGameIds = sport === 'nfl' && scopedTeams.length > 0
     ? (preflightData?.games ?? []).filter((game) => scopedTeams.every((team) => detectRequestedGames(team, [game]).length > 0)).map((game) => game.gameId)
@@ -614,7 +622,7 @@ export function parseCandidateSearchConstraints(query: string, candidates: Resea
   const range = normalized.match(/(?:between|from)\s*([+-]\d{2,4})\s*(?:and|to)\s*([+-]\d{2,4})/i);
   const signedPrice = normalized.match(/\b(?:under|below)\s*([+-]\d{2,4})\b/i);
   const overPrice = normalized.match(/\b(?:over|above)\s*([+-]\d{2,4})\b/i);
-  const target = range || signedPrice || overPrice ? null : normalized.match(/(?:around|near|at|priced?\s*(?:around|near|at)?)?\s*([+-]\d{2,4})\b/i);
+  const target = range || signedPrice || overPrice ? null : normalized.match(/(?<![\w])([+-]\d{2,4})\b/i);
   const requestedCount = normalized.match(/\b([23])[-\s]man\b/i)
     ?? normalized.match(/\b(\d{1,2})\b(?=[^.!?\n]{0,30}\b(?:plays?|picks?|props?)\b)/i);
   const matchingRecords = candidates.filter((candidate) => normalized.includes(candidate.player.toLowerCase())

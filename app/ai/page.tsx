@@ -111,6 +111,7 @@ interface AgentToolTrace {
 }
 
 interface AgentResultRecord {
+  sport?: string;
   candidateId: string;
   rank?: number;
   playerId?: number | null;
@@ -300,6 +301,7 @@ function hasAllowedOfficialPrice(result: UiAiResult): boolean {
 }
 
 function recordToUiResult(record: AgentResultRecord, sport: string): UiAiResult {
+  sport = record.sport ?? sport;
   const rate = (value: number | null | undefined) => value == null ? -1 : value;
   const lineText = record.line == null ? 'Unavailable' : String(record.line);
   const oddsText = odds(record.odds);
@@ -567,20 +569,22 @@ function StructuredPickCard({ result, index, expanded, selectedForCompare, onTog
             </div>
             <span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-black ${tierStyle.badge}`}>{tier}{tier === 'NUKE' ? ` · ${source?.tierScore ?? analysis?.researchScore}/100` : ''}</span>
           </div>
-          <p className="mt-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{prop.propType}</p>
+          <p className="mt-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{prop.sport} · {prop.propType}</p>
           <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <span className="text-2xl font-black text-white">{prop.researchSide.toUpperCase()} {prop.line}</span>
             <span className="text-sm font-bold text-emerald-300">{odds(price)}</span>
             <span className="text-xs text-slate-500">{prop.sportsbookName ?? 'Sportsbook unavailable'}</span>
           </div>
+          <p className="mt-1 break-words text-xs text-slate-500">Quote updated: {source?.retrievedAt && Number.isFinite(Date.parse(source.retrievedAt)) ? new Date(source.retrievedAt).toISOString() : 'Unavailable'}</p>
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-white/8 border-y border-white/8 py-2 text-center sm:grid-cols-5 sm:divide-y-0">
+      <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-white/8 border-y border-white/8 py-2 text-center sm:grid-cols-6 sm:divide-y-0">
         <div><p className="text-[9px] uppercase text-slate-500">Score</p><p className={`mt-1 font-black ${tierStyle.accent}`}>{source?.tierScore ?? analysis?.researchScore ?? result.matchScore}{tier === 'NUKE' ? '/100' : ''}</p></div>
         <div><p className="text-[9px] uppercase text-slate-500">Probability</p><p className={`mt-1 font-black ${tier === 'NUKE' ? 'text-amber-200' : 'text-emerald-300'}`}>{pct(analysis?.trueProbability)}</p></div>
         <div><p className="text-[9px] uppercase text-slate-500">Implied</p><p className="mt-1 font-black text-white">{pct(profile?.market.value?.impliedProbability ?? analysis?.breakEvenProbability)}</p></div>
         <div><p className="text-[9px] uppercase text-slate-500">Edge</p><p className="mt-1 font-black text-white">{pct(edge)}</p></div>
+        <div><p className="text-[9px] uppercase text-slate-500">EV</p><p className="mt-1 font-black text-white">{pct(analysis?.evPercent)}</p></div>
         <div><p className="text-[9px] uppercase text-slate-500">Trap</p><p className="mt-1 font-black text-amber-300">{analysis?.trapRisk ?? 'Unavailable'}</p></div>
       </div>
 
@@ -1364,7 +1368,7 @@ function AiFinderPageContent() {
 
     const meta = payload.meta ?? {};
     const sportLabel = String(meta.sport ?? finderSport).toUpperCase();
-    const sport = sportLabel === 'NFL' ? 'NFL' : sportLabel === 'NBA' ? 'NBA' : 'MLB';
+    const sport = sportLabel === 'ALL' ? 'ALL' : sportLabel === 'NFL' ? 'NFL' : sportLabel === 'NBA' ? 'NBA' : 'MLB';
     const requestDate = typeof meta.date === "string" ? meta.date : finderDate;
     if (requestDate !== finderDate) setFinderDate(requestDate);
     if (sport !== finderSport) setFinderSport(sport);
@@ -1403,7 +1407,7 @@ function AiFinderPageContent() {
     const trace = payload.toolTrace ?? [];
     const lastLoad = [...trace].reverse().find((entry) => entry.name === 'get_sportsbook_candidates');
     const ranSearch = trace.some((entry) => SEARCH_TOOLS.has(entry.name));
-    const outcome = meta.researchComplete === false ? 'RESEARCH_INCOMPLETE' as const : meta.status === 'SLATE_COMPLETE' ? 'SLATE_COMPLETE' as const : meta.status === 'NOT_FOUND' ? 'CLARIFY' as const : lastLoad && lastLoad.status !== 'SUCCESS'
+    const outcome = sport === 'ALL' ? 'NO_ELITE_RESULTS' as const : meta.researchComplete === false ? 'RESEARCH_INCOMPLETE' as const : meta.status === 'SLATE_COMPLETE' ? 'SLATE_COMPLETE' as const : meta.status === 'NOT_FOUND' ? 'CLARIFY' as const : lastLoad && lastLoad.status !== 'SUCCESS'
       ? classifyLoadFailure(lastLoad.status)
       : ranSearch || meta.researchComplete === true ? 'NO_ELITE_RESULTS' as const
         : payload.reply.trim().endsWith('?') && trace.length === 0 ? 'CLARIFY' as const : 'ANSWER' as const;
@@ -1808,7 +1812,7 @@ function AiFinderPageContent() {
                     <div className="rounded-2xl border border-white/8 bg-white/3 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">✓ Research Complete</p>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">{agentMeta?.partialCoverage === true ? 'Partial Research Coverage' : '✓ Research Complete'}</p>
                           <p className="mt-1 text-base font-bold text-white">{slateLabel}</p>
                         </div>
                         <button onClick={startNewSearch} className="min-h-9 shrink-0 rounded-xl border border-white/10 px-3 text-xs font-semibold text-slate-300 hover:text-white">New Search</button>
@@ -1826,6 +1830,11 @@ function AiFinderPageContent() {
                       </div>
                       {finderSport === 'NBA' && typeof agentMeta?.unsupportedMarketNotice === 'string'
                         && <p role="status" className="mt-3 border-l-2 border-amber-300 px-3 py-2 text-xs leading-relaxed text-amber-100">{agentMeta.unsupportedMarketNotice}</p>}
+                      {Array.isArray(agentMeta?.coverage) && <div className="mt-3 space-y-1 border-t border-white/8 pt-3">
+                        {(agentMeta.coverage as Array<{ sport: string; status: string; gamesEvaluated: number | null; candidatesResearched: number | null }>).map(entry => (
+                          <p key={entry.sport} className="text-xs text-slate-400">{entry.sport.toUpperCase()}: {entry.status.replaceAll('_', ' ').toLowerCase()} · {entry.gamesEvaluated ?? 'unknown'} games evaluated · {entry.candidatesResearched ?? 'unknown'} candidates researched</p>
+                        ))}
+                      </div>}
                       {finderStatus === 'RESULTS' && <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Recommendation counts by tier">
                         {(['NUKE', 'ELITE', 'SHARP', 'EDGE', 'LEAN', ...(agentMeta?.includePasses === true ? ['PASS' as const] : [])] as const).filter((tier) => (tierCounts[tier] ?? 0) > 0).map((tier) => (
                           <span key={tier} className={`rounded-full border px-2 py-1 text-[10px] font-bold ${PICK_TIER_STYLES[tier].badge}`}>{tier} {tierCounts[tier]}</span>
@@ -1834,7 +1843,7 @@ function AiFinderPageContent() {
                       {finderStatus === 'NO_ELITE_RESULTS' && (
                         <div className="mt-4 border-t border-white/6 pt-4">
                           <p className="text-sm font-black uppercase tracking-[0.14em] text-white">No recommendable plays</p>
-                          <p className="mt-1 text-sm text-slate-400">DeepSide found no plays that passed publication gates and the requested quality floor.</p>
+                          <p className="mt-1 text-sm text-slate-400">{agentMeta?.partialCoverage === true ? 'Some sportsbook markets could not be evaluated. See sport coverage above; unavailable wagers are not treated as researched rejections.' : 'DeepSide found no plays that passed publication gates and the requested quality floor.'}</p>
                           <button onClick={adjustSearch} className="mt-3 min-h-10 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 text-sm font-semibold text-emerald-300">Adjust Search</button>
                         </div>
                       )}

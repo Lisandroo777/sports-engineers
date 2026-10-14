@@ -2,9 +2,25 @@ import { createHash, randomUUID } from 'node:crypto';
 import { hasDurableKV, kvEval } from '../storage/kv';
 
 export const AUTO_REFRESH_LIMITS = Object.freeze({ perSearchCredits: 50, dailyCredits: 300, minProviderRemaining: 2000 });
+export function getOddsRefreshLimits() {
+  const bounded = (name: string, fallback: number, minimum: number, maximum: number) => {
+    const raw = process.env[name];
+    if (raw == null || raw === '') return fallback;
+    if (!/^\d+$/.test(raw)) throw new Error(`Invalid ${name}; paid refresh is blocked.`);
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(`Invalid ${name}; paid refresh is blocked.`);
+    return value;
+  };
+  return Object.freeze({
+    perSearchCredits: bounded('ODDS_REFRESH_MAX_SEARCH_CREDITS', 50, 1, AUTO_REFRESH_LIMITS.perSearchCredits),
+    dailyCredits: bounded('ODDS_REFRESH_MAX_DAILY_CREDITS', 300, 1, AUTO_REFRESH_LIMITS.dailyCredits),
+    minProviderRemaining: bounded('ODDS_REFRESH_MIN_REMAINING', 2000, AUTO_REFRESH_LIMITS.minProviderRemaining, Number.MAX_SAFE_INTEGER),
+    requestsPerMinute: bounded('ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', 10, 1, 50),
+  });
+}
 const PREFIX = 'deepside:odds:auto:v2:';
 const ACCOUNT = `${PREFIX}account`;
-export type LedgerBlockReason = 'DAILY_CAP' | 'RESERVE' | 'REMAINING_UNKNOWN' | 'STORAGE_UNAVAILABLE';
+export type LedgerBlockReason = 'DAILY_CAP' | 'RESERVE' | 'REMAINING_UNKNOWN' | 'STORAGE_UNAVAILABLE' | 'RATE_LIMIT';
 export class AutoRefreshLedgerError extends Error {
   constructor(readonly reason: LedgerBlockReason) {
     super(`Automatic odds refresh blocked (${reason}).`);
@@ -23,6 +39,12 @@ local pending = tonumber(redis.call('HGET', KEYS[2], 'pending') or '0')
 local cost = tonumber(ARGV[1])
 if spent + pending + cost > tonumber(ARGV[2]) then return 'DAILY_CAP' end
 if remaining - cost < tonumber(ARGV[3]) then return 'RESERVE' end
+local window = math.floor(now / 60)
+local lastWindow = tonumber(redis.call('HGET', KEYS[2], 'rateWindow') or '-1')
+local requests = tonumber(redis.call('HGET', KEYS[2], 'rateCount') or '0')
+if lastWindow ~= window then requests = 0 end
+if requests >= tonumber(ARGV[4]) then return 'RATE_LIMIT' end
+redis.call('HSET', KEYS[2], 'rateWindow', window, 'rateCount', requests + 1)
 redis.call('HINCRBY', KEYS[2], 'remaining', -cost)
 redis.call('HINCRBY', KEYS[2], 'pending', cost)
 redis.call('SET', KEYS[3], cost)
@@ -66,9 +88,11 @@ async function execute<T>(script: string, keys: string[], args: Array<string | n
 }
 export interface DailyReservation { dayKey: string; credits: number; id: string }
 export async function reserveDailyCredits(credits: number, now = new Date()): Promise<DailyReservation> {
-  if (!Number.isSafeInteger(credits) || credits < 1 || credits > 50) throw new AutoRefreshLedgerError('RESERVE');
+  const limits = getOddsRefreshLimits();
+  if (!Number.isSafeInteger(credits) || credits < 1 || credits > limits.perSearchCredits) throw new AutoRefreshLedgerError('RESERVE');
   const reservation = { dayKey: dailyLedgerKey(now), credits, id: `${PREFIX}reservation:${randomUUID()}` };
-  const result = await execute<string>(RESERVE_SCRIPT, [reservation.dayKey, ACCOUNT, reservation.id], [credits, 300, 2000]);
+  const result = await execute<string>(RESERVE_SCRIPT, [reservation.dayKey, ACCOUNT, reservation.id],
+    [credits, limits.dailyCredits, limits.minProviderRemaining, limits.requestsPerMinute]);
   if (result !== 'OK') throw new AutoRefreshLedgerError(result as LedgerBlockReason);
   return reservation;
 }

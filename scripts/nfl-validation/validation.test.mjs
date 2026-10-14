@@ -5,7 +5,7 @@ import { auditDataset, auditRow, planChronologicalSplit, settle } from './integr
 import { bankroll, implied, probabilityMetrics, projectionMetrics, sampleLabel } from './metrics.mjs';
 import { evaluateDataset } from './evaluate.mjs';
 import { compareModelReports } from './regressionGate.mjs';
-import { assertFrozenInventory, verifyHardenedFreeze, verifyV1ParentArchive } from './freeze.mjs';
+import { assertApprovedSecuritySources, assertFrozenInventory, isReviewedMLBCacheTransport, verifyHardenedFreeze, verifyV1ParentArchive } from './freeze.mjs';
 
 const manifest = { modelVersion: 'SYNTHETIC_MODEL', snapshotHash: 'synthetic-test-only' };
 const asOf = '2025-10-01T00:00:00Z';
@@ -19,6 +19,24 @@ function fixture(update = {}) {
       adjudication: 'NORMAL', bookRuleSource: 'Synthetic rule', settlementSource: 'Synthetic settlement', earlyInjury: 'UNKNOWN' }, ...update };
 }
 describe('Validation infrastructure, synthetic fixtures are NOT model performance evidence', () => {
+  it('rejects any unreviewed mutation or omission in protected refresh/security infrastructure', () => {
+    const paths = ['lib/odds/client.ts', 'lib/odds/autoRefreshLedger.ts', 'lib/storage/kv.ts'];
+    const current = Object.fromEntries(paths.map(path => [path, readFileSync(resolve(path), 'utf8')]));
+    expect(() => assertApprovedSecuritySources(current)).not.toThrow();
+    for (const path of paths) {
+      expect(() => assertApprovedSecuritySources({ ...current, [path]: `${current[path]}\n` })).toThrow('security infrastructure source mismatch');
+      expect(() => assertApprovedSecuritySources({ ...current, [path]: undefined })).toThrow('security infrastructure source mismatch');
+    }
+  });
+  it('accepts only the exact reviewed MLB cache transport against its immutable archived parent', () => {
+    const archive = JSON.parse(readFileSync(resolve('reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
+    const original = archive['lib/finder/engine.ts'];
+    const current = readFileSync(resolve('lib/finder/engine.ts'), 'utf8');
+    expect(isReviewedMLBCacheTransport('lib/finder/engine.ts', original, current)).toBe(true);
+    expect(isReviewedMLBCacheTransport('lib/finder/engine.ts', original, `${current}\n`)).toBe(false);
+    expect(isReviewedMLBCacheTransport('lib/finder/engine.ts', `${original}\n`, current)).toBe(false);
+    expect(isReviewedMLBCacheTransport('lib/finder/nflEngine.ts', original, current)).toBe(false);
+  });
   it('permits only NBA-owned or ledger infrastructure additions without relaxing archived-file identity checks', () => {
     const archive = { 'lib/ai/agent/tools.ts': 'frozen', 'lib/finder/nflEngine.ts': 'frozen' };
     expect(assertFrozenInventory({ ...archive, 'lib/nba/prediction/engine.ts': 'new', 'lib/nba/context/context.ts': 'external',

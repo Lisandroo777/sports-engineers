@@ -4,6 +4,7 @@ const store = vi.hoisted(() => ({
   durable: true, failEval: false, lockHeld: false, remaining: null as number | null,
   days: new Map<string, { spent: number; reserved: number }>(), locks: new Set<string>(),
   cache: new Map<string, unknown>(), pending: 0, reservations: new Map<string, number>(), owners: new Map<string, string>(), stale: false,
+  rateWindow: -1, rateCount: 0,
 }));
 
 vi.mock('../storage/kv', () => ({
@@ -27,10 +28,14 @@ vi.mock('../storage/kv', () => ({
     const day = store.days.get(keys[0]) ?? { spent: 0, reserved: 0 };
     store.days.set(keys[0], day);
     if (script.includes('DAILY_CAP')) {
-      const [cost, dailyCap, minRemaining] = args.map(Number);
+      const [cost, dailyCap, minRemaining, requestsPerMinute] = args.map(Number);
       if (store.remaining == null) return 'REMAINING_UNKNOWN';
       if (day.spent + store.pending + cost > dailyCap) return 'DAILY_CAP';
       if (store.remaining - cost < minRemaining) return 'RESERVE';
+      const window = Math.floor(Date.now() / 60000);
+      if (store.rateWindow !== window) { store.rateWindow = window; store.rateCount = 0; }
+      if (store.rateCount >= requestsPerMinute) return 'RATE_LIMIT';
+      store.rateCount += 1;
       store.remaining -= cost; store.pending += cost; store.reservations.set(keys[2], cost);
       return 'OK';
     }
@@ -49,7 +54,7 @@ vi.mock('./persistentCache', () => ({
 }));
 
 import { getEventMarkets, getEventPlayerProps, OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withAutomaticOddsRefresh, withOneRunPaidRefresh } from './client';
-import { AUTO_REFRESH_LIMITS, dailyLedgerKey } from './autoRefreshLedger';
+import { AUTO_REFRESH_LIMITS, dailyLedgerKey, getOddsRefreshLimits } from './autoRefreshLedger';
 
 const today = () => store.days.get(dailyLedgerKey()) ?? { spent: 0, reserved: 0 };
 const respond = (cost: string | null) => vi.fn(async () => Response.json({ id: 'fixture', bookmakers: [] },
@@ -57,14 +62,70 @@ const respond = (cost: string | null) => vi.fn(async () => Response.json({ id: '
 
 beforeEach(() => {
   Object.assign(store, { durable: true, failEval: false, lockHeld: false, remaining: 20_000, stale: false });
+  store.rateWindow = -1; store.rateCount = 0;
   store.days.clear(); store.locks.clear(); store.cache.clear(); store.owners.clear(); store.reservations.clear(); store.pending = 0;
   vi.stubEnv('THE_ODDS_API_KEY', 'fixture-key');
   vi.stubEnv('ODDS_AUTO_REFRESH', 'true');
+  vi.stubEnv('ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', '50');
   vi.stubGlobal('fetch', respond('1'));
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('controlled automatic odds refresh', () => {
+  it('rate-limits concurrent distinct requests across scopes without charging blocked attempts', async () => {
+    vi.stubEnv('ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', '2');
+    const results = await Promise.all(Array.from({ length: 5 }, (_, index) =>
+      withAutomaticOddsRefresh(() => getEventMarkets(`rate-${index}`, 'baseball_mlb')).then(() => 'ok', error => error.cause?.reason)));
+    expect(results.filter(result => result === 'ok')).toHaveLength(2);
+    expect(results.filter(result => result === 'RATE_LIMIT')).toHaveLength(3);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(today().spent).toBe(2);
+    expect(store.pending).toBe(0);
+  });
+  it('allows stricter budgets but rejects invalid or weaker hard limits', () => {
+    vi.stubEnv('ODDS_REFRESH_MAX_SEARCH_CREDITS', '5');
+    vi.stubEnv('ODDS_REFRESH_MAX_DAILY_CREDITS', '20');
+    vi.stubEnv('ODDS_REFRESH_MIN_REMAINING', '2500');
+    vi.stubEnv('ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', '2');
+    expect(getOddsRefreshLimits()).toEqual({ perSearchCredits: 5, dailyCredits: 20, minProviderRemaining: 2500, requestsPerMinute: 2 });
+    for (const [name, value] of [['ODDS_REFRESH_MAX_SEARCH_CREDITS', '51'], ['ODDS_REFRESH_MAX_DAILY_CREDITS', '301'],
+      ['ODDS_REFRESH_MIN_REMAINING', '1999'], ['ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', 'NaN']]) {
+      const before = process.env[name];
+      vi.stubEnv(name, value);
+      expect(() => getOddsRefreshLimits()).toThrow('paid refresh is blocked');
+      vi.stubEnv(name, before);
+    }
+  });
+
+  it('enforces configured cumulative search and daily credit ceilings', async () => {
+    vi.stubEnv('ODDS_REFRESH_MAX_SEARCH_CREDITS', '2');
+    vi.stubEnv('ODDS_REFRESH_MAX_DAILY_CREDITS', '3');
+    const outcomes = await withAutomaticOddsRefresh(() => Promise.allSettled(
+      Array.from({ length: 3 }, (_, index) => getEventMarkets(`configured-${index}`, 'baseball_mlb'))));
+    expect(outcomes.filter(row => row.status === 'fulfilled')).toHaveLength(2);
+    await withAutomaticOddsRefresh(() => getEventMarkets('configured-day-last', 'baseball_mlb'));
+    await expect(withAutomaticOddsRefresh(() => getEventMarkets('configured-day-blocked', 'baseball_mlb'))).rejects.toBeInstanceOf(OddsBudgetGuardError);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('cannot expand a configured search ceiling through explicit manual authorization', async () => {
+    vi.stubEnv('ODDS_REFRESH_MAX_SEARCH_CREDITS', '1');
+    await withOneRunPaidRefresh(async () => {
+      await getEventMarkets('manual-configured-first', 'baseball_mlb');
+      await expect(getEventMarkets('manual-configured-second', 'baseball_mlb')).rejects.toBeInstanceOf(OddsRefreshNotAuthorizedError);
+    }, { maxRequests: 2, maxCredits: 20 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares a configured budget across nested sport searches rather than granting it per sport', async () => {
+    vi.stubEnv('ODDS_REFRESH_MAX_SEARCH_CREDITS', '2');
+    await withAutomaticOddsRefresh(async () => {
+      await withAutomaticOddsRefresh(() => getEventMarkets('cross-mlb', 'baseball_mlb'));
+      await withAutomaticOddsRefresh(() => getEventMarkets('cross-nba', 'basketball_nba'));
+      await expect(withAutomaticOddsRefresh(() => getEventMarkets('cross-nfl', 'americanfootball_nfl'))).rejects.toBeInstanceOf(OddsRefreshNotAuthorizedError);
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it('stays cache-only when the server flag is off', async () => {
     vi.stubEnv('ODDS_AUTO_REFRESH', 'false');
     await expect(withAutomaticOddsRefresh(() => getEventMarkets('off', 'basketball_nba'))).rejects.toBeInstanceOf(OddsRefreshNotAuthorizedError);

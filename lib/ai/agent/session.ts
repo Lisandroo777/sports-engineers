@@ -193,6 +193,9 @@ function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: n
     .map((window) => Number(window.split('/')[1])).filter(Number.isFinite);
   const record: ResearchCandidateRecord = {
     candidateId: result.id,
+    gameId: result.gameId,
+    eventId: result.eventId,
+    retrievedAt: result.marketUpdatedAt,
     rank,
     playerId: result.playerId,
     teamId: result.teamId,
@@ -227,9 +230,9 @@ function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: n
     eliteQualified: analysis.eliteQualified,
     rejectionReasons: analysis.rejectedReasons,
     grade: deep.grade,
-    priceGrade: deep.priceGrade,
+    priceGrade: priceGradeFromEv(analysis.evPercent),
     playerEdgePercent: deep.playerEdgePercent,
-    priceEdgePercent: deep.priceEdgePercent,
+    priceEdgePercent: analysis.priceEdgePercent,
     breakEvenProbability: deep.breakEvenProbability,
     projectedRange: deep.projectedRange,
     bestAlternateLine: deep.bestAlternateLine,
@@ -257,7 +260,10 @@ function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: n
     injuryContext: null,
     weatherContext: null,
   };
-  return { ...record, ...classifyPickTier(record, result.sport) };
+  const tier = classifyPickTier(record, result.sport);
+  return { ...record, ...tier, rejectionReasons: tier.pickTier === 'PASS'
+    ? [...new Set([...record.rejectionReasons, ...tier.tierRequirementsFailed.filter(reason => !reason.startsWith('NUKE:'))])]
+    : record.rejectionReasons };
 }
 
 /** Builds a fresh structured session from real Finder results. Never invents a field — everything traces to a FinderResult. */

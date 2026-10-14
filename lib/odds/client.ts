@@ -6,7 +6,7 @@ import { getNBAMarketMetadata } from '../nba/oddsTypes';
 import { readPersistentCache, readStalePersistentCache, writePersistentCache, writeCreditStatus, readCreditStatus } from './persistentCache';
 import { getOddsBudgetStatus, OddsBudgetGuardError } from './budget';
 import {
-  AUTO_REFRESH_LIMITS, AutoRefreshLedgerError, acquireRefreshLock, isAutomaticOddsRefreshEnabled, recordProviderRemaining,
+  getOddsRefreshLimits, AutoRefreshLedgerError, acquireRefreshLock, isAutomaticOddsRefreshEnabled, recordProviderRemaining,
   releaseRefreshLock, reserveDailyCredits, settleDailyCredits, type DailyReservation,
 } from './autoRefreshLedger';
 
@@ -73,7 +73,8 @@ export function withOneRunPaidRefresh<T>(operation: () => Promise<T>, options: {
   if (!Number.isInteger(maxRequests) || maxRequests < 1 || maxRequests > 50 || !Number.isInteger(maxCredits) || maxCredits < 1 || maxCredits > 50) {
     throw new OddsRefreshNotAuthorizedError('Explicit positive paid request and credit limits required.');
   }
-  const approval: PaidRequestAuthorization = { active: true, forceFresh: options.forceFresh === true, maxRequests, maxCredits,
+  const approval: PaidRequestAuthorization = { active: true, forceFresh: options.forceFresh === true, maxRequests,
+    maxCredits: Math.min(maxCredits, getOddsRefreshLimits().perSearchCredits),
     requestsReserved: 0, creditsReserved: 0, allowedRequestKeys: options.allowedRequestKeys, automatic: true };
   return oneRunPaidRefreshAuthorization.run(approval, async () => {
     try { return await operation(); } finally { approval.active = false; }
@@ -98,8 +99,9 @@ function estimatedPaidCredits(path: string, params: Record<string, string>): num
  */
 export function withAutomaticOddsRefresh<T>(operation: () => Promise<T>): Promise<T> {
   if (!isAutomaticOddsRefreshEnabled()) return operation();
+  const limits = getOddsRefreshLimits();
   return withOneRunPaidRefresh(operation, { automatic: true,
-    maxRequests: AUTO_REFRESH_LIMITS.perSearchCredits, maxCredits: AUTO_REFRESH_LIMITS.perSearchCredits });
+    maxRequests: limits.perSearchCredits, maxCredits: limits.perSearchCredits });
 }
 
 function reservePaidRequest(path: string, params: Record<string, string>, key: string): number {

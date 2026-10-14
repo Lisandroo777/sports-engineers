@@ -27,6 +27,56 @@ import { loadCachedNBAEventResearch } from '../../nba/prediction/gameLines/cache
 import { requestedNBATeams, matchesNBATeams } from '../../nba/prediction/gameLines/requestScope';
 import { getNBASchedule } from '../../nba/schedule';
 
+const CONNECTED_SPORTS = ['mlb', 'nba', 'nfl'] as const;
+type ConnectedSport = typeof CONNECTED_SPORTS[number];
+
+export function crossSportScope(query: string): ConnectedSport[] {
+  if (!/\b(?:picks?|plays?|bets?|opportunities)\b/i.test(query)) return [];
+  if (/\b(?:soccer|tennis|nhl|hockey|ufc|previous|settlements?|supported|capabilities)\b/i.test(query)) return [];
+  const named = CONNECTED_SPORTS.filter(sport => ({ mlb: /\b(?:mlb|baseball)\b/i, nba: /\b(?:nba|basketball)\b/i, nfl: /\b(?:nfl|football)\b/i })[sport].test(query));
+  if (named.length === 1) return [];
+  if (!named.length && /\b(?:for|vs\.?|versus|his|these|those|again|refresh)\b/i.test(query)) return [];
+  return named.length ? named : [...CONNECTED_SPORTS];
+}
+
+export async function runCrossSportSearch(query: string, date: string, sports: ConnectedSport[], search: (sport: ConnectedSport) => Promise<AgentTurnResult>): Promise<AgentTurnResult> {
+  const responses: Array<{ sport: ConnectedSport; result: AgentTurnResult }> = [];
+  const coverage: Array<Record<string, unknown>> = [];
+  for (const sport of sports) {
+    try {
+      const result = await search(sport);
+      responses.push({ sport, result });
+      coverage.push({ sport, status: result.meta?.status ?? (result.meta?.gamesScheduled === 0 ? 'NO_GAMES_SCHEDULED' : result.results.length ? 'SUCCESS' : result.meta?.researchComplete === true ? 'NO_QUALIFIED_RESULTS' : 'DATA_UNAVAILABLE'),
+        gamesDiscovered: result.meta?.gamesScheduled ?? result.meta?.gamesFound ?? null,
+        gamesEvaluated: result.meta?.gamesFound ?? null, marketsEvaluated: result.meta?.marketsEvaluated ?? null,
+        candidatesResearched: result.meta?.candidatesFound ?? null,
+        qualifiedCandidates: result.meta?.qualifiedCandidates ?? null, rejectedCandidates: result.meta?.rejectedCandidates ?? null,
+        recommended: result.results.length });
+    } catch {
+      coverage.push({ sport, status: 'PROVIDER_ERROR', gamesDiscovered: null, gamesEvaluated: null, marketsEvaluated: null, candidatesResearched: null, recommended: 0 });
+    }
+  }
+  const rows = responses.flatMap(({ sport, result }) => result.results.map(row => ({ ...(row as Record<string, unknown>), sport })));
+  const numeric = (row: Record<string, unknown>, field: string) => typeof row[field] === 'number' && Number.isFinite(row[field]) ? row[field] as number : -Infinity;
+  const metric = /\b(?:best value|highest ev|higher value)\b/i.test(query) ? 'evPercent'
+    : /\b(?:most likely|safest|highest probability)\b/i.test(query) ? 'trueProbability' : 'researchScore';
+  const count = query.match(/\b(?:best|top|give me)\s+(\d{1,2})\b/i)?.[1];
+  const limit = Math.min(15, Math.max(1, count ? Number(count) : 15));
+  const results = rows.sort((first, second) => numeric(second, metric) - numeric(first, metric)).slice(0, limit)
+    .map((row, index) => ({ ...row, rank: index + 1 }));
+  const closestMisses = responses.flatMap(({ sport, result }) => result.closestMisses.map(row => ({ ...(row as Record<string, unknown>), sport }))).slice(0, 5);
+  const complete = coverage.every(entry => ['SUCCESS', 'NO_QUALIFIED_RESULTS', 'SLATE_COMPLETE', 'NO_GAMES_SCHEDULED'].includes(String(entry.status)));
+  return {
+    reply: results.length ? `Found ${results.length} qualified recommendations across the requested sports.${complete ? '' : ' Some sports could not be fully researched; coverage is reported separately.'}`
+      : 'No qualified recommendations were returned. Review sport coverage and any evaluated non-recommended candidates separately.',
+    results, closestMisses, toolTrace: responses.flatMap(({ result }) => result.toolTrace), researchSessionId: null,
+    modeledGames: responses.flatMap(({ result }) => result.modeledGames ?? []),
+    meta: { sport: 'all', date, coverage, researchComplete: complete, partialCoverage: !complete, qualifiedFound: results.length,
+      gamesFound: coverage.reduce((sum, entry) => sum + (typeof entry.gamesEvaluated === 'number' ? entry.gamesEvaluated : 0), 0),
+      candidatesFound: coverage.reduce((sum, entry) => sum + (typeof entry.candidatesResearched === 'number' ? entry.candidatesResearched : 0), 0) },
+  };
+}
+
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
 const DEFAULT_MODEL = 'gpt-4.1';
 /** Enough for slate → candidates → elite → rank, plus recovery, without unbounded looping. */
@@ -155,6 +205,11 @@ export function filterOfficialResults(results: unknown[], sport?: string): unkno
 export function filterRecommendationResults(results: unknown[], sport?: string, includePasses = false, now = new Date()): unknown[] {
   return results.flatMap<unknown>((result) => {
     if (result == null || typeof result !== 'object') return [];
+    if (sport === 'all') {
+      const sourceSport = (result as { sport?: string }).sport;
+      if (!sourceSport || !['mlb', 'nba', 'nfl'].includes(sourceSport)) return [];
+      return filterRecommendationResults([result], sourceSport, includePasses, now);
+    }
     if (isGameRecommendation(result)) {
       if (sport !== 'nba') return [];
       const decision = classifyGameRecommendation(result, now);
@@ -308,10 +363,20 @@ function textFrom(output: OpenAIOutputItem[]): string {
 
 export async function runAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null = null, refreshApproval: AgentRefreshApproval | null = null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string }): Promise<AgentTurnResult> {
   void refreshApproval;
+  const query = [...history].reverse().find(message => message.role === 'user')?.content ?? '';
+  const sports = crossSportScope(query);
+  if (sports.length) {
+    const date = resolveDateFromText(query)?.resolvedDate ?? uiContext?.date ?? todaySlateDate();
+    return withAutomaticOddsRefresh(() => runCrossSportSearch(query, date, sports, async sport => {
+      const scopedQuery = `${sport.toUpperCase()} ${query.replace(/\b(?:nba|nfl|mlb|baseball|basketball|football)\b/gi, '')}${sport === 'nba' ? ' across all NBA markets' : ''} ${date}`;
+      const result = await withAutomaticOddsRefresh(() => runScopedAgentTurn([{ role: 'user', content: scopedQuery }], null, null, { sport, date }, true));
+      return toClientResult(result);
+    }));
+  }
   return withAutomaticOddsRefresh(() => runScopedAgentTurn(history, researchSessionId, null, uiContext));
 }
 
-async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null, refreshApproval: AgentRefreshApproval | null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string }): Promise<AgentTurnResult> {
+async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null, refreshApproval: AgentRefreshApproval | null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string }, deterministicMLB = false): Promise<AgentTurnResult> {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   const model = process.env.OPENAI_MODEL?.trim() || DEFAULT_MODEL;
 
@@ -319,8 +384,11 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
   const context = createAgentContext(storedSession ? structuredClone(storedSession) : null, researchSessionId, refreshApproval);
   const lastUserMessage = [...history].reverse().find((message) => message.role === 'user');
   const query = lastUserMessage?.content ?? '';
-  const nbaQuery = (detectSport(query) ?? uiContext?.sport ?? storedSession?.sport) === 'nba';
-  const nbaMarkets = nbaQuery ? classifyNBAMarketIntent(query) : null;
+  const nbaQuery = (detectSport(query) ?? (requestedNBATeams(query).length ? 'nba' : null) ?? uiContext?.sport ?? storedSession?.sport) === 'nba';
+  let nbaMarkets = nbaQuery ? classifyNBAMarketIntent(query) : null;
+  if (nbaMarkets && !nbaMarkets.gameLineMarkets.length && !nbaMarkets.playerPropsRequested && /\b(?:picks?|plays?)\b/i.test(query)) {
+    nbaMarkets = classifyNBAMarketIntent(`${query} across all NBA markets`);
+  }
   if (nbaMarkets && (nbaMarkets.gameLineMarkets.length || nbaMarkets.playerPropsRequested)) {
     const requestedDate = resolveDateFromText(query)?.resolvedDate ?? uiContext?.date ?? storedSession?.date ?? todaySlateDate();
     const requestedTeams = requestedNBATeams(query);
@@ -356,13 +424,19 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
           : gameIds.has(record.subject.gameId)) };
     }
     const results = selectNBAMixedRecommendations(nbaSession, query);
+    const candidatesEvaluated = nbaSession.candidates.length + (nbaSession.gameCandidates?.length ?? 0);
+    const marketDataAvailable = candidatesEvaluated > 0;
     const unsupported = nbaMarkets.gameLineMarkets.filter(market => market === 'FIRST_HALF' || market === 'FIRST_QUARTER');
     return { reply: results.length ? `Found ${results.length} qualified NBA recommendation${results.length === 1 ? '' : 's'}.`
-      : 'No NBA selections passed the existing publication requirements. Modeled team research is shown separately and is not a betting recommendation.',
+      : !marketDataAvailable ? 'No current sportsbook NBA candidates were available for evaluation. Unpriced or modeled research is shown separately and is not a betting recommendation; it is not an evaluated rejection.'
+        : 'No NBA selections passed the existing publication requirements. Modeled team research is shown separately and is not a betting recommendation.',
       toolTrace: [], results, closestMisses: [], researchSessionId, modeledGames: nbaSession.modeledGames,
       nbaPresentation: buildNBAResearchPresentation(nbaSession, query, results.map(record => record.candidateId)),
       meta: { sport: 'nba', date: requestedDate, modelVersion: 'NBA_GAME_LINES_V1', validationStatus: 'UNVALIDATED',
-        researchComplete: true, budgetLimited: nbaSession.toolMeta.budgetLimited === true, ...(unsupported.length ? { unsupportedMarketNotice: unsupportedNBAGameLineNotice(unsupported) } : {}) } };
+        ...nbaSession.toolMeta,
+        candidatesFound: candidatesEvaluated, marketsEvaluated: marketDataAvailable ? null : 0,
+        researchComplete: marketDataAvailable, status: marketDataAvailable ? 'SUCCESS' : 'SPORTSBOOK_DATA_REQUIRED',
+        budgetLimited: nbaSession.toolMeta.budgetLimited === true, ...(unsupported.length ? { unsupportedMarketNotice: unsupportedNBAGameLineNotice(unsupported) } : {}) } };
   }
   let previous = context.researchSession?.conversation ?? null;
   if (!previous && context.researchSession) {
@@ -435,6 +509,22 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
       researchSessionId: context.researchSessionId };
   }
   applyRequestScope(context, lastUserMessage?.content ?? '');
+  if (deterministicMLB && context.canonicalSport === 'mlb' && /\b(?:picks?|plays?|bets?|props?)\b/i.test(query)) {
+    const date = context.canonicalDate?.resolvedDate ?? uiContext?.date ?? todaySlateDate();
+    const loaded = await executeTool('get_sportsbook_candidates', { sport: 'mlb', date }, context);
+    const { data: loadedData, ...loadMeta } = loaded;
+    void loadedData;
+    if (loaded.status !== 'SUCCESS') return { reply: loaded.error ?? 'MLB research is currently unavailable.', results: [], closestMisses: [], toolTrace: [{ name: 'get_sportsbook_candidates', status: loaded.status, summary: loadMeta }], meta: loadMeta, researchSessionId: null };
+    const ranked = await executeTool('rank_candidates', { sport: 'mlb', date }, context);
+    const { data, ...rankMeta } = ranked;
+    const rows = data as { results?: unknown[]; closestMisses?: unknown[] } | undefined;
+    const evaluated = context.researchSession?.candidates ?? [];
+    const qualifiedCandidates = evaluated.filter(row => classifyPickTier(row, 'mlb').pickTier !== 'PASS').length;
+    return { reply: rows?.results?.length ? 'MLB research complete.' : 'No MLB selections passed the existing publication requirements.',
+      results: rows?.results ?? [], closestMisses: rows?.closestMisses ?? [], toolTrace: [{ name: 'rank_candidates', status: ranked.status, summary: rankMeta }],
+      meta: { ...loadMeta, ...rankMeta, marketsEvaluated: new Set(evaluated.map(row => row.marketKey)).size,
+        qualifiedCandidates, rejectedCandidates: evaluated.length - qualifiedCandidates, researchComplete: true }, researchSessionId: context.researchSessionId };
+  }
   const clarification = await prepareNFLRequestScope(context);
   if (clarification) return { reply: clarification, toolTrace: [], results: [], closestMisses: [], meta: { sport: 'nfl' }, researchSessionId: context.researchSessionId };
   if (context.canonicalSport === 'nfl' && /\b(?:best|top|find|give|show|refresh|check|only|everything|research|dive)\b/i.test(context.pendingQueryIntent)

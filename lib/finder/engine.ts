@@ -3,6 +3,10 @@ import type { MLBGame } from '../mlb/types';
 import { getPlayerGameLogs } from '../mlb/stats';
 import { getMLBPlayer } from '../mlb/players';
 import { getEventProps } from '../odds/eventProps';
+import { getEventPlayerProps, getPropsCacheTtlMs } from '../odds/client';
+import { readPersistentCache } from '../odds/persistentCache';
+import { HITTER_MARKETS, PITCHER_MARKETS } from '../odds/types';
+import { findMLBPlayerIdByName } from '../mlb/players';
 import { buildAllMarketOpportunities, type AnyMarketOpportunity } from '../odds/anyOpportunities';
 import { getLastOddsCreditInfo, OddsBudgetGuardError, OddsRefreshNotAuthorizedError, getOddsEvents, hasCachedEventMarkets, inspectEventPlayerPropsCacheState, isPaidRefreshAllowed, beginOddsSpendTrackingAsync, getActiveOddsSpendTracker, type OddsSpendTracker } from '../odds/client';
 import { findOddsEventForTeam, oddsEventSlateDate } from '../odds/match';
@@ -230,6 +234,19 @@ export function rankMLBResearchPriority(games: MLBGame[], selectedCount = games.
   return ranked.map((game) => ({ ...game, selected: selectedSet ? selectedSet.has(game.gameId) : autoSelected.has(game.gameId) }));
 }
 
+export async function getCachedMLBPrimaryMarkets(eventId: string) {
+  const base = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${eventId}`;
+  const discovery = await readPersistentCache<{ bookmakers?: Array<{ markets?: Array<{ key: string }> }> }>(`${base}/markets?regions=us`);
+  const posted = new Set((discovery?.data.bookmakers ?? []).flatMap(book => book.markets ?? []).map(market => market.key));
+  const primary = [...HITTER_MARKETS, ...PITCHER_MARKETS].filter(market => posted.has(market));
+  const url = new URL(`${base}/odds`);
+  url.searchParams.set('regions', 'us');
+  url.searchParams.set('markets', primary.join(','));
+  url.searchParams.set('oddsFormat', 'american');
+  const cached = primary.length ? await readPersistentCache<{ id?: string }>(url.toString()) : null;
+  return cached?.data.id === eventId ? primary : null;
+}
+
 export async function runFinderDeepSearch(
   slateDate: string = todaySlateDate(),
   options: FinderValidationOptions = {},
@@ -272,6 +289,11 @@ export async function runFinderDeepSearch(
       : (await Promise.all(selectedPlan.map(async (entry) => ({ entry, state: await inspectEventPlayerPropsCacheState(entry.event!.id) }))))
         .filter(({ state }) => state.props !== 'CACHE_FRESH')
         .map(({ entry }) => entry);
+    if (!options.forceProviderRefresh) {
+      for (let index = needsPaid.length - 1; index >= 0; index -= 1) {
+        if (await getCachedMLBPrimaryMarkets(needsPaid[index].event!.id)) needsPaid.splice(index, 1);
+      }
+    }
     const subRequests = needsPaid.length * 2;
     const eventListDates = [...new Set(oddsEvents.map(oddsEventSlateDate))].sort();
     const preflightState = classifyValidationPreflight({ scheduledGames: scheduled.length, matchedEvents: selectable.length, cacheMisses: needsPaid.length });
@@ -299,7 +321,7 @@ export async function runFinderDeepSearch(
           gameTime: entry.game.gameTime ?? null,
           status: entry.game.status,
           eventId: entry.event!.id,
-          marketsCacheState: (await inspectEventPlayerPropsCacheState(entry.event!.id)).props,
+          marketsCacheState: await getCachedMLBPrimaryMarkets(entry.event!.id) ? 'CACHE_FRESH' : (await inspectEventPlayerPropsCacheState(entry.event!.id)).props,
           selected: selectedPlan.some((s) => s.game.id === entry.game.id),
         }))),
       },
@@ -342,7 +364,14 @@ export async function runFinderDeepSearch(
     }
     let eventProps;
     try {
-      eventProps = await getEventProps(game.homeTeam.name, game.awayTeam.name, slateDate);
+      const event = planned.find(entry => entry.game.id === game.id)?.event;
+      const primary = event ? await getCachedMLBPrimaryMarkets(event.id) : null;
+      if (event && primary) {
+        const props = await getEventPlayerProps(event.id, primary, getPropsCacheTtlMs(event.commenceTime));
+        const ids = new Map<string, number | null>();
+        await Promise.all([...new Set(props.map(prop => prop.player))].map(async player => ids.set(player, await findMLBPlayerIdByName(player))));
+        eventProps = { event, props: props.map(prop => ({ ...prop, playerId: ids.get(prop.player) ?? null })) };
+      } else eventProps = await getEventProps(game.homeTeam.name, game.awayTeam.name, slateDate);
       const info = getLastOddsCreditInfo();
       if (info) {
         if (info.source === 'network') sawNetworkCall = true;
@@ -490,7 +519,7 @@ export async function runFinderDeepSearch(
         concerns: marketMovement.available && marketMovement.direction === 'lengthened' ? [...explanation.concerns, marketMovement.label!] : explanation.concerns,
         gameId: game.id,
         eventId: opportunity.eventId,
-        marketUpdatedAt: opportunity.lastUpdate ?? null,
+        marketUpdatedAt: best?.lastUpdate ?? opportunity.lastUpdate ?? null,
         marketMovement,
         outlierDependency: outlier,
         volumeEfficiency,

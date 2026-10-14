@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -45,6 +45,17 @@ describe.skipIf(!enabled)('actual isolated Redis Lua protections', () => {
     if (workingDirectory) rmSync(workingDirectory, { recursive: true, force: true });
   });
   beforeEach(async () => { state.available = true; await command('FLUSHDB'); });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('atomically limits paid reservations per minute without debiting rejected requests', async () => {
+    vi.stubEnv('ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', '2');
+    await recordProviderRemaining('20000');
+    const attempts = await Promise.allSettled(Array.from({ length: 5 }, () => reserveDailyCredits(1)));
+    expect(attempts.filter(row => row.status === 'fulfilled')).toHaveLength(2);
+    expect(attempts.filter(row => row.status === 'rejected').map(row => row.reason.reason)).toEqual(['RATE_LIMIT', 'RATE_LIMIT', 'RATE_LIMIT']);
+    expect(await command('HGET', account, 'remaining')).toBe('19998');
+    expect(await command('HGET', account, 'pending')).toBe('2');
+  });
 
   it('fails closed before a valid fresh provider observation and rejects invalid bootstrap values', async () => {
     for (const value of [null, '', 'unknown', '-1', 'Infinity']) await recordProviderRemaining(value);

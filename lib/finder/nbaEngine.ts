@@ -181,13 +181,19 @@ export async function runNBAFinderDeepSearch(
   const scheduled = await getNBASchedule(slateDate).catch(() => []);
   const bettable = scheduled.filter((game) => !game.completed
     && (options.validationGameIds == null || options.validationGameIds.includes(game.id)));
+  const oddsSportKeys = [...new Set(bettable.map(game => game.phase === 'PRESEASON' ? 'basketball_nba_preseason' : NBA_ODDS_SPORT_KEY))];
+  const eventSportKeys = new Map<string, string>();
   const slateComplete = scheduled.length > 0 && bettable.length === 0;
 
-  let oddsEvents: Awaited<ReturnType<typeof getOddsEventsForSport>> = [];
+  const oddsEvents: Awaited<ReturnType<typeof getOddsEventsForSport>> = [];
   let budgetLimited = false;
   let blockReason: 'RESERVE' | 'NOT_AUTHORIZED' | 'VALIDATION_CREDIT_CAP' | null = null;
   try {
-    oddsEvents = await getOddsEventsForSport(NBA_ODDS_SPORT_KEY);
+    for (const sportKey of oddsSportKeys) {
+      const events = await getOddsEventsForSport(sportKey);
+      for (const event of events) eventSportKeys.set(event.id, sportKey);
+      oddsEvents.push(...events);
+    }
   } catch (error) {
     if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
     else if (error instanceof OddsRefreshNotAuthorizedError) { budgetLimited = true; blockReason = 'NOT_AUTHORIZED'; }
@@ -195,14 +201,18 @@ export async function runNBAFinderDeepSearch(
   }
 
   const selectable = bettable
-    .map((game) => ({ game, event: findNBAOddsEvent(game.homeTeam.displayName, game.awayTeam.displayName, oddsEvents, slateDate) }))
+    .map((game) => ({ game, event: findNBAOddsEvent(
+      game.homeTeam.displayName.replace(/^LA /, 'Los Angeles '),
+      game.awayTeam.displayName.replace(/^LA /, 'Los Angeles '),
+      oddsEvents.filter(event => Date.parse(event.commenceTime) === Date.parse(game.gameTime)),
+    ) }))
     .filter((entry): entry is { game: (typeof bettable)[number]; event: NonNullable<ReturnType<typeof findNBAOddsEvent>> } => entry.event != null);
   const games = options.validationMaxGames != null && options.validationMaxGames > 0
     ? selectable.slice(0, options.validationMaxGames)
     : selectable;
 
   if (options.preflight) {
-    const needsPaid = (await Promise.all(games.map(async (entry) => ({ entry, state: await inspectEventPlayerPropsCacheState(entry.event.id, NBA_ODDS_SPORT_KEY) }))))
+    const needsPaid = (await Promise.all(games.map(async (entry) => ({ entry, state: await inspectEventPlayerPropsCacheState(entry.event.id, eventSportKeys.get(entry.event.id) ?? NBA_ODDS_SPORT_KEY) }))))
       .filter(({ state }) => state.props !== 'CACHE_FRESH')
       .map(({ entry }) => entry);
     const preflight: ValidationPreflight = {
@@ -222,7 +232,7 @@ export async function runNBAFinderDeepSearch(
         gameTime: entry.game.gameTime ?? null,
         status: entry.game.completed ? 'Final' : 'Scheduled',
         eventId: entry.event.id,
-        marketsCacheState: (await inspectEventPlayerPropsCacheState(entry.event.id, NBA_ODDS_SPORT_KEY)).props,
+        marketsCacheState: (await inspectEventPlayerPropsCacheState(entry.event.id, eventSportKeys.get(entry.event.id) ?? NBA_ODDS_SPORT_KEY)).props,
         selected: true,
       }))),
     };
@@ -296,8 +306,9 @@ export async function runNBAFinderDeepSearch(
     }
     let props;
     try {
-      props = options.gameLines ? await loadCachedNBAPlayerProps(event.id)
-        : await getDiscoveredEventPlayerProps(event.id, undefined, NBA_ODDS_SPORT_KEY, NBA_FALLBACK_MARKETS);
+      const sportKey = eventSportKeys.get(event.id) ?? NBA_ODDS_SPORT_KEY;
+      props = options.gameLines && sportKey === NBA_ODDS_SPORT_KEY ? await loadCachedNBAPlayerProps(event.id)
+        : options.gameLines ? [] : await getDiscoveredEventPlayerProps(event.id, undefined, sportKey, NBA_FALLBACK_MARKETS);
       if (getLastOddsCreditInfo()?.source === 'network') sawNetworkCall = true;
     } catch (error) {
       if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
