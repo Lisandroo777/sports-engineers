@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { issueNFLPresentationReceipt, captureAcknowledgedNFLRows } from './capture';
 import type { NFLLedgerCandidateInput, NFLPredictionRecord } from './types';
+import { verifyPresentationReceipt } from './security';
 
 const { captureMock, scheduleMock } = vi.hoisted(() => ({ captureMock: vi.fn(), scheduleMock: vi.fn() }));
 vi.mock('./redisStore', () => ({ redisNFLLedgerRepository: { capture: captureMock } }));
@@ -22,6 +23,22 @@ beforeEach(() => {
 });
 
 describe('NFL display receipts and capture', () => {
+  it('signs only snapshot fields for full research cards without losing grading or probability inputs', async () => {
+    const now = new Date('2026-10-07T12:00:00Z');
+    const row = { ...candidate(), evidenceBoard: Array.from({ length: 1000 }, (_, index) => ({ index, detail: `Source evidence ${index}` })),
+      nflResearchProfile: { ...candidate().nflResearchProfile, evidence: { for: Array.from({ length: 1000 }, (_, index) => `Detailed research ${index}`) } } };
+    const token = await issueNFLPresentationReceipt({ results: Array.from({ length: 15 }, (_, index) => ({ ...row, candidateId: `row-${index}`, playerId: index + 1 })),
+      meta: { sport: 'nfl', date: '2026-10-11' }, researchSessionId: 's', rankingIntent: 'BEST', now });
+    expect(token!.length).toBeLessThan(200000);
+    const decoded = verifyPresentationReceipt(token!, now.getTime())!;
+    expect(decoded.rows).toHaveLength(15);
+    expect(decoded.rows[0].candidate).not.toHaveProperty('evidenceBoard');
+    expect(decoded.rows[0].candidate.nflResearchProfile).not.toHaveProperty('evidence');
+    await captureAcknowledgedNFLRows(token!, ['row-0'], now);
+    expect(captureMock.mock.calls[0][0]).toMatchObject({ projection: 250, displayedProbability: 0.63,
+      modelProbability: 0.61, edge: 19.5, evPercent: 8, researchScore: 90, risk: 12, americanOdds: -115 });
+  });
+
   it('records the complete qualifying returned set and makes repeated acknowledgements idempotent', async () => {
     const records = new Map<string, NFLPredictionRecord>();
     captureMock.mockImplementation(async snapshot => {

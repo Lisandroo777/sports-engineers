@@ -40,7 +40,19 @@ export async function issueNFLPresentationReceipt(input: {
     rankingIntent: input.rankingIntent, researchMode: mode,
     rows: results.map((candidate) => {
       const scheduleGame = candidate.gameId ? games.get(candidate.gameId) ?? null : null;
-      return { candidate: { ...candidate, ...(scheduleGame ? { game: { id: candidate.gameId!, gameTime: scheduleGame.time,
+      const profile = candidate.nflResearchProfile;
+      const snapshotInput: NFLLedgerCandidateInput = {
+        candidateId: candidate.candidateId, gameId: candidate.gameId, playerId: candidate.playerId,
+        player: candidate.player, teamId: candidate.teamId, team: candidate.team, opponent: candidate.opponent,
+        market: candidate.market, marketKey: candidate.marketKey, line: candidate.line, direction: candidate.direction,
+        book: candidate.book, odds: candidate.odds, projection: candidate.projection, trueProbability: candidate.trueProbability,
+        modelProbability: candidate.modelProbability, edge: candidate.edge, evPercent: candidate.evPercent,
+        researchScore: candidate.researchScore, trapRisk: candidate.trapRisk, pickTier: candidate.pickTier,
+        season: candidate.season, week: candidate.week, game: candidate.game,
+        ...(profile ? { nflResearchProfile: { researchMode: profile.researchMode, sportFilterVersion: profile.sportFilterVersion,
+          modelVersion: profile.modelVersion, season: profile.season, week: profile.week, seasonPhase: profile.seasonPhase } } : {}),
+      };
+      return { candidate: { ...snapshotInput, ...(scheduleGame ? { game: { id: candidate.gameId!, gameTime: scheduleGame.time,
         season: scheduleGame.season, week: scheduleGame.week, seasonType: scheduleGame.seasonType, completed: scheduleGame.completed } } : {}) } as unknown as Record<string, unknown>,
         kickoff: scheduleGame ? { time: scheduleGame.time, source: scheduleGame.source } : null };
     }) }, now.getTime());
