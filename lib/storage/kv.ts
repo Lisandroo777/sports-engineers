@@ -31,6 +31,15 @@ async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
   return payload.result as T;
 }
 
+/** Runs a Lua script atomically on the shared store; throws when durable KV is not configured. */
+export async function kvEval<T = unknown>(script: string, keys: string[], args: Array<string | number>): Promise<T> {
+  return redisCommand<T>(['EVAL', script, keys.length, ...keys, ...args]);
+}
+
+export async function kvSetNx(key: string, value: string, ttlMs: number): Promise<boolean> {
+  return (await redisCommand<string | null>(['SET', key, value, 'NX', 'PX', Math.ceil(ttlMs)])) === 'OK';
+}
+
 export async function kvGetJson<T>(key: string): Promise<T | null> {
   if (!hasDurableKV()) return null;
   const value = await redisCommand<string | null>(['GET', key]);

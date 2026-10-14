@@ -1,4 +1,5 @@
 import { runFinderDeepSearch, type FinderResult, type FinderRunSummary } from '../../finder/engine';
+import { isAutomaticOddsRefreshEnabled } from '../../odds/autoRefreshLedger';
 import { runNFLFinderDeepSearch, type NFLFinderSummary, type NFLFinderOptions } from '../../finder/nflEngine';
 import { runNBAFinderDeepSearch, type NBAFinderSummary, type NBACandidate } from '../../finder/nbaEngine';
 import { getMLBSchedule } from '../../mlb/schedule';
@@ -23,7 +24,7 @@ import { NFL_QB_MARKETS, NFL_RB_MARKETS, NFL_WR_TE_MARKETS, NFL_KICKER_MARKETS, 
 import { SPORT_RESEARCH_ADAPTERS, detectSport, normalizeSport, type SupportedSport } from '../sportResearchAdapters';
 import { getSportFilterRegistration, isSportResearchImplemented } from '../sportFilterRegistry';
 import { applyNFLHardGatesToAnalysis } from '../../nfl/researchModel';
-import { OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withOneRunPaidRefresh } from '../../odds/client';
+import { OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withAutomaticOddsRefresh } from '../../odds/client';
 import { addDaysToSlateDate, todaySlateDate, type SlateDate } from '../../dateModel';
 import { resolveDateFromText, type ResolvedDate } from '../dateResolver';
 import { fail, ok, type ToolResult } from './status';
@@ -291,8 +292,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   const status = SPORT_STATUS[sport];
   if (!status.props) return fail('SPORT_UNAVAILABLE', status.note, { sport, date: resolved.date });
 
-  const approval = context.refreshApproval;
-  const approvedForRequest = approval?.sport === sport && approval.date === resolved.date ? approval : null;
+  const approvedForRequest = null;
   const deliberateRefresh = /\b(refresh|research again|search again|check again|newly available|new (?:search|research|plays|props)|new data|fresh data|latest (?:props|lines|markets))\b/i.test(context.pendingQueryIntent);
 
   // Reuse first: a stored session for this exact sport+date already holds the full researched pool,
@@ -328,7 +328,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   }
   if (sessionMatches && requestedGameIds.length > 0 && requestedGameIds.every((id) => existing.scopeGameIds!.includes(id))) return reuseSession();
 
-  const autoRefresh = sport === 'nfl' || approvedForRequest != null;
+  const autoRefresh = sport === 'nfl' || approvedForRequest != null || isAutomaticOddsRefreshEnabled();
   const scopeGames = (preflightData?.games ?? []).filter((game) => requestedGameIds.length === 0 || requestedGameIds.includes(game.gameId));
   const cachedGameIds = scopeGames
     .filter((game) => game.eventId != null && game.marketsCacheState === 'CACHE_FRESH')
@@ -353,15 +353,10 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
       ...(scopedIds ? { validationGameIds: scopedIds } : {}),
       ...(context.nflScope?.marketKeys ? { marketKeys: context.nflScope.marketKeys } : {}),
       ...(context.nflScope?.playerId != null ? { playerId: context.nflScope.playerId } : {}),
-    } : approvedForRequest ? {
-      validationMaxGames: approvedForRequest.maxGames,
-      validationGameIds: scopedIds ?? approvedForRequest.selectedGameIds,
-      validationMaxCredits: approvedForRequest.maxCredits,
     } : scopedIds ? { validationGameIds: scopedIds } : {});
     // The odds client is cache-first per event: only missing/stale games are fetched, identical
     // concurrent requests share one fetch, and the credit reserve guard still hard-stops spending.
-    summary = approvedForRequest ? await withOneRunPaidRefresh(load, { forceFresh: deliberateRefresh,
-      maxRequests: (approvedForRequest.maxGames ?? 1) * 2, maxCredits: approvedForRequest.maxCredits ?? 7 }) : await load();
+    summary = await withAutomaticOddsRefresh(load);
   } catch (error) {
     if (sport === 'nfl') {
       context.nflResearchIncomplete = true; context.researchSession = null; context.researchSessionId = null;

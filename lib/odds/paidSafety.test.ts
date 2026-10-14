@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('./autoRefreshLedger', async importOriginal => ({
+  ...await importOriginal<typeof import('./autoRefreshLedger')>(),
+  acquireRefreshLock: async () => 'fixture-owner', releaseRefreshLock: async () => {},
+  reserveDailyCredits: async (credits: number) => ({ credits, id: 'fixture', dayKey: 'fixture' }),
+  settleDailyCredits: async () => {}, recordProviderRemaining: async () => {},
+}));
+
 vi.mock('./persistentCache', () => ({
   readPersistentCache: async () => null, readStalePersistentCache: async () => null,
   writePersistentCache: async () => {}, writeCreditStatus: async () => {},

@@ -38,7 +38,7 @@ export async function POST(request: Request) {
     // The client only persists/resends a small session ID; the full research session lives server-side.
     const context = body.context && ['nfl', 'nba', 'mlb'].includes(body.context.sport ?? '') ? { sport: body.context.sport,
       date: typeof body.context.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.context.date) ? body.context.date : undefined } : undefined;
-    const result = await runAgentTurn(messages, body.researchSessionId ?? null, body.refreshApproval ?? null, context);
+    const result = await runAgentTurn(messages, body.researchSessionId ?? null, null, context);
     const clientResult = toClientResult(result);
     let ledgerReceipt: string | null = null;
     if (clientResult.meta?.sport === 'nfl' && clientResult.results.length) {

@@ -21,7 +21,9 @@ const NBA_DESCRIPTIVE_EVIDENCE_HASHES = {
   'lib/nba/history.ts': 'f9e9a2e9cc9faa7dfdd3d3e3d973c212c9e8be00f2992f6b3bba56b90fa871fa',
 };
 const APPROVED_INFRASTRUCTURE_HASHES = {
-  'lib/odds/client.ts': '5659ff28cc660e5368a94086a790069adfd4a5233683202b5f23c3956fc18b08',
+  'lib/odds/client.ts': 'b0effddf0c54f174931ab0ce66a1cea97343cd639e7a13cb3a7cf78ab03ed99b',
+  'lib/storage/kv.ts': '733f14297efee6b3263018784a5add7a48143fbaff2165c12c66b3d6adab88d6',
+  'lib/odds/autoRefreshLedger.ts': '65586702666209be415a8066aea8c7c5a6154608edba245eb085abbd86dcd2d9',
   'lib/nba/presentation/adapter.ts': 'd2eae1386510dd097b22415f012b8372fde9e25a9e23402153f9363062b0a34d',
   'lib/nba/presentation/index.ts': 'e806cb023e1ffed32d01b276c89fbc04ffacc3452bd36bddf27d995c975c6fdc',
   'lib/nba/presentation/types.ts': 'd0bf5562cbbdb7bebf4f9be21fc726a744f14995b9b86a46e1d1db7c0017cc7f',
@@ -42,7 +44,8 @@ export function assertFrozenInventory(current, archive, label) {
   for (const path of Object.keys(archive)) if (!(path in current)) throw new Error(`${label} omitted archived source: ${path}`);
   const additions = Object.keys(current).filter((path) => !(path in archive));
   const rejected = additions.filter((path) => !NON_MODEL_ADDITION_PREFIXES.some((prefix) => path.startsWith(prefix))
-    && !NBA_PRESENTATION_ADDITIONS.includes(path) && !(path === 'lib/nba/researchEvidence.ts' && hash(current[path]) === NBA_DESCRIPTIVE_EVIDENCE_HASHES[path]));
+    && !NBA_PRESENTATION_ADDITIONS.includes(path) && !(path === 'lib/nba/researchEvidence.ts' && hash(current[path]) === NBA_DESCRIPTIVE_EVIDENCE_HASHES[path])
+    && !(path === 'lib/odds/autoRefreshLedger.ts' && hash(current[path]) === APPROVED_INFRASTRUCTURE_HASHES[path]));
   if (rejected.length) throw new Error(`${label} source inventory drift outside isolated infrastructure: ${rejected.join(', ')}`);
   return additions;
 }
@@ -147,7 +150,7 @@ export function verifyHardenedFreeze() {
     const guardedNBAChange = NBA_INTEGRATION_ALLOWED_DELTAS.includes(path) && current[path] !== content;
     const exactDependencyAddition = ['package.json', 'package-lock.json'].includes(path) && current[path] !== content
       && packageDependencyDeltaAllowed(path, content, current[path]);
-    const exactSecurityChange = path === 'lib/odds/client.ts' && hash(current[path] ?? '') === APPROVED_INFRASTRUCTURE_HASHES[path];
+    const exactSecurityChange = ['lib/odds/client.ts', 'lib/storage/kv.ts'].includes(path) && hash(current[path] ?? '') === APPROVED_INFRASTRUCTURE_HASHES[path];
     const exactDescriptiveChange = path === 'lib/nba/history.ts' && hash(current[path] ?? '') === NBA_DESCRIPTIVE_EVIDENCE_HASHES[path];
     if (hash(content) !== manifest.files[path] || current[path] !== content && !guardedNBAChange && !exactDependencyAddition && !exactSecurityChange && !exactDescriptiveChange) throw new Error(`Hardened archive source mismatch: ${path}`);
     if (path in baseSources && baseSources[path] !== content && !HARDENED_ALLOWED_DELTAS.includes(path)) throw new Error(`Unapproved V1.1 source delta: ${path}`);

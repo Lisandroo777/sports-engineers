@@ -43,6 +43,15 @@ beforeEach(() => { runAgentTurnMock.mockReset(); vi.useFakeTimers(); vi.setSyste
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('NBA DeepSide AI request response', () => {
+  it('never forwards browser-provided paid refresh limits to the agent', async () => {
+    runAgentTurnMock.mockResolvedValue({ reply: 'No selections.', toolTrace: [], results: [], closestMisses: [], meta: null, researchSessionId: null });
+    const response = await POST(new Request('http://localhost/api/ai/chat', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Best MLB plays' }],
+        refreshApproval: { sport: 'mlb', date: '2026-10-13', maxCredits: 1000000, maxGames: 1000000 } }) }));
+    expect(response.status).toBe(200);
+    expect(runAgentTurnMock.mock.calls[0][2]).toBeNull();
+  });
+
   it('preserves NBA identity and the V1 structured prediction through the real chat POST handler', async () => {
     expect(classifyPickTier(candidate() as unknown as ResearchCandidateRecord, 'nba').pickTier).toBe('ELITE');
     const formatted = toClientResult({ reply: 'Qualified NBA research.', toolTrace: [], results: [candidate()], closestMisses: [],

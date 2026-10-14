@@ -5,6 +5,10 @@ import { getNFLMarketMetadata } from '../nfl/oddsTypes';
 import { getNBAMarketMetadata } from '../nba/oddsTypes';
 import { readPersistentCache, readStalePersistentCache, writePersistentCache, writeCreditStatus, readCreditStatus } from './persistentCache';
 import { getOddsBudgetStatus, OddsBudgetGuardError } from './budget';
+import {
+  AUTO_REFRESH_LIMITS, AutoRefreshLedgerError, acquireRefreshLock, isAutomaticOddsRefreshEnabled, recordProviderRemaining,
+  releaseRefreshLock, reserveDailyCredits, settleDailyCredits, type DailyReservation,
+} from './autoRefreshLedger';
 
 const BASE_URL = 'https://api.the-odds-api.com/v4';
 const SPORT = 'baseball_mlb';
@@ -48,6 +52,7 @@ interface PaidRequestAuthorization {
   requestsReserved: number;
   creditsReserved: number;
   allowedRequestKeys?: readonly string[];
+  automatic?: boolean;
 }
 const oneRunPaidRefreshAuthorization = new AsyncLocalStorage<PaidRequestAuthorization>();
 
@@ -56,7 +61,7 @@ const oneRunPaidRefreshAuthorization = new AsyncLocalStorage<PaidRequestAuthoriz
  * cache-first; `forceFresh` is reserved for an explicit user request to disregard fresh cache.
  */
 export function withOneRunPaidRefresh<T>(operation: () => Promise<T>, options: {
-  forceFresh?: boolean; maxRequests?: number; maxCredits?: number; allowedRequestKeys?: readonly string[];
+  forceFresh?: boolean; maxRequests?: number; maxCredits?: number; allowedRequestKeys?: readonly string[]; automatic?: boolean;
 } = {}): Promise<T> {
   const existing = oneRunPaidRefreshAuthorization.getStore();
   if (existing) {
@@ -65,11 +70,11 @@ export function withOneRunPaidRefresh<T>(operation: () => Promise<T>, options: {
   }
   const maxRequests = options.maxRequests ?? 1;
   const maxCredits = options.maxCredits ?? 7;
-  if (!Number.isInteger(maxRequests) || maxRequests < 1 || !Number.isInteger(maxCredits) || maxCredits < 1) {
+  if (!Number.isInteger(maxRequests) || maxRequests < 1 || maxRequests > 50 || !Number.isInteger(maxCredits) || maxCredits < 1 || maxCredits > 50) {
     throw new OddsRefreshNotAuthorizedError('Explicit positive paid request and credit limits required.');
   }
   const approval: PaidRequestAuthorization = { active: true, forceFresh: options.forceFresh === true, maxRequests, maxCredits,
-    requestsReserved: 0, creditsReserved: 0, allowedRequestKeys: options.allowedRequestKeys };
+    requestsReserved: 0, creditsReserved: 0, allowedRequestKeys: options.allowedRequestKeys, automatic: true };
   return oneRunPaidRefreshAuthorization.run(approval, async () => {
     try { return await operation(); } finally { approval.active = false; }
   });
@@ -87,7 +92,17 @@ function estimatedPaidCredits(path: string, params: Record<string, string>): num
   return markets.length * regions;
 }
 
-function reservePaidRequest(path: string, params: Record<string, string>, key: string) {
+/**
+ * Server-only automatic search scope: per-search cap is fixed here and every paid request also
+ * reserves against the durable daily ledger. Disabled unless ODDS_AUTO_REFRESH=true.
+ */
+export function withAutomaticOddsRefresh<T>(operation: () => Promise<T>): Promise<T> {
+  if (!isAutomaticOddsRefreshEnabled()) return operation();
+  return withOneRunPaidRefresh(operation, { automatic: true,
+    maxRequests: AUTO_REFRESH_LIMITS.perSearchCredits, maxCredits: AUTO_REFRESH_LIMITS.perSearchCredits });
+}
+
+function reservePaidRequest(path: string, params: Record<string, string>, key: string): number {
   const approval = oneRunPaidRefreshAuthorization.getStore();
   if (!approval?.active || !isPaidRefreshAllowed()) throw new OddsRefreshNotAuthorizedError('Paid refresh disabled: an active explicit bounded request scope is required.');
   const credits = estimatedPaidCredits(path, params);
@@ -97,6 +112,34 @@ function reservePaidRequest(path: string, params: Record<string, string>, key: s
   }
   approval.requestsReserved += 1;
   approval.creditsReserved += credits;
+  return credits;
+}
+
+async function reserveAutomaticDailyCredits(credits: number): Promise<DailyReservation | null> {
+  if (!oneRunPaidRefreshAuthorization.getStore()?.automatic) return null;
+  return asBudgetGuard(() => reserveDailyCredits(credits));
+}
+
+async function asBudgetGuard<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof AutoRefreshLedgerError) {
+      const blocked = new OddsBudgetGuardError(`Automatic refresh blocked: ${error.reason}.`);
+      blocked.cause = error;
+      throw blocked;
+    }
+    throw error;
+  }
+}
+
+async function waitForSharedRefresh<T>(cacheKey: string): Promise<T | null> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const hit = await readPersistentCache<T>(cacheKey);
+    if (hit) return hit.data;
+  }
+  return null;
 }
 
 function getApiKey() {
@@ -214,24 +257,11 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
   if (pending) return pending as Promise<T>;
 
   if (!isFreePath(path)) {
-    const staleHit = await readStalePersistentCache<T>(cacheKey);
     if (!oneRunPaidRefreshAuthorization.getStore()) {
       throw new OddsRefreshNotAuthorizedError('Paid refresh disabled: normal searches may use fresh cache only.');
     }
     const budget = await getOddsBudgetStatus();
     if (budget.belowReserve) {
-      // A paid refresh is not affordable. Prefer already-purchased (expired) data over
-      // failing outright — this costs 0 credits and keeps the slate analysable.
-      if (staleHit) {
-        const ageMs = Date.now() - staleHit.cachedAt;
-        const status = await readCreditStatus();
-        lastCreditInfo = { lastCost: '0', used: status?.used ?? null, remaining: status?.remaining ?? null, path, cached: true, source: 'stale-disk', cacheState: 'CACHE_STALE', cacheAgeMs: ageMs };
-        recordSpend(lastCreditInfo);
-        console.warn(
-          `[odds] budget reserve reached (${budget.remaining}<${budget.minReserve}); serving stale cache for ${path} (age=${Math.round(ageMs / 60000)}m)`,
-        );
-        return staleHit.data;
-      }
       throw new OddsBudgetGuardError(
         `Blocked: ${budget.remaining} credits remaining is below the configured reserve of ${budget.minReserve} (ODDS_MIN_CREDIT_RESERVE). No cached data was available for this request.`,
       );
@@ -240,12 +270,44 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
 
   const concurrent = inFlight.get(cacheKey);
   if (concurrent) return concurrent as Promise<T>;
-  if (!isFreePath(path)) reservePaidRequest(path, params, cacheKey);
+  const reservedCredits = isFreePath(path) ? 0 : reservePaidRequest(path, params, cacheKey);
+  const automatic = !isFreePath(path) && oneRunPaidRefreshAuthorization.getStore()?.automatic === true;
   const promise = (async () => {
+    const owner = automatic ? await asBudgetGuard(() => acquireRefreshLock(cacheKey)) : null;
+    if (automatic && !owner) {
+      const shared = await waitForSharedRefresh<T>(cacheKey);
+      if (shared != null) return shared;
+      throw new OddsRefreshNotAuthorizedError('An identical refresh is already in progress.');
+    }
+    let reservation: DailyReservation | null = null;
+    let actualCost: number | null = null;
+    let cachedSuccessfully = false;
+    let declinedWithoutSpend = false;
+    try {
+      if (automatic) {
+        const shared = await readPersistentCache<T>(cacheKey);
+        if (shared) { cachedSuccessfully = true; return shared.data; }
+      }
+      try {
+        reservation = await reserveAutomaticDailyCredits(reservedCredits);
+      } catch (error) {
+        declinedWithoutSpend = error instanceof OddsBudgetGuardError && error.cause instanceof AutoRefreshLedgerError
+          && error.cause.reason !== 'STORAGE_UNAVAILABLE';
+        throw error;
+      }
+      return await fetchAndStore();
+    } finally {
+      if (reservation) await settleDailyCredits(reservation, actualCost);
+      if (owner && (cachedSuccessfully || declinedWithoutSpend)) await releaseRefreshLock(cacheKey, owner);
+    }
+
+  async function fetchAndStore(): Promise<T> {
     const response = await fetch(url.toString(), { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
     const remaining = response.headers.get('x-requests-remaining');
     const used = response.headers.get('x-requests-used');
     const last = response.headers.get('x-requests-last');
+    actualCost = last == null ? null : Number(last);
+    if (response.ok) await recordProviderRemaining(remaining);
     lastCreditInfo = { lastCost: last, used, remaining, path, cached: false, source: 'network', cacheState: isFreePath(path) ? 'FREE' : 'PAID', cacheAgeMs: null };
     recordSpend(lastCreditInfo);
     console.log(`[odds] path=${path} lastCost=${last ?? '0'} used=${used ?? '?'} remaining=${remaining ?? '?'}`);
@@ -257,9 +319,11 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
 
     const data = (await response.json()) as T;
     const expires = Date.now() + cacheTtlMs;
-    cache.set(cacheKey, { expires, data });
     await writePersistentCache(cacheKey, data, expires);
+    cache.set(cacheKey, { expires, data });
+    cachedSuccessfully = true;
     return data;
+  }
   })();
 
   inFlight.set(cacheKey, promise);

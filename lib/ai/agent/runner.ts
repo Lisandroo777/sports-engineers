@@ -16,6 +16,7 @@ import { saveResearchSession } from './sessionStore';
 import { interpretWithLanguageModel, needsModelInterpretation } from '../../../communication/modelInterpretation';
 import { classifyNBAMarketIntent, unsupportedNBAGameLineNotice } from '../../nba/prediction/marketIntent';
 import { runNBAFinderDeepSearch } from '../../finder/nbaEngine';
+import { withAutomaticOddsRefresh } from '../../odds/client';
 import { nbaFinderCandidateToGeneric } from './tools';
 import { buildResearchSessionFromCandidates } from './session';
 import { classifyGameRecommendation, isGameRecommendation } from '../../nba/prediction/gameLines/recommendations';
@@ -193,6 +194,9 @@ export function toClientResult(result: AgentTurnResult, production = process.env
   const results = filterRecommendationResults(result.results, result.meta?.sport as string | undefined, result.meta?.includePasses === true);
   if (results.length !== result.results.length) result = { ...result, results };
   if (result.meta?.sport === 'nfl') result = { ...result, results: annotateNFLCorrelation(assignNFLDisplayRanks(groupNFLUnderlyingPlays(result.results as ResearchCandidateRecord[]))) };
+  if (result.meta?.budgetLimited === true && !/some sportsbook markets/i.test(result.reply)) {
+    result = { ...result, reply: `${result.reply}\n\nSome sportsbook markets for this search were unavailable, so only games with fresh market data were researched.` };
+  }
   if (!production && result.meta?.sport !== 'nfl') return result;
   const meta = result.meta ? Object.fromEntries(Object.entries(result.meta).filter(([key]) => !INTERNAL_META_KEYS.includes(key))) : null;
   if (meta?.sport === 'nfl' && meta.nflLedger) {
@@ -303,6 +307,11 @@ function textFrom(output: OpenAIOutputItem[]): string {
 }
 
 export async function runAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null = null, refreshApproval: AgentRefreshApproval | null = null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string }): Promise<AgentTurnResult> {
+  void refreshApproval;
+  return withAutomaticOddsRefresh(() => runScopedAgentTurn(history, researchSessionId, null, uiContext));
+}
+
+async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null, refreshApproval: AgentRefreshApproval | null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string }): Promise<AgentTurnResult> {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   const model = process.env.OPENAI_MODEL?.trim() || DEFAULT_MODEL;
 
@@ -320,8 +329,8 @@ export async function runAgentTurn(history: AgentTurnMessage[], researchSessionI
     if (!nbaSession || /\brefresh\b/i.test(query)) {
       const gameIds = requestedTeams.length ? (await getNBASchedule(requestedDate).catch(() => []))
         .filter(game => matchesNBATeams(requestedTeams, [game.homeTeam.displayName, game.awayTeam.displayName])).map(game => game.id) : null;
-      const summary = await runNBAFinderDeepSearch(requestedDate, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly,
-        ...(gameIds ? { validationGameIds: gameIds } : {}) });
+      const summary = await withAutomaticOddsRefresh(() => runNBAFinderDeepSearch(requestedDate, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly,
+        ...(gameIds ? { validationGameIds: gameIds } : {}) }));
       nbaSession = buildResearchSessionFromCandidates({ sport: 'nba', date: requestedDate, queryIntent: query,
         candidates: summary.nbaCandidates.filter(candidate => candidate.playerMatch === 'MATCHED' && candidate.eliteAnalysis != null).map(nbaFinderCandidateToGeneric),
         toolMeta: { gamesFound: summary.gamesAnalyzed, gamesScheduled: summary.gamesScheduled, propsFound: summary.propsAnalyzed,
@@ -353,7 +362,7 @@ export async function runAgentTurn(history: AgentTurnMessage[], researchSessionI
       toolTrace: [], results, closestMisses: [], researchSessionId, modeledGames: nbaSession.modeledGames,
       nbaPresentation: buildNBAResearchPresentation(nbaSession, query, results.map(record => record.candidateId)),
       meta: { sport: 'nba', date: requestedDate, modelVersion: 'NBA_GAME_LINES_V1', validationStatus: 'UNVALIDATED',
-        researchComplete: true, ...(unsupported.length ? { unsupportedMarketNotice: unsupportedNBAGameLineNotice(unsupported) } : {}) } };
+        researchComplete: true, budgetLimited: nbaSession.toolMeta.budgetLimited === true, ...(unsupported.length ? { unsupportedMarketNotice: unsupportedNBAGameLineNotice(unsupported) } : {}) } };
   }
   let previous = context.researchSession?.conversation ?? null;
   if (!previous && context.researchSession) {
