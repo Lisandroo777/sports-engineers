@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 const ACCESS_COOKIE = 'deepside_nfl_ledger_access';
 const RECEIPT_TTL_MS = 20 * 60 * 1000;
@@ -37,7 +38,8 @@ export function signPresentationReceipt(input: Omit<NFLPresentationReceipt, 'ver
   const key = secret('NFL_LEDGER_RECEIPT_SECRET');
   if (!key) throw new Error('NFL ledger presentation receipt secret is not configured.');
   const receipt: NFLPresentationReceipt = { ...input, version: 1, expiresAt: now + RECEIPT_TTL_MS };
-  const payload = Buffer.from(JSON.stringify(receipt)).toString('base64url');
+  const payload = `z1:${deflateSync(Buffer.from(JSON.stringify(receipt))).toString('base64url')}`;
+  if (payload.length + 44 > 200_000) throw new Error('NFL presentation receipt exceeds the signed payload limit.');
   return `${payload}.${signature(payload, key)}`;
 }
 
@@ -47,7 +49,10 @@ export function verifyPresentationReceipt(token: string, now = Date.now()): NFLP
   const [payload, supplied, extra] = token.split('.');
   if (!payload || !supplied || extra != null || !safeEqual(signature(payload, key), supplied)) return null;
   try {
-    const receipt = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as NFLPresentationReceipt;
+    const decoded = payload.startsWith('z1:')
+      ? inflateSync(Buffer.from(payload.slice(3), 'base64url'), { maxOutputLength: 4_000_000 })
+      : Buffer.from(payload, 'base64url');
+    const receipt = JSON.parse(decoded.toString('utf8')) as NFLPresentationReceipt;
     if (receipt.version !== 1 || !Array.isArray(receipt.rows) || receipt.expiresAt < now || !Number.isFinite(Date.parse(receipt.issuedAt))) return null;
     return receipt;
   } catch { return null; }

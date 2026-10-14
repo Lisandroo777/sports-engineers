@@ -1,9 +1,31 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHmac } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import { createLedgerAccessSession, gradingAuthorized, isLedgerReadAuthorized, ledgerAccessCookie, signPresentationReceipt, verifyPresentationReceipt } from './security';
 
 afterEach(() => { delete process.env.NFL_LEDGER_RECEIPT_SECRET; delete process.env.NFL_LEDGER_VIEW_SECRET; delete process.env.NFL_LEDGER_SESSION_SECRET; delete process.env.NFL_LEDGER_GRADE_SECRET; });
 
 describe('NFL ledger access and receipt security', () => {
+  it('round-trips a full 15-card research payload below the transport limit', () => {
+    process.env.NFL_LEDGER_RECEIPT_SECRET = 'receipt-secret';
+    const now = Date.now();
+    const rows = Array.from({ length: 15 }, (_, index) => ({ candidate: { candidateId: `card-${index}`, research: 'Sourced research evidence and risk context. '.repeat(2200) }, kickoff: null }));
+    const token = signPresentationReceipt({ issuedAt: new Date(now).toISOString(), researchSessionId: 's', rankingIntent: 'BEST', researchMode: 'STANDARD', rows }, now);
+    expect(token.startsWith('z1:')).toBe(true);
+    expect(token.length).toBeLessThan(200000);
+    expect(verifyPresentationReceipt(token, now)?.rows).toEqual(rows);
+  });
+
+  it('continues verifying legacy receipts and bounds compressed expansion', () => {
+    process.env.NFL_LEDGER_RECEIPT_SECRET = 'receipt-secret';
+    const now = Date.now();
+    const receipt = { version: 1, issuedAt: new Date(now).toISOString(), expiresAt: now + 60000, rows: [] };
+    const sign = (payload: string) => `${payload}.${createHmac('sha256', 'receipt-secret').update(payload).digest('base64url')}`;
+    expect(verifyPresentationReceipt(sign(Buffer.from(JSON.stringify(receipt)).toString('base64url')), now)).not.toBeNull();
+    const oversized = `z1:${deflateSync(Buffer.from('x'.repeat(4_000_001))).toString('base64url')}`;
+    expect(verifyPresentationReceipt(sign(oversized), now)).toBeNull();
+  });
+
   it('rejects missing, tampered and expired signed presentation receipts', () => {
     const now = Date.parse('2026-10-07T12:00:00Z');
     process.env.NFL_LEDGER_RECEIPT_SECRET = 'receipt-secret';
