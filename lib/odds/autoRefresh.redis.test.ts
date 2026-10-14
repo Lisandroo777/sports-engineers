@@ -4,10 +4,20 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import type { ResearchSession } from '../ai/agent/session';
 
 const state = vi.hoisted(() => ({ socket: '', cli: '', available: true }));
 vi.mock('../storage/kv', () => ({
   hasDurableKV: () => state.available,
+  allowLocalPersistenceFallback: () => false,
+  kvGetJson: async (key: string) => {
+    const value = await command('GET', key);
+    return value == null ? null : JSON.parse(value);
+  },
+  kvSetJson: async (key: string, value: unknown, ttlMs?: number) => {
+    await command('SET', key, JSON.stringify(value), ...(ttlMs == null ? [] : ['PX', String(Math.ceil(ttlMs))]));
+  },
+  kvDel: async (key: string) => { await command('DEL', key); },
   kvEval: async (script: string, keys: string[], args: Array<string | number>) => {
     const { stdout } = await promisify(execFile)(state.cli, ['-s', state.socket, '--json', 'EVAL', script, String(keys.length), ...keys, ...args.map(String)]);
     return JSON.parse(stdout);
@@ -46,6 +56,26 @@ describe.skipIf(!enabled)('actual isolated Redis Lua protections', () => {
   });
   beforeEach(async () => { state.available = true; await command('FLUSHDB'); });
   afterEach(() => vi.unstubAllEnvs());
+
+  it('persists compressed research sessions across module reloads with expiry and deletion', async () => {
+    const session: ResearchSession = {
+      sport: 'nfl', date: '2026-10-15', queryIntent: 'isolated persistence verification',
+      generatedAt: new Date().toISOString(), candidates: [],
+      toolMeta: { gamesFound: 0, gamesScheduled: 0, propsFound: 0, booksFound: 0,
+        candidatesFound: 0, eliteFound: 0, cached: false, dataFreshnessSeconds: null, budgetLimited: false },
+    };
+    const { saveResearchSession } = await import('../ai/agent/sessionStore');
+    const id = await saveResearchSession(session);
+    const stored = JSON.parse(await command('GET', `ai-session:${id}`));
+    expect(stored.sessionEncoding).toBe('deflate-base64-v1');
+    expect(await command('PTTL', `ai-session:${id}`)).toBeGreaterThan(0);
+    vi.resetModules();
+    const { getResearchSession, deleteResearchSession } = await import('../ai/agent/sessionStore');
+    expect(await getResearchSession(id)).toEqual(session);
+    await deleteResearchSession(id);
+    expect(await getResearchSession(id)).toBeNull();
+    expect(await command('EXISTS', `ai-session:${id}`)).toBe(0);
+  });
 
   it('atomically limits paid reservations per minute without debiting rejected requests', async () => {
     vi.stubEnv('ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', '2');

@@ -1,13 +1,39 @@
 type RedisCommand = Array<string | number>;
 
 function redisConfig() {
-  const url = process.env.KV_REST_API_URL?.trim() || process.env.UPSTASH_REDIS_REST_URL?.trim();
-  const token = process.env.KV_REST_API_TOKEN?.trim() || process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
-  return url && token ? { url: url.replace(/\/$/, ''), token } : null;
+  const source = process.env.KV_REST_API_URL?.trim() || process.env.KV_REST_API_TOKEN?.trim()
+    ? 'KV_REST_API' : 'UPSTASH_REDIS_REST';
+  const url = process.env[`${source}_URL`]?.trim();
+  const token = process.env[`${source}_TOKEN`]?.trim();
+  if (!url && !token) return null;
+  if (!url || !token) throw new Error(`Durable KV configuration invalid: ${source}_URL and ${source}_TOKEN must be configured together.`);
+  let endpoint: URL;
+  try { endpoint = new URL(url); } catch {
+    throw new Error(`Durable KV configuration invalid: ${source}_URL must be an HTTPS REST endpoint.`);
+  }
+  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !/^\/?$/.test(endpoint.pathname)) {
+    throw new Error(`Durable KV configuration invalid: ${source}_URL must be an HTTPS REST endpoint without credentials, query, or path.`);
+  }
+  if (/^Bearer\s/i.test(token) || /[\s"']/.test(token) || token === '[SENSITIVE]') {
+    throw new Error(`Durable KV configuration invalid: ${source}_TOKEN must be the raw REST token without quotes or a Bearer prefix.`);
+  }
+  return { url: endpoint.origin, token, source };
 }
 
 export function hasDurableKV() {
   return redisConfig() != null;
+}
+
+export function getDurableKVStatus() {
+  const config = redisConfig();
+  return {
+    configured: config != null,
+    source: config?.source ?? null,
+    bothFamiliesPresent: Boolean(
+      (process.env.KV_REST_API_URL?.trim() || process.env.KV_REST_API_TOKEN?.trim())
+      && (process.env.UPSTASH_REDIS_REST_URL?.trim() || process.env.UPSTASH_REDIS_REST_TOKEN?.trim()),
+    ),
+  };
 }
 
 export function allowLocalPersistenceFallback() {

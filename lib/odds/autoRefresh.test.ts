@@ -53,7 +53,7 @@ vi.mock('./persistentCache', () => ({
   writeCreditStatus: async () => {}, readCreditStatus: async () => ({ remaining: String(store.remaining ?? 20000), used: '0' }),
 }));
 
-import { getEventMarkets, getEventPlayerProps, OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withAutomaticOddsRefresh, withOneRunPaidRefresh } from './client';
+import { getEventMarkets, getEventPlayerProps, getOddsEventsForSport, OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withAutomaticOddsRefresh, withOneRunPaidRefresh } from './client';
 import { AUTO_REFRESH_LIMITS, dailyLedgerKey, getOddsRefreshLimits } from './autoRefreshLedger';
 
 const today = () => store.days.get(dailyLedgerKey()) ?? { spent: 0, reserved: 0 };
@@ -72,6 +72,28 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('controlled automatic odds refresh', () => {
+  it('initializes an unknown provider balance from free events while paid refresh stays disabled', async () => {
+    store.remaining = null;
+    vi.stubEnv('ODDS_AUTO_REFRESH', 'false');
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json([
+      { id: 'free-bootstrap', commence_time: '2026-10-16T00:15:00Z', home_team: 'Home', away_team: 'Away' },
+    ], { headers: { 'x-requests-last': '0', 'x-requests-remaining': '16966', 'x-requests-used': '3034' } })));
+
+    const events = await withAutomaticOddsRefresh(() => getOddsEventsForSport('americanfootball_nfl'));
+
+    expect(events).toEqual([
+      { id: 'free-bootstrap', commenceTime: '2026-10-16T00:15:00Z', homeTeam: 'Home', awayTeam: 'Away' },
+    ]);
+    expect(store.remaining).toBe(16966);
+    expect(store.reservations.size).toBe(0);
+    expect(store.days.size).toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(new URL(String(vi.mocked(fetch).mock.calls[0][0])).pathname).toBe('/v4/sports/americanfootball_nfl/events');
+    await expect(withAutomaticOddsRefresh(() => getEventMarkets('bootstrap-paid-blocked', 'americanfootball_nfl')))
+      .rejects.toBeInstanceOf(OddsRefreshNotAuthorizedError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('rate-limits concurrent distinct requests across scopes without charging blocked attempts', async () => {
     vi.stubEnv('ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', '2');
     const results = await Promise.all(Array.from({ length: 5 }, (_, index) =>
