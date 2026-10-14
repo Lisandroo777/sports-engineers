@@ -26,6 +26,7 @@ import { buildNBAResearchPresentation, unclassifiedNBAPropResearch } from '../..
 import { loadCachedNBAEventResearch } from '../../nba/prediction/gameLines/cachedEventResearch';
 import { requestedNBATeams, matchesNBATeams } from '../../nba/prediction/gameLines/requestScope';
 import { getNBASchedule } from '../../nba/schedule';
+import { parseNFLRequestScope } from './nflRequestScope';
 
 const CONNECTED_SPORTS = ['mlb', 'nba', 'nfl'] as const;
 type ConnectedSport = typeof CONNECTED_SPORTS[number];
@@ -35,7 +36,8 @@ export function crossSportScope(query: string): ConnectedSport[] {
   if (/\b(?:soccer|tennis|nhl|hockey|ufc|previous|settlements?|supported|capabilities)\b/i.test(query)) return [];
   const named = CONNECTED_SPORTS.filter(sport => ({ mlb: /\b(?:mlb|baseball)\b/i, nba: /\b(?:nba|basketball)\b/i, nfl: /\b(?:nfl|football)\b/i })[sport].test(query));
   if (named.length === 1) return [];
-  if (!named.length && /\b(?:for|vs\.?|versus|his|these|those|again|refresh)\b/i.test(query)) return [];
+  if (!named.length && (parseNFLRequestScope(query).teams.length || requestedNBATeams(query).length)) return [];
+  if (!named.length && /\b(?:for|vs\.?|versus|his|these|those|again|refresh)\b/i.test(query.replace(/\bfor\s+(?:today|tonight|tomorrow)\b/gi, ''))) return [];
   return named.length ? named : [...CONNECTED_SPORTS];
 }
 
@@ -509,7 +511,7 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
       researchSessionId: context.researchSessionId };
   }
   applyRequestScope(context, lastUserMessage?.content ?? '');
-  if (deterministicMLB && context.canonicalSport === 'mlb' && /\b(?:picks?|plays?|bets?|props?)\b/i.test(query)) {
+  if ((deterministicMLB || intent.sport === 'mlb') && context.canonicalSport === 'mlb' && /\b(?:picks?|plays?|bets?|props?)\b/i.test(query)) {
     const date = context.canonicalDate?.resolvedDate ?? uiContext?.date ?? todaySlateDate();
     const loaded = await executeTool('get_sportsbook_candidates', { sport: 'mlb', date }, context);
     const { data: loadedData, ...loadMeta } = loaded;

@@ -46,8 +46,9 @@ export function parseNFLRequestScope(query: string): NFLRequestScope {
     : /\b(?:receiving|reception|receptions)\b/i.test(query) ? 'receiving'
     : /\b(?:quarterback|qb)\b/i.test(query) ? 'passing' : null;
   const prefix = marketFamily === 'passing' ? 'player_pass_' : marketFamily === 'rushing' ? 'player_rush_' : 'player_reception';
-  let name = query.match(/\b(?:props?|picks?|plays?)\s+(?:for|on)\s+(.+)$/i)?.[1]
+  let name = query.match(/\b(?:props?|picks?|plays?)\s+(?:for|on)\s+(?!(?:\d{4}-\d{2}-\d{2}|today|tonight|tomorrow|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b)(.+)$/i)?.[1]
     ?? query.match(/\b(?:best|top|show|find|give|only)\s+(.+?)\s+(?:props?|picks?|plays?)\b/i)?.[1] ?? '';
+  name = name.split(/[;!?]|\.\s+(?=[A-Z])/)[0].replace(/\b(?:(?:this|that)\s+(?:game|matchup)|on)\b/gi, ' ');
   const date = resolveDateFromText(query);
   if (date) name = name.replace(new RegExp(date.rawDateText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), ' ');
   for (const team of teams) name = name.replace(new RegExp(`\\b(?:${team}|${team.split(' ').at(-1)})\\b`, 'gi'), ' ');

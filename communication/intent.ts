@@ -48,14 +48,16 @@ export function interpretBettingIntent(query: string, candidates: ResearchCandid
     .replace(/([a-z])[-\u2010-\u2013](?=[a-z])/g, '$1 ')
     .replace(/(\d)-(?=(?:man|leg)\b)/g, '$1 ');
   const explicitSport = detectSport(text);
+  const scope = parseNFLRequestScope(query);
   const explicitDate = /\b(?:today|tonight|tomorrow|yesterday|sunday|monday|tuesday|wednesday|thursday|friday|saturday|\d{4}-\d{2}-\d{2})\b/.test(text) ? resolveDateFromText(text)?.resolvedDate ?? null : null;
   const fresh = !previous || explicitSport != null && explicitSport !== previous.intent.sport
     || explicitDate != null && previous.intent.date != null && explicitDate !== previous.intent.date
+    || explicitSport != null && !scope.teams.length && !scope.playerQuery && /\b(?:best|top|all|entire|whole)\b/.test(text)
     || /\b(?:start over|new search|reset filters|all games|whole slate)\b/.test(text);
   const intent: BettingIntent = fresh ? emptyIntent() : structuredClone(previous.intent);
   intent.changedDimensions = [];
   intent.referenceIds = [];
-  intent.comparisonIntent = /\b(?:compare|versus|which (?:one )?is (?:better|safer)|which (?:one )?has more value)\b/.test(text) || /\bor\b/.test(text) && candidates.filter((row) => text.includes(row.player.toLowerCase().split(' ').at(-1)!)).length >= 2;
+  intent.comparisonIntent = /\b(?:compare|which (?:one )?is (?:better|safer)|which (?:one )?has more value)\b/.test(text) || /\bversus\b/.test(text) && !scope.teams.length || /\bor\b/.test(text) && candidates.filter((row) => text.includes(row.player.toLowerCase().split(' ').at(-1)!)).length >= 2;
   intent.explanationIntent = /^(?:why\??|what'?s the risk\??)$/.test(text.trim()) || /\b(?:why|explain|risk|makes (?:this|it).*elite|could.*lose|matchup look|done recently|his role|the injury|think about.*line)\b/.test(text);
   intent.combinationIntent = /\b(?:parlay|slip|combo|(?:[2-9]|two|three|four|five)[ -](?:man|leg))\b/.test(text) || !fresh && previous!.intent.combinationIntent;
   intent.followUpIntent = !fresh;
@@ -63,7 +65,6 @@ export function interpretBettingIntent(query: string, candidates: ResearchCandid
   intent.unsupportedMarket = null;
   intent.action = intent.comparisonIntent ? 'COMPARE' : intent.explanationIntent ? 'EXPLAIN' : 'PICKS';
   const set = <Key extends keyof BettingIntent>(key: Key, value: BettingIntent[Key]) => { intent[key] = value; intent.changedDimensions.push(key); };
-  const scope = parseNFLRequestScope(query);
   set('sport', explicitSport ?? intent.sport ?? (scope.teams.length || /\b(?:qb|quarterback|nfl|football|saints|falcons|bijan|olave|shough)\b/.test(text) ? 'nfl' : sportHint ?? null));
   if (explicitDate) set('date', explicitDate);
   const names = [...new Set(candidates.map((row) => row.player))];
@@ -124,16 +125,18 @@ export function interpretBettingIntent(query: string, candidates: ResearchCandid
   if (ordinalValue != null) {
     const id = displayed[ordinalValue - 1];
     if (id) intent.referenceIds = [id]; else intent.clarification = `Which play do you mean by number ${ordinalValue}?`;
-  } else if (/\b(?:this one|that play|this play|the passing play|the olave one|him|he|those two|these two|compare it|this game)\b/.test(text)) {
+  } else if (/\b(?:this one|that play|this play|the passing play|the olave one|him|he|those two|these two|compare it|(?:this|that) (?:game|matchup))\b/.test(text)) {
     let matches = displayed;
     if (/\b(?:him|he)\b/.test(text) && previous?.referencedIds.length === 1) matches = previous.referencedIds;
     if (/passing play/.test(text)) matches = displayed.filter((id) => candidates.find((row) => row.candidateId === id)?.marketKey.startsWith('player_pass_'));
     if (/olave one/.test(text)) matches = displayed.filter((id) => candidates.find((row) => row.candidateId === id)?.player.includes('Olave'));
     if (/compare it/.test(text)) matches = previous?.referencedIds ?? [];
     if (/those two|these two/.test(text) && matches.length === 2) intent.referenceIds = matches;
-    else if (/this game/.test(text)) {
+    else if (/\b(?:this|that) (?:game|matchup)\b/.test(text) && !scope.teams.length) {
       const games = [...new Set(matches.map((id) => candidates.find((row) => row.candidateId === id)?.gameId).filter((value): value is string => Boolean(value)))];
       if (games.length === 1) set('games', games); else intent.clarification = 'Which game do you mean?';
+    } else if (/\b(?:this|that) (?:game|matchup)\b/.test(text) && scope.teams.length) {
+      intent.referenceIds = [];
     } else if (matches.length === 1) intent.referenceIds = matches;
     else intent.clarification = 'Which play do you mean?';
   }

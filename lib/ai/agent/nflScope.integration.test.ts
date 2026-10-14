@@ -35,6 +35,7 @@ function preflight(unmatched = false) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(runNFLFinderDeepSearch).mockReset();
   vi.stubEnv('ODDS_ALLOW_PAID_REFRESH', 'false');
   vi.stubEnv('OPENAI_API_KEY', 'test-only');
   vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network is disabled in Stage 1 integration tests')));
@@ -49,6 +50,18 @@ afterEach(() => {
 });
 
 describe('NFL player scope before sportsbook loading', () => {
+  it('routes a full named player with an explicit date through player resolution and only their game', async () => {
+    vi.mocked(runNFLFinderDeepSearch).mockResolvedValueOnce(preflight() as never).mockResolvedValueOnce({
+      ...preflight(), gamesAnalyzed: 1, fromCache: true, nflLedger: { researchComplete: true, games: [] },
+    } as never);
+    const result = await runAgentTurn([{ role: 'user', content: 'Best Patrick Mahomes NFL props on 2026-10-15' }]);
+    expect(result.reply).not.toContain('Which');
+    expect(searchNFLPlayers).toHaveBeenCalledWith('Patrick Mahomes');
+    expect(runNFLFinderDeepSearch).toHaveBeenNthCalledWith(2, '2026-10-15', { validationGameIds: ['chiefs'], playerId: player.id });
+    expect(getNFLUpcomingGameDate).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each(['Best Mahomes props', 'Best Patrick Mahomes props'])('resolves %s to one player and game', async (query) => {
     const context = createAgentContext();
     applyRequestScope(context, query, '2026-10-04');
@@ -138,6 +151,27 @@ describe('NFL player scope before sportsbook loading', () => {
 });
 
 describe('NFL matchup scope before sportsbook loading', () => {
+  it.each(['this game', 'that game', 'this matchup', 'that matchup'])('routes an explicit matchup with %s to only the named game', async (reference) => {
+    vi.mocked(runNFLFinderDeepSearch).mockResolvedValueOnce(preflight() as never).mockResolvedValueOnce({
+      ...preflight(), gamesAnalyzed: 1, fromCache: true, nflLedger: { researchComplete: true, games: [] },
+    } as never);
+    const result = await runAgentTurn([{ role: 'user', content: `Find the best NFL player props for Chiefs vs Raiders on 2026-10-15. Research only ${reference}.` }]);
+    expect(result.reply).not.toContain('Which');
+    expect(runNFLFinderDeepSearch).toHaveBeenNthCalledWith(2, '2026-10-15', { validationGameIds: ['chiefs'] });
+    expect(searchNFLPlayers).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('routes a whole sport request to the unrestricted eligible slate', async () => {
+    vi.mocked(runNFLFinderDeepSearch).mockResolvedValueOnce(preflight() as never).mockResolvedValueOnce({
+      ...preflight(), gamesAnalyzed: 2, fromCache: true, nflLedger: { researchComplete: true, games: [] },
+    } as never);
+    await runAgentTurn([{ role: 'user', content: 'Find the best NFL picks on 2026-10-15' }]);
+    expect(runNFLFinderDeepSearch).toHaveBeenNthCalledWith(2, '2026-10-15', {});
+    expect(searchNFLPlayers).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('infers NFL from Chiefs vs Raiders and restricts finder game IDs', async () => {
     const context = createAgentContext();
     applyRequestScope(context, 'Best Chiefs vs Raiders props', '2026-10-04');

@@ -11,6 +11,32 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(source.snapshot
 afterEach(() => vi.useRealTimers());
 const interpret = (query: string, previous?: BettingConversation) => interpretBettingIntent(query, candidates, previous, 'nfl');
 describe('conversational structured sports intent', () => {
+  it.each(['this game', 'that game', 'this matchup', 'that matchup'])('preserves explicit matchup scope over %s references', (reference) => {
+    const intent = interpret(`Find the best NFL player props for Seattle Seahawks vs Denver Broncos on 2026-10-15. Research only ${reference}.`);
+    expect(intent).toMatchObject({ action: 'PICKS', sport: 'nfl', date: '2026-10-15', clarification: null, games: [], referenceIds: [] });
+    expect(intent.teams).toEqual(expect.arrayContaining(['Seattle Seahawks', 'Denver Broncos']));
+  });
+
+  it.each(['this game', 'that game', 'this matchup', 'that matchup'])('still clarifies an unresolved %s', (reference) => {
+    expect(interpret(`Best NFL props for ${reference}`)).toMatchObject({ action: 'CLARIFY', clarification: 'Which game do you mean?' });
+  });
+
+  it('uses a newly named matchup instead of a previously displayed game', () => {
+    const previous = { intent: { ...emptyIntent(), sport: 'nfl' as const, games: ['old-game'] }, displayedIds: [candidates[0].candidateId], referencedIds: [] };
+    expect(interpret('Best Chiefs vs Raiders NFL props on 2026-10-15 for this matchup', previous)).toMatchObject({
+      action: 'PICKS', teams: ['Kansas City Chiefs', 'Las Vegas Raiders'], games: [], referenceIds: [], clarification: null,
+    });
+  });
+
+  it('clears a previous matchup for a new whole-sport picks request', () => {
+    const previous = { intent: { ...emptyIntent(), sport: 'nfl' as const, games: ['old-game'], teams: ['Kansas City Chiefs'], players: ['Patrick Mahomes'] }, displayedIds: [], referencedIds: [] };
+    expect(interpret('Best NFL picks today', previous)).toMatchObject({ action: 'PICKS', teams: [], games: [], players: [], clarification: null });
+  });
+
+  it('treats team versus team as a matchup, not a comparison of players', () => {
+    expect(interpret('Best Chiefs versus Raiders NFL props on 2026-10-15')).toMatchObject({ action: 'PICKS', comparisonIntent: false, clarification: null });
+  });
+
   it.each([
     ['Give me the best NFL plays today', { rankingIntent: 'BEST', researchMode: 'STANDARD' }],
     ['Give me your favorite', { requestedCount: 1 }], ['Give me one', { requestedCount: 1 }], ['Give me 3', { requestedCount: 3 }],
