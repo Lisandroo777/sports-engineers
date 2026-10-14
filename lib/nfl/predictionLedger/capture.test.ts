@@ -22,6 +22,25 @@ beforeEach(() => {
 });
 
 describe('NFL display receipts and capture', () => {
+  it('records the complete qualifying returned set and makes repeated acknowledgements idempotent', async () => {
+    const records = new Map<string, NFLPredictionRecord>();
+    captureMock.mockImplementation(async snapshot => {
+      const prior = records.get(snapshot.dedupeFingerprint);
+      if (prior) return { created: false, record: prior };
+      const record = { snapshot, currentGrade: 'PENDING', currentActual: null, currentRevisionId: null } as NFLPredictionRecord;
+      records.set(snapshot.dedupeFingerprint, record);
+      return { created: true, record };
+    });
+    const rows = Array.from({ length: 15 }, (_, index) => candidate({ candidateId: `candidate-${index}`, playerId: index + 1, player: `Player ${index}` }));
+    const token = await issueNFLPresentationReceipt({ results: rows, meta: { sport: 'nfl', date: '2026-10-11' },
+      researchSessionId: 'complete-session', rankingIntent: 'BEST', now: new Date('2026-10-07T12:00:00Z') });
+    const ids = rows.map(row => row.candidateId);
+    expect(await captureAcknowledgedNFLRows(token!, ids, new Date('2026-10-07T12:00:01Z'))).toMatchObject({ created: 15, duplicates: 0 });
+    expect(await captureAcknowledgedNFLRows(token!, ids, new Date('2026-10-07T12:00:02Z'))).toMatchObject({ created: 0, duplicates: 15 });
+    expect(records.size).toBe(15);
+    expect([...records.values()].every(record => record.snapshot.researchSessionId === 'complete-session')).toBe(true);
+  });
+
   it('signs only the final NFL result set and captures acknowledged rendered rows', async () => {
     const issuedAt = new Date('2026-10-07T12:00:00Z');
     const token = await issueNFLPresentationReceipt({ results: [candidate()], meta: { sport: 'nfl', date: '2026-10-11', researchMode: 'STANDARD' },

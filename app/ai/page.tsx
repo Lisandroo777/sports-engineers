@@ -1158,10 +1158,11 @@ function AiFinderPageContent() {
     const candidateIds = results.map((result) => result.sourceRecord?.candidateId).filter((id): id is string => typeof id === 'string');
     if (!candidateIds.length) return;
     acknowledgedReceipt.current = ledgerReceipt;
-    fetch('/api/nfl/ledger/capture', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ receipt: ledgerReceipt, candidateIds }) }).then((response) => {
-        if (!response.ok) setLedgerCaptureIssue('This displayed NFL recommendation could not be saved to the forward track record.');
-      }).catch(() => setLedgerCaptureIssue('This displayed NFL recommendation could not be saved to the forward track record.'));
+    import('../../lib/nfl/predictionLedger/acknowledge').then(({ acknowledgeNFLPresentation }) =>
+      acknowledgeNFLPresentation(ledgerReceipt, candidateIds)).catch(() => {
+        if (acknowledgedReceipt.current === ledgerReceipt) acknowledgedReceipt.current = null;
+        setLedgerCaptureIssue('This displayed NFL recommendation could not be saved to the forward track record.');
+      });
   }, [finderSport, ledgerReceipt, results]);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);

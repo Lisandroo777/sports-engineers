@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSnapshot } from './core';
+import { buildNFLPerformanceReport } from './aggregate';
 import type { NFLGradeRevision, NFLPredictionRecord } from './types';
 
 const state = vi.hoisted(() => ({ record: null as NFLPredictionRecord | null, revisions: [] as NFLGradeRevision[], logs: [] as Array<{ gameId: string; stats: Record<string, number> }> }));
@@ -39,6 +40,17 @@ beforeEach(() => {
 });
 
 describe('automatic NFL grading', () => {
+  it('never grades unfinished games or loads their player stats', async () => {
+    scheduleMock.mockResolvedValueOnce([{ id: 'g', gameTime: kickoff, completed: false }]);
+    const { runNFLAutomaticGrading } = await import('./grading');
+    const result = await runNFLAutomaticGrading(new Date('2026-10-11T18:00:00Z'));
+    expect(result.pending).toBe(1);
+    expect(result.changed).toBe(0);
+    expect(logsMock).not.toHaveBeenCalled();
+    expect(state.revisions).toEqual([]);
+    expect(state.record?.currentGrade).toBe('PENDING');
+  });
+
   it('grades from final ESPN stats against the saved line and is idempotent', async () => {
     const { runNFLAutomaticGrading } = await import('./grading');
     const first = await runNFLAutomaticGrading(new Date('2026-10-12T12:00:00Z'));
@@ -49,6 +61,9 @@ describe('automatic NFL grading', () => {
     expect(state.record?.currentActual).toBe(260);
     expect(state.revisions).toHaveLength(1);
     expect(state.revisions[0]).toMatchObject({ source: 'ESPN_PLAYER_GAMELOG', sourceGameId: 'g', gradingVersion: 'NFL_ESPN_GAMELOG_V1', grade: 'WIN' });
+    const report = buildNFLPerformanceReport([state.record!]);
+    expect(report.overall).toMatchObject({ wins: 1, losses: 0, sampleSize: 1, roiPercent: expect.closeTo(100 / 110 * 100) });
+    expect(report.calibration.sampleSize).toBe(1);
   });
 
   it('appends an auditable revision when an authoritative stat correction changes the grade', async () => {

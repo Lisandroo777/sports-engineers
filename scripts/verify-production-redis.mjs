@@ -50,6 +50,7 @@ export async function verifyRedis(kv, sessions) {
 
 async function main() {
   const { default: typescript } = await import('typescript');
+  const ledgerPrefix = process.env.DEEPSIDE_VERIFY_LEDGER === 'true' ? `deepside:diagnostic:${randomUUID()}:ledger` : null;
   registerHooks({
     resolve(specifier, context, nextResolve) {
       if (specifier.startsWith('.') && context.parentURL) {
@@ -60,7 +61,12 @@ async function main() {
     },
     load(url, context, nextLoad) {
       if (url.endsWith('.ts')) {
-        return { format: 'module', shortCircuit: true, source: typescript.transpileModule(readFileSync(fileURLToPath(url), 'utf8'), {
+        let source = readFileSync(fileURLToPath(url), 'utf8');
+        if (ledgerPrefix && url.endsWith('/lib/nfl/predictionLedger/redisStore.ts')) {
+          assert.ok(source.includes("const PREFIX = 'nfl-ledger:v1';"));
+          source = source.replace("const PREFIX = 'nfl-ledger:v1';", `const PREFIX = '${ledgerPrefix}';`);
+        }
+        return { format: 'module', shortCircuit: true, source: typescript.transpileModule(source, {
           compilerOptions: { module: typescript.ModuleKind.ESNext, target: typescript.ScriptTarget.ES2022 },
         }).outputText };
       }
@@ -70,6 +76,21 @@ async function main() {
   const kv = await import('../lib/storage/kv.ts');
   const sessions = await import('../lib/ai/agent/sessionStore.ts');
   console.log(JSON.stringify({ redisDiagnostic: await verifyRedis(kv, sessions), storage: kv.getDurableKVStatus() }));
+  if (ledgerPrefix) {
+    try {
+      const { signPresentationReceipt, verifyPresentationReceipt } = await import('../lib/nfl/predictionLedger/security.ts');
+      const { captureAcknowledgedNFLRows } = await import('../lib/nfl/predictionLedger/capture.ts');
+      const { redisNFLLedgerRepository } = await import('../lib/nfl/predictionLedger/redisStore.ts');
+      const { verifyLedger } = await import('./verify-production-ledger.mjs');
+      const result = await verifyLedger({ sign: signPresentationReceipt, verify: verifyPresentationReceipt,
+        capture: captureAcknowledgedNFLRows, repository: redisNFLLedgerRepository });
+      console.log(JSON.stringify({ isolatedLedgerDiagnostic: result }));
+    } finally {
+      await kv.kvDeleteByPrefix(`${ledgerPrefix}:`);
+      assert.equal(await kv.kvEval("return #redis.call('KEYS', ARGV[1])", [], [`${ledgerPrefix}:*`]), 0);
+      console.log(JSON.stringify({ isolatedLedgerCleanup: true }));
+    }
+  }
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

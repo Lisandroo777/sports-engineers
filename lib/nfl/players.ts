@@ -17,6 +17,8 @@ function extractAthleteId(webLink: string | undefined): number | null {
 export async function searchNFLPlayers(query: string): Promise<NFLPlayer[]> {
   const trimmed = query.trim();
   if (trimmed.length < 2) return [];
+  const normalizeName = (value: string) => value.toLowerCase().replace(/['.]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const requestedTokens = normalizeName(trimmed).split(' ');
 
   const data = await espnWebFetch<{ results?: Array<{ type: string; contents: RawSearchResult[] }> }>(
     'search/v2',
@@ -26,6 +28,10 @@ export async function searchNFLPlayers(query: string): Promise<NFLPlayer[]> {
 
   const playerGroup = data.results?.find((group) => group.type === 'player');
   const candidates = (playerGroup?.contents ?? [])
+    .filter((entry) => {
+      const nameTokens = normalizeName(entry.displayName).split(' ');
+      return requestedTokens.every(token => nameTokens.includes(token));
+    })
     .map((entry) => ({ id: extractAthleteId(entry.link?.web), name: entry.displayName, team: entry.subtitle, headshot: entry.image?.default }))
     .filter((entry): entry is { id: number; name: string; team: string | undefined; headshot: string | undefined } => entry.id != null);
 
