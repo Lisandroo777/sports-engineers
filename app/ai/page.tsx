@@ -1417,7 +1417,7 @@ function AiFinderPageContent() {
     if (outcome === 'DATA_UNAVAILABLE' || outcome === 'CONNECTION_ERROR') {
       console.warn('[DeepSide AI]', lastLoad?.status, lastLoad?.summary?.error ?? '');
     }
-    if (outcome === 'DATA_UNAVAILABLE' || outcome === 'SLATE_COMPLETE') setLoadDetail(typeof meta.error === 'string' ? meta.error : null);
+    if (outcome === 'DATA_UNAVAILABLE' || outcome === 'SLATE_COMPLETE') setLoadDetail(lastLoad && payload.reply.trim() ? payload.reply.trim() : null);
     setFinderStatus(outcome);
     setIsSearching(false);
   }
