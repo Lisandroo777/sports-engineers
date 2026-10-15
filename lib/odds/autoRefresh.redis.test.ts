@@ -142,11 +142,13 @@ describe.skipIf(!enabled)('actual isolated Redis Lua protections', () => {
     expect(await command('HGET', account, 'remaining')).toBe('2450');
   });
 
-  it('uses non-expiring ownership locks and cannot delete a replacement lock', async () => {
+  it('uses bounded ownership locks and cannot delete a replacement lock', async () => {
     const owner = await acquireRefreshLock('same-event-market');
     expect(owner).toBeTruthy();
     const keys = await command('KEYS', '*lock:*');
-    expect(await command('PTTL', keys[0])).toBe(-1);
+    const ttl = Number(await command('PTTL', keys[0]));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(10 * 60 * 1000);
     await command('SET', keys[0], 'replacement-owner');
     await releaseRefreshLock('same-event-market', owner!);
     expect(await command('GET', keys[0])).toBe('replacement-owner');

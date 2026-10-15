@@ -76,7 +76,9 @@ if not old or observed < old then redis.call('HSET', KEYS[1], 'remaining', obser
 redis.call('HSET', KEYS[1], 'observed', redis.call('TIME')[1])
 return 'OK'`;
 
-export const LOCK_SCRIPT = `return redis.call('SET', KEYS[1], ARGV[1], 'NX') or 'BUSY'`;
+export const LOCK_SCRIPT = `return redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2]) or 'BUSY'`;
+/** Bounds an unknown-outcome lock so a crashed/timed-out refresh cannot block that market forever. */
+export const REFRESH_LOCK_TTL_MS = 10 * 60 * 1000;
 export const UNLOCK_SCRIPT = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
 return 0`;
@@ -124,7 +126,7 @@ function lockKey(requestKey: string) {
 }
 export async function acquireRefreshLock(requestKey: string): Promise<string | null> {
   const owner = randomUUID();
-  return await execute<string>(LOCK_SCRIPT, [lockKey(requestKey)], [owner]) === 'OK' ? owner : null;
+  return await execute<string>(LOCK_SCRIPT, [lockKey(requestKey)], [owner, REFRESH_LOCK_TTL_MS]) === 'OK' ? owner : null;
 }
 export async function releaseRefreshLock(requestKey: string, owner: string) {
   await execute(UNLOCK_SCRIPT, [lockKey(requestKey)], [owner]);

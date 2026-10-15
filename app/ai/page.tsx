@@ -1148,6 +1148,7 @@ function AiFinderPageContent() {
   const [agentMeta, setAgentMeta] = useState<Record<string, unknown> | null>(null);
   const [researchSessionId, setResearchSessionId] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [loadDetail, setLoadDetail] = useState<string | null>(null);
   const [researchScope, setResearchScope] = useState<{ label: string; games: number | null } | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [restrictionMessage, setRestrictionMessage] = useState("");
@@ -1323,6 +1324,7 @@ function AiFinderPageContent() {
     }
     setRestrictionMessage("");
     setAgentError(null);
+    setLoadDetail(null);
 
     let payload: AgentChatResponse;
     try {
@@ -1415,6 +1417,7 @@ function AiFinderPageContent() {
     if (outcome === 'DATA_UNAVAILABLE' || outcome === 'CONNECTION_ERROR') {
       console.warn('[DeepSide AI]', lastLoad?.status, lastLoad?.summary?.error ?? '');
     }
+    if (outcome === 'DATA_UNAVAILABLE' || outcome === 'SLATE_COMPLETE') setLoadDetail(typeof meta.error === 'string' ? meta.error : null);
     setFinderStatus(outcome);
     setIsSearching(false);
   }
@@ -1869,7 +1872,7 @@ function AiFinderPageContent() {
                     <div className="rounded-2xl border border-amber-400/25 bg-amber-400/5 p-5">
                       <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">Data Unavailable</p>
                       <p className="mt-1 text-base font-bold text-white">{slateLabel}</p>
-                      <p className="mt-3 text-sm text-slate-300">Sportsbook data isn&apos;t available for this slate yet.</p>
+                      <p className="mt-3 text-sm text-slate-300">{loadDetail ?? 'Sportsbook data isn\'t available for this slate yet.'}</p>
                       <p className="mt-1 text-sm text-slate-400">Try another date or check again when markets are available.</p>
                       <button onClick={adjustSearch} className="mt-4 min-h-10 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 text-sm font-semibold text-amber-200">Try Another Date</button>
                     </div>
@@ -1910,7 +1913,7 @@ function AiFinderPageContent() {
                     <div className="rounded-2xl border border-white/8 bg-white/3 p-5">
                       <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Slate Complete</p>
                       <p className="mt-1 text-base font-bold text-white">{slateLabel}</p>
-                      <p className="mt-3 text-sm text-slate-400">Every game on this slate has finished, so props are no longer offered.</p>
+                      <p className="mt-3 text-sm text-slate-400">{loadDetail ?? 'Every game on this slate has finished, so props are no longer offered.'}</p>
                       <button onClick={adjustSearch} className="mt-4 min-h-10 rounded-xl border border-white/10 px-4 text-sm font-semibold text-slate-200">Try Another Date</button>
                     </div>
                   )}

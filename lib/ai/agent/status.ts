@@ -20,6 +20,7 @@ export type ToolStatus =
   | 'INVALID_DATE'
   | 'SPORT_UNAVAILABLE'
   | 'SLATE_COMPLETE'
+  | 'NO_GAMES'
   | 'NOT_FOUND';
 
 export interface ToolMetadata {
@@ -28,6 +29,7 @@ export interface ToolMetadata {
   date?: string;
   gamesFound?: number;
   gamesScheduled?: number;
+  gamesInProgress?: number;
   booksFound?: number;
   propsFound?: number;
   candidatesFound?: number;

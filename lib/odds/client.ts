@@ -118,7 +118,8 @@ function reservePaidRequest(path: string, params: Record<string, string>, key: s
 }
 
 async function reserveAutomaticDailyCredits(credits: number): Promise<DailyReservation | null> {
-  if (!oneRunPaidRefreshAuthorization.getStore()?.automatic) return null;
+  // Free requests (credits 0) never touch the paid ledger, even inside an automatic scope.
+  if (credits === 0 || !oneRunPaidRefreshAuthorization.getStore()?.automatic) return null;
   return asBudgetGuard(() => reserveDailyCredits(credits));
 }
 
@@ -179,6 +180,8 @@ export interface OddsSpendTracker {
   cacheHits: number;
   staleCacheHits: number;
   cacheMisses: number;
+  /** Provider requests that failed (HTTP error or network), distinct from an empty market list. */
+  providerErrors?: number;
 }
 
 function createSpendTracker(): OddsSpendTracker {
@@ -285,6 +288,7 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
     let actualCost: number | null = null;
     let cachedSuccessfully = false;
     let declinedWithoutSpend = false;
+    let providerResponded = false;
     try {
       if (automatic) {
         const shared = await readPersistentCache<T>(cacheKey);
@@ -300,11 +304,18 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
       return await fetchAndStore();
     } finally {
       if (reservation) await settleDailyCredits(reservation, actualCost);
-      if (owner && (cachedSuccessfully || declinedWithoutSpend)) await releaseRefreshLock(cacheKey, owner);
+      if (owner && (cachedSuccessfully || declinedWithoutSpend || providerResponded)) await releaseRefreshLock(cacheKey, owner);
     }
 
   async function fetchAndStore(): Promise<T> {
-    const response = await fetch(url.toString(), { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+    } catch (error) {
+      if (activeSpendTracker) activeSpendTracker.providerErrors = (activeSpendTracker.providerErrors ?? 0) + 1;
+      throw error;
+    }
+    providerResponded = true;
     const remaining = response.headers.get('x-requests-remaining');
     const used = response.headers.get('x-requests-used');
     const last = response.headers.get('x-requests-last');
@@ -316,6 +327,7 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
     await writeCreditStatus({ lastCost: last, used, remaining, path, updatedAt: Date.now() });
 
     if (!response.ok) {
+      if (activeSpendTracker) activeSpendTracker.providerErrors = (activeSpendTracker.providerErrors ?? 0) + 1;
       throw new OddsApiUnavailableError(`Odds API request failed (${response.status})`);
     }
 
