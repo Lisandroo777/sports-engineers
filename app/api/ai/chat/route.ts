@@ -5,6 +5,8 @@ import { interpretBettingIntent } from '../../../../communication/intent';
 import { issueNFLPresentationReceipt } from '../../../../lib/nfl/predictionLedger/capture';
 import { detectSport } from '../../../../lib/ai/sportResearchAdapters';
 import { recordResearchOutcome, type ResearchOutcomeInput, type ResearchOutcomeStatus, type ResearchSport } from '../../../../lib/reliability/monitor';
+import { getResearchFailureDiagnostic, withResearchStage } from '../../../../lib/reliability/researchFailure';
+import { withCachedOddsOnly } from '../../../../lib/odds/client';
 
 export const runtime = 'nodejs';
 
@@ -43,9 +45,9 @@ export async function DELETE(request: Request) {
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
-  let body: { messages?: AgentTurnMessage[]; researchSessionId?: string | null; refreshApproval?: AgentRefreshApproval | null; context?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string } };
+  let body: { messages?: AgentTurnMessage[]; researchSessionId?: string | null; refreshApproval?: AgentRefreshApproval | null; cacheOnly?: boolean; context?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string } };
   try {
-    body = (await request.json()) as { messages?: AgentTurnMessage[]; researchSessionId?: string | null; refreshApproval?: AgentRefreshApproval | null };
+    body = (await request.json()) as typeof body;
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
@@ -63,8 +65,10 @@ export async function POST(request: Request) {
     ?? outcomeSport(context?.sport) ?? 'unknown';
   try {
     // The client only persists/resends a small session ID; the full research session lives server-side.
-    const result = await runAgentTurn(messages, body.researchSessionId ?? null, null, context);
-    const clientResult = toClientResult(result);
+    const result = await (body.cacheOnly === true
+      ? withCachedOddsOnly(() => runAgentTurn(messages, body.researchSessionId ?? null, null, context))
+      : runAgentTurn(messages, body.researchSessionId ?? null, null, context));
+    const clientResult = await withResearchStage('response-serialization', () => toClientResult(result));
     let ledgerReceipt: string | null = null;
     if (clientResult.meta?.sport === 'nfl' && clientResult.results.length) {
       try {
@@ -75,7 +79,7 @@ export async function POST(request: Request) {
         console.error('[nfl-ledger] presentation receipt unavailable');
       }
     }
-    const response = NextResponse.json({ ...clientResult, ledgerReceipt });
+    const response = await withResearchStage('response-serialization', () => NextResponse.json({ ...clientResult, ledgerReceipt }));
     const meta = clientResult.meta;
     const ledger = meta?.nflLedger as { failedGames?: unknown } | undefined;
     const partialCoverage = meta?.partialCoverage === true || (outcomeCount(ledger?.failedGames) ?? 0) > 0;
@@ -88,12 +92,21 @@ export async function POST(request: Request) {
       gamesScheduled: outcomeCount(meta?.gamesScheduled), durationMs: Date.now() - startedAt });
     return response;
   } catch (error) {
-    await recordOutcome({ sport: requestedSport, status: error instanceof AIUnavailableError ? 'UNAVAILABLE' : 'PROVIDER_ERROR',
+    const diagnostic = getResearchFailureDiagnostic(error);
+    const storageUnavailable = diagnostic.stage === 'session-save' || diagnostic.stage === 'session-read'
+      || diagnostic.category === 'STORAGE';
+    await recordOutcome({ sport: requestedSport, status: error instanceof AIUnavailableError || storageUnavailable ? 'UNAVAILABLE' : 'PROVIDER_ERROR',
       researchComplete: false, partialCoverage: false, resultsCount: 0, durationMs: Date.now() - startedAt });
     if (error instanceof AIUnavailableError) {
       return NextResponse.json({ error: 'The research agent is currently unavailable.', code: 'AI_UNAVAILABLE' }, { status: 503 });
     }
-    console.error('[ai] agent turn failed');
+    console.error('[ai] agent turn failed', diagnostic);
+    if (storageUnavailable) {
+      const message = diagnostic.stage === 'session-save'
+        ? 'Research was evaluated, but saved research storage is temporarily unavailable. No new request was started automatically.'
+        : 'Saved research is temporarily unavailable.';
+      return NextResponse.json({ error: message, code: 'RESEARCH_STORAGE_UNAVAILABLE' }, { status: 503 });
+    }
     return NextResponse.json({ error: 'The research agent failed to complete this request.', code: 'PROVIDER_ERROR' }, { status: 500 });
   }
 }

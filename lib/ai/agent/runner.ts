@@ -1,6 +1,7 @@
 import { applyRequestScope, createAgentContext, executeTool, hasNFLRequestedMarketCoverage, prepareNFLRequestScope, selectRankedCandidates, TOOL_DEFINITIONS, MAX_RESULTS_CEILING } from './tools';
 import { getClosestMisses } from './session';
 import { getResearchSession } from './sessionStore';
+import { withResearchStage } from '../../reliability/researchFailure';
 import type { ResearchSession } from './session';
 import { todaySlateDate } from '../../dateModel';
 import { formatDisplayDate, resolveDateFromText } from '../dateResolver';
@@ -418,7 +419,7 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   const model = process.env.OPENAI_MODEL?.trim() || DEFAULT_MODEL;
 
-  const storedSession = await getResearchSession(researchSessionId);
+  const storedSession = await withResearchStage('session-read', () => getResearchSession(researchSessionId));
   const context = createAgentContext(storedSession ? structuredClone(storedSession) : null, researchSessionId, refreshApproval);
   const lastUserMessage = [...history].reverse().find((message) => message.role === 'user');
   const query = lastUserMessage?.content ?? '';
@@ -622,9 +623,9 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
       }
     }
     if (!context.researchSession) return { reply: 'No current researched candidates are available.', results: [], closestMisses: [], toolTrace: [], meta: { sport: 'nfl' }, researchSessionId: null };
-    const execution = executeBettingIntent(context.researchSession, intent, previous, query);
+    const execution = await withResearchStage('intent-ranking', () => executeBettingIntent(context.researchSession!, intent, previous, query));
     context.researchSession.conversation = execution.conversation;
-    context.researchSessionId = await saveResearchSession(context.researchSession);
+    context.researchSessionId = await withResearchStage('session-save', () => saveResearchSession(context.researchSession!));
     return { reply: execution.reply, results: execution.results, closestMisses: [], toolTrace: [],
       meta: { ...context.researchSession.toolMeta, sport: 'nfl', date: pinnedDate, researchMode: intent.researchMode, candidatesFound: execution.beforeFilters,
         eliteFound: execution.results.filter((row) => row.pickTier === 'ELITE' || row.pickTier === 'NUKE').length,

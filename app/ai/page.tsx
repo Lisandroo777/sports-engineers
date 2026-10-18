@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppSidebar } from "../../components/AppSidebar";
-import { classifyResearchFailure } from "../../components/aiResearchOutcome";
+import { classifyResearchFailure, ResearchStorageUnavailablePanel } from "../../components/aiResearchOutcome";
 import { canReuseResearchEvidence, captureResearchEvidence, classifyEvidenceFreshness, isRecoverableResearchFailure, recoverResearchEvidence, resolveRecoverySessionId, type ResearchScope, type ResearchSnapshot } from "../../components/researchRecovery";
 import { withResponseDisplayRanks } from "../../components/aiRecommendationOrder";
 import { FuturisticBackground } from "../../components/FuturisticBackground";
@@ -69,7 +69,7 @@ const PICK_TIER_STYLES: Record<PickTier, { badge: string; label: string; border:
 
 type SearchMode = "quick" | "deep" | "builder";
 type FinderStatus = 'IDLE' | 'LOADING' | 'SLATE_COMPLETE' | 'EVENT_LIST_REQUIRED' | 'SPORTSBOOK_DATA_REQUIRED' | 'SPORTSBOOK_UNAVAILABLE' | 'RESEARCHING' | 'NO_ELITE_RESULTS' | 'RESULTS' | 'ERROR'
-  | 'DATA_UNAVAILABLE' | 'TEMP_UNAVAILABLE' | 'CONNECTION_ERROR' | 'CLARIFY' | 'ANSWER' | 'RESEARCH_INCOMPLETE' | 'MLB_GAME_RESEARCH';
+  | 'DATA_UNAVAILABLE' | 'TEMP_UNAVAILABLE' | 'CONNECTION_ERROR' | 'CLARIFY' | 'ANSWER' | 'RESEARCH_INCOMPLETE' | 'MLB_GAME_RESEARCH' | 'STORAGE_UNAVAILABLE';
 
 const SEARCH_TOOLS = new Set(['get_sportsbook_candidates', 'rank_candidates', 'run_elite_filter']);
 
@@ -206,6 +206,7 @@ interface AgentChatResponse {
   researchSessionId?: string | null;
   ledgerReceipt?: string | null;
   error?: string;
+  code?: string;
 }
 
 interface PersistedAIFinderSession {
@@ -1383,11 +1384,11 @@ function AiFinderPageContent() {
       });
       payload = (await response.json()) as AgentChatResponse;
       if (!response.ok) {
-        const message = payload.error ?? "The research agent is unavailable.";
+        const message = typeof payload.error === 'string' && payload.error.trim() ? payload.error : "The research agent is unavailable.";
         setAgentError(message);
         setRestrictionMessage(message);
         setConversation((prev) => [...prev, { role: "ai", text: message }]);
-        setFinderStatus("ERROR");
+        setFinderStatus(classifyResearchFailure(typeof payload.code === 'string' ? payload.code : '') ?? 'ERROR');
         recoverFailure('HTTP_ERROR', requestScope, payload.researchSessionId);
         setIsSearching(false);
         return;
@@ -1848,7 +1849,7 @@ function AiFinderPageContent() {
                       </svg>
                     </button>
                   </div>
-                  {agentError && process.env.NODE_ENV !== 'production' && (
+                  {agentError && finderStatus !== 'STORAGE_UNAVAILABLE' && process.env.NODE_ENV !== 'production' && (
                     <div className="mt-4 rounded-2xl border border-amber-500/25 bg-amber-500/8 p-4 text-left">
                       <p className="text-sm font-semibold text-amber-200">AI research agent unavailable</p>
                       <p className="mt-1 text-xs text-amber-200/80">{agentError}</p>
@@ -1886,6 +1887,10 @@ function AiFinderPageContent() {
                     <div className="flex justify-end">
                       <p className="max-w-[85%] rounded-2xl rounded-br-md border border-white/8 bg-white/5 px-4 py-2.5 text-sm text-slate-200">{lastUserQuery}</p>
                     </div>
+                  )}
+
+                  {finderStatus === 'STORAGE_UNAVAILABLE' && (
+                    <ResearchStorageUnavailablePanel error={agentError} onRetry={retryLastSearch} />
                   )}
 
                   {recoveredResearch && canReuseResearchEvidence(recoveredResearch.scope, { sport: finderSport, date: finderDate }) && (

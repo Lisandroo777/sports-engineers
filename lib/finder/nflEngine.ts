@@ -12,6 +12,7 @@ import { createNFLSlateLedger, finishNFLSlateLedger, type NFLSlateLedger } from 
 import { findNFLOddsEvent } from '../nfl/odds';
 import {
   getLastOddsCreditInfo,
+  withAutomaticOddsRefresh,
   OddsBudgetGuardError, OddsRefreshNotAuthorizedError,
 } from '../odds/client';
 import { classifyPriceFreshness, ELITE_THRESHOLDS, type PriceFreshness, type EliteResearchAnalysis } from '../ai/eliteResearchFilter';
@@ -201,11 +202,11 @@ export async function runNFLFinderDeepSearch(
   slateDate: string = todaySlateDate(),
   options: NFLFinderOptions = {},
 ): Promise<NFLFinderSummary> {
-  return withNFLSpendTelemetry(() => withNFLResearchSnapshot(async () => {
+  return withAutomaticOddsRefresh(() => withNFLSpendTelemetry(() => withNFLResearchSnapshot(async () => {
     const summary = await runNFLFinderResearch(slateDate, options);
     if (!options.preflight) researchObserver.getStore()?.(summary);
     return summary;
-  }));
+  })));
 }
 
 async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions): Promise<NFLFinderSummary> {

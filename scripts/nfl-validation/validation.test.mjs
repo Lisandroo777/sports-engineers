@@ -13,6 +13,7 @@ import { assertInheritedProductionRouting, INHERITED_PRODUCTION_ROUTING_HASHES, 
 import { assertApprovedNFLKickingSources, isReviewedNFLKickingSource, NFL_KICKING_SOURCE_APPROVED_HASHES, NFL_KICKING_VERSION } from './freeze.mjs';
 import { assertApprovedNFLPartialCoverageSources, isReviewedNFLPartialCoverageSource, NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES, NFL_PARTIAL_COVERAGE_VERSION } from './freeze.mjs';
 import { assertApprovedReliabilitySources, isReviewedReliabilitySource, RELIABILITY_BASELINE, RELIABILITY_SOURCE_APPROVED_HASHES, RELIABILITY_VERSION } from './freeze.mjs';
+import { assertApprovedNFLRequestRecoverySources, isReviewedNFLRequestRecoverySource, NFL_REQUEST_RECOVERY_BASELINE, NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES, NFL_REQUEST_RECOVERY_VERSION } from './freeze.mjs';
 
 const manifest = { modelVersion: 'SYNTHETIC_MODEL', snapshotHash: 'synthetic-test-only' };
 const asOf = '2025-10-01T00:00:00Z';
@@ -23,6 +24,12 @@ const reliability = {
   baselineHEAD: RELIABILITY_BASELINE,
   baseline: Object.fromEntries(Object.entries(RELIABILITY_SOURCE_APPROVED_HASHES).filter(([, approval]) => approval.baseline !== null)
     .map(([path]) => [path, historicalSource(RELIABILITY_BASELINE, path)])),
+};
+const requestRecovery = {
+  version: NFL_REQUEST_RECOVERY_VERSION,
+  baselineHEAD: NFL_REQUEST_RECOVERY_BASELINE,
+  baseline: Object.fromEntries(Object.entries(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES).filter(([, approval]) => approval.baseline !== null)
+    .map(([path]) => [path, historicalSource(NFL_REQUEST_RECOVERY_BASELINE, path)])),
 };
 function extractedBlocks(path, text, names) {
   const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
@@ -76,9 +83,186 @@ function fixture(update = {}) {
       adjudication: 'NORMAL', bookRuleSource: 'Synthetic rule', settlementSource: 'Synthetic settlement', earlyInjury: 'UNKNOWN' }, ...update };
 }
 describe('Validation infrastructure, synthetic fixtures are NOT model performance evidence', () => {
+  it('requires exact NFL_REQUEST_RECOVERY_V1 children, immutable archives and the full deployed 61086d2 baseline', () => {
+    const archive = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
+    const current = Object.fromEntries(Object.keys(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES).map(path => [path, readFileSync(resolve(ROOT, path), 'utf8')]));
+    const approved = (path, parent, child, parentVersion = HARDENED_MODEL_VERSION, version = NFL_REQUEST_RECOVERY_VERSION,
+      baseline = requestRecovery.baseline[path], baselineHEAD = NFL_REQUEST_RECOVERY_BASELINE) =>
+      isReviewedNFLRequestRecoverySource(path, parent, child, parentVersion, version, baseline, baselineHEAD);
+    const check = (sources, parents = archive, baseline = requestRecovery.baseline, parentVersion = HARDENED_MODEL_VERSION,
+      version = NFL_REQUEST_RECOVERY_VERSION, baselineHEAD = NFL_REQUEST_RECOVERY_BASELINE) =>
+      assertApprovedNFLRequestRecoverySources(sources, parents, baseline, parentVersion, version, baselineHEAD);
+    expect(NFL_REQUEST_RECOVERY_VERSION).toBe('NFL_REQUEST_RECOVERY_V1');
+    expect(NFL_REQUEST_RECOVERY_BASELINE).toBe('61086d27ef9bccaab92fe9d4a67196b95fe4f658');
+    expect(Object.keys(current).sort()).toEqual(['lib/ai/agent/sessionStore.ts', 'lib/finder/nflEngine.ts',
+      'lib/nfl/sportsbook.ts', 'lib/odds/client.ts', 'lib/reliability/researchFailure.ts']);
+    expect(Object.isFrozen(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES)).toBe(true);
+    expect(() => check(current)).not.toThrow();
+    for (const [path, approval] of Object.entries(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES)) {
+      expect(Object.isFrozen(approval), path).toBe(true);
+      expect(digest(current[path]), path).toBe(approval.integrated);
+      expect(approved(path, archive[path], current[path]), path).toBe(true);
+      for (const mutation of [`${current[path]}\n`, '', 'unreviewed', null, undefined]) {
+        expect(approved(path, archive[path], mutation), path).toBe(false);
+        expect(() => check({ ...current, [path]: mutation })).toThrow(path);
+      }
+      const omitted = { ...current };
+      delete omitted[path];
+      expect(() => check(omitted)).toThrow(path);
+      expect(() => check(Object.assign(Object.create({ [path]: current[path] }), omitted))).toThrow(path);
+      for (const parent of [null, '', current[path], `${archive[path]}\n`]) {
+        expect(approved(path, parent, current[path]), path).toBe(false);
+        expect(() => check(current, { ...archive, [path]: parent })).toThrow(path);
+        expect(() => check(current, archive, { ...requestRecovery.baseline, [path]: parent })).toThrow(path);
+      }
+      for (const version of [null, 'unreviewed', RELIABILITY_VERSION, NFL_PARTIAL_COVERAGE_VERSION]) {
+        expect(approved(path, archive[path], current[path], HARDENED_MODEL_VERSION, version), path).toBe(false);
+        expect(() => check(current, archive, requestRecovery.baseline, HARDENED_MODEL_VERSION, version)).toThrow();
+      }
+      expect(isReviewedNFLRequestRecoverySource(path, archive[path], current[path], HARDENED_MODEL_VERSION)).toBe(false);
+      expect(() => check(current, archive, requestRecovery.baseline, 'NFL_MODEL_V1')).toThrow();
+      for (const baselineHEAD of ['HEAD', '61086d2', RELIABILITY_BASELINE, null, undefined]) {
+        expect(isReviewedNFLRequestRecoverySource(path, archive[path], current[path], HARDENED_MODEL_VERSION,
+          NFL_REQUEST_RECOVERY_VERSION, requestRecovery.baseline[path], baselineHEAD)).toBe(false);
+        expect(() => check(current, archive, requestRecovery.baseline, HARDENED_MODEL_VERSION,
+          NFL_REQUEST_RECOVERY_VERSION, baselineHEAD === undefined ? null : baselineHEAD)).toThrow();
+      }
+      for (const unknown of [`./${path}`, `${path}.unreviewed`, path.replace('.ts', 'V2.ts'),
+        'lib/reliability/unknown.ts', 'lib/ai/agent/tools.ts', 'lib/ai/agent/runner.ts', 'toString', '__proto__']) {
+        expect(approved(unknown, archive[path], current[path]), unknown).toBe(false);
+        expect(() => check({ ...omitted, [unknown]: current[path] })).toThrow(path);
+      }
+      if (approval.archived === null) {
+        expect(approval.baseline).toBeNull();
+        expect(Object.hasOwn(archive, path)).toBe(false);
+        expect(execFileSync('git', ['-C', ROOT, 'ls-tree', NFL_REQUEST_RECOVERY_BASELINE, '--', path], { encoding: 'utf8' })).toBe('');
+        expect(() => check(current, { ...archive, [path]: undefined })).toThrow(path);
+        expect(() => check(current, archive, { ...requestRecovery.baseline, [path]: undefined })).toThrow(path);
+      } else {
+        expect(digest(archive[path])).toBe(approval.archived);
+        expect(digest(historicalSource(NFL_REQUEST_RECOVERY_BASELINE, path))).toBe(approval.baseline);
+        const missingArchive = { ...archive };
+        delete missingArchive[path];
+        const missingBaseline = { ...requestRecovery.baseline };
+        delete missingBaseline[path];
+        expect(() => check(current, missingArchive)).toThrow(path);
+        expect(() => check(current, archive, missingBaseline)).toThrow(path);
+      }
+    }
+  });
+  it('requires an explicit exact recovery override without relaxing any earlier approval or directory boundary', () => {
+    const archive = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
+    const original = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1/sources.json'), 'utf8'));
+    const paths = [...new Set([...Object.keys(RELIABILITY_SOURCE_APPROVED_HASHES), ...Object.keys(NFL_KICKING_SOURCE_APPROVED_HASHES),
+      ...Object.keys(NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES), ...Object.keys(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES)])];
+    const current = Object.fromEntries(paths.map(path => [path, readFileSync(resolve(ROOT, path), 'utf8')]));
+    const guards = [
+      override => assertApprovedReliabilitySources(current, archive, reliability.baseline, HARDENED_MODEL_VERSION, RELIABILITY_VERSION, RELIABILITY_BASELINE, override),
+      override => assertApprovedNFLKickingSources(current, archive, HARDENED_MODEL_VERSION, NFL_KICKING_VERSION, NFL_PARTIAL_COVERAGE_VERSION, override),
+      override => assertApprovedNFLPartialCoverageSources(current, archive, original, HARDENED_MODEL_VERSION, NFL_PARTIAL_COVERAGE_VERSION, override),
+    ];
+    for (const guard of guards) {
+      expect(() => guard()).toThrow();
+      expect(() => guard(requestRecovery)).not.toThrow();
+      for (const invalid of [{ ...requestRecovery, version: 'unreviewed' }, { ...requestRecovery, baselineHEAD: 'HEAD' },
+        { ...requestRecovery, baseline: {} }]) expect(() => guard(invalid)).toThrow();
+    }
+    for (const [path, approval] of Object.entries(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES)) {
+      if (Object.hasOwn(RELIABILITY_SOURCE_APPROVED_HASHES, path)) {
+        expect(RELIABILITY_SOURCE_APPROVED_HASHES[path].integrated).toBe(approval.baseline);
+        expect(isReviewedReliabilitySource(path, archive[path], current[path], HARDENED_MODEL_VERSION,
+          RELIABILITY_VERSION, reliability.baseline[path], RELIABILITY_BASELINE)).toBe(false);
+      }
+    }
+    const path = 'lib/reliability/researchFailure.ts';
+    const check = (sources, options = { requestRecovery }) => assertFrozenInventory(sources, {}, 'recovery fixture', options);
+    expect(check({ [path]: current[path] })).toEqual([path]);
+    expect(() => check({ [path]: current[path] }, {})).toThrow(/inventory drift/i);
+    for (const mutation of [`${current[path]}\n`, '', null, undefined]) expect(() => check({ [path]: mutation })).toThrow(/inventory drift/i);
+    for (const unknown of ['lib/reliability/unknown.ts', 'lib/reliability/nested/researchFailure.ts', `./${path}`, `${path}.unreviewed`]) {
+      expect(() => check({ [unknown]: current[path] })).toThrow(/inventory drift/i);
+    }
+    expect(() => check({ [path]: current[path] }, { parentModelVersion: 'NFL_MODEL_V1', requestRecovery })).toThrow(/inventory drift/i);
+    expect(() => assertFrozenInventory({}, { [path]: current[path] }, 'recovery fixture', { requestRecovery })).toThrow(/omitted archived source/i);
+    expect(NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES['lib/finder/nflEngine.ts'].integrated).toBe('60795aca90406abf0ff57563c32f487aa9549098055a45dccc5ba4cde2023a90');
+    expect(extractedBlocks('lib/odds/autoRefreshLedger.ts', readFileSync(resolve(ROOT, 'lib/odds/autoRefreshLedger.ts'), 'utf8'), ['AUTO_REFRESH_LIMITS']))
+      .toEqual(extractedBlocks('lib/odds/autoRefreshLedger.ts', historicalSource(NFL_REQUEST_RECOVERY_BASELINE, 'lib/odds/autoRefreshLedger.ts'), ['AUTO_REFRESH_LIMITS']));
+  });
+  it('preserves all earlier approval maps and allows no client or NFL engine model changes beyond the reviewed transport boundary', () => {
+    const freezePath = 'scripts/nfl-validation/freeze.mjs';
+    const names = ['APPROVED_INFRASTRUCTURE_HASHES', 'RELIABILITY_SOURCE_APPROVED_HASHES', 'NFL_KICKING_SOURCE_APPROVED_HASHES',
+      'NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES', 'MLB_SOURCE_APPROVED_HASHES', 'INHERITED_PRODUCTION_ROUTING_HASHES',
+      'REVIEWED_MLB_CACHE_TRANSPORT', 'NBA_DESCRIPTIVE_EVIDENCE_HASHES', 'HARDENED_ALLOWED_DELTAS',
+      'NBA_INTEGRATION_ALLOWED_DELTAS', 'NON_MODEL_ADDITION_PREFIXES', 'INHERITED_COMMUNICATION_DELTAS'];
+    expect(extractedBlocks(freezePath, readFileSync(resolve(ROOT, freezePath), 'utf8'), names))
+      .toEqual(extractedBlocks(freezePath, historicalSource(NFL_REQUEST_RECOVERY_BASELINE, freezePath), names));
+    const normalized = (path, text, removeRecovery) => {
+      const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+      const printer = ts.createPrinter({ removeComments: true });
+      const reviewedCacheOnly = new Map();
+      if (removeRecovery && path === 'lib/odds/client.ts') {
+        const additions = ts.createSourceFile(path, `
+          const cachedOddsOnly = new AsyncLocalStorage<boolean>();
+          export function withCachedOddsOnly<T>(operation: () => Promise<T>): Promise<T> {
+            return cachedOddsOnly.run(true, operation);
+          }
+          if (cachedOddsOnly.getStore() === true) return false;
+          if (cachedOddsOnly.getStore() === true) return operation();
+          if (cachedOddsOnly.getStore() === true) throw new OddsRefreshNotAuthorizedError('Paid refresh disabled: cache-only request.');
+          if (!isFreePath(path) && cachedOddsOnly.getStore() === true) {
+            throw new OddsRefreshNotAuthorizedError('Paid refresh disabled: cache-only request.');
+          }
+          const forcePaidRefresh = cachedOddsOnly.getStore() !== true
+            && oneRunPaidRefreshAuthorization.getStore()?.forceFresh === true && !isFreePath(path);
+        `, ts.ScriptTarget.Latest, true);
+        const originalForceRefresh = ts.createSourceFile(path,
+          'const forcePaidRefresh = oneRunPaidRefreshAuthorization.getStore()?.forceFresh === true && !isFreePath(path);',
+          ts.ScriptTarget.Latest, true).statements[0];
+        for (const statement of additions.statements) {
+          reviewedCacheOnly.set(printer.printNode(ts.EmitHint.Unspecified, statement, additions),
+            statement === additions.statements.at(-1) ? originalForceRefresh : undefined);
+        }
+        expect(reviewedCacheOnly.size).toBe(7);
+      }
+      const transformed = ts.transform(source, [context => {
+        const visit = node => {
+          if (reviewedCacheOnly.size && (ts.isVariableStatement(node) || ts.isFunctionDeclaration(node) || ts.isIfStatement(node))) {
+            const printed = printer.printNode(ts.EmitHint.Unspecified, node, source);
+            if (reviewedCacheOnly.has(printed)) {
+              const replacement = reviewedCacheOnly.get(printed);
+              reviewedCacheOnly.delete(printed);
+              return replacement;
+            }
+          }
+          if (removeRecovery && path === 'lib/odds/client.ts' && ts.isFunctionDeclaration(node)
+            && node.name?.text === 'withBoundedOddsRequest') return undefined;
+          if (removeRecovery && path === 'lib/finder/nflEngine.ts') {
+            if (ts.isImportSpecifier(node) && node.name.text === 'withAutomaticOddsRefresh') return undefined;
+            if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'withAutomaticOddsRefresh') {
+              expect(node.arguments).toHaveLength(1);
+              const operation = node.arguments[0];
+              expect(ts.isArrowFunction(operation) && ts.isCallExpression(operation.body)).toBe(true);
+              return ts.visitNode(operation.body, visit);
+            }
+          }
+          return ts.visitEachChild(node, visit, context);
+        };
+        return node => ts.visitNode(node, visit);
+      }]);
+      expect(reviewedCacheOnly.size, `${path}: missing exact reviewed cache-only statements`).toBe(0);
+      const printed = ts.createPrinter({ removeComments: true }).printFile(transformed.transformed[0]);
+      transformed.dispose();
+      return printed;
+    };
+    for (const path of ['lib/odds/client.ts', 'lib/finder/nflEngine.ts']) {
+      expect(normalized(path, readFileSync(resolve(ROOT, path), 'utf8'), true), path)
+        .toBe(normalized(path, historicalSource(NFL_REQUEST_RECOVERY_BASELINE, path), false));
+    }
+  });
   it('requires exact RELIABILITY_V1 paths, child hashes, immutable parents and c297 baseline identity', () => {
     const archive = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
-    const current = Object.fromEntries(Object.keys(RELIABILITY_SOURCE_APPROVED_HASHES).map(path => [path, readFileSync(resolve(ROOT, path), 'utf8')]));
+    const current = Object.fromEntries(Object.keys(RELIABILITY_SOURCE_APPROVED_HASHES).map(path => [path,
+      Object.hasOwn(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES, path) ? historicalSource(NFL_REQUEST_RECOVERY_BASELINE, path) : readFileSync(resolve(ROOT, path), 'utf8')]));
     const approved = (path, parent, child, parentVersion = HARDENED_MODEL_VERSION, version = RELIABILITY_VERSION,
       baseline = reliability.baseline[path], baselineHEAD = RELIABILITY_BASELINE) =>
       isReviewedReliabilitySource(path, parent, child, parentVersion, version, baseline, baselineHEAD);
@@ -209,7 +393,9 @@ describe('Validation infrastructure, synthetic fixtures are NOT model performanc
     for (const path of ['lib/ai/probabilityModel.ts', 'lib/finder/nflEngine.ts', 'lib/nfl/stats.ts', 'lib/nfl/oddsTypes.ts', 'lib/nfl/roleContext.ts']) {
       const content = readFileSync(resolve(ROOT, path), 'utf8');
       expect(isReviewedNFLKickingSource(path, archive[path], content, HARDENED_MODEL_VERSION, NFL_KICKING_VERSION)
-        || isReviewedNFLPartialCoverageSource(path, archive[path], content, HARDENED_MODEL_VERSION, NFL_PARTIAL_COVERAGE_VERSION), path).toBe(true);
+        || isReviewedNFLPartialCoverageSource(path, archive[path], content, HARDENED_MODEL_VERSION, NFL_PARTIAL_COVERAGE_VERSION)
+        || isReviewedNFLRequestRecoverySource(path, archive[path], content, HARDENED_MODEL_VERSION, NFL_REQUEST_RECOVERY_VERSION,
+          requestRecovery.baseline[path], NFL_REQUEST_RECOVERY_BASELINE), path).toBe(true);
     }
     const path = 'lib/ai/eliteResearchFilter.ts';
     const printer = ts.createPrinter({ removeComments: true });
@@ -287,8 +473,13 @@ describe('Validation infrastructure, synthetic fixtures are NOT model performanc
     const paths = ['lib/odds/client.ts', 'lib/odds/autoRefreshLedger.ts', 'lib/storage/kv.ts'];
     const archive = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
     const current = Object.fromEntries(paths.map(path => [path, readFileSync(resolve(ROOT, path), 'utf8')]));
-    const check = sources => assertApprovedSecuritySources(sources, archive, HARDENED_MODEL_VERSION, reliability);
+    const check = sources => assertApprovedSecuritySources(sources, archive, HARDENED_MODEL_VERSION, reliability, requestRecovery);
     expect(() => check(current)).not.toThrow();
+    expect(() => assertApprovedSecuritySources(current, archive, HARDENED_MODEL_VERSION, reliability)).toThrow('lib/odds/client.ts');
+    for (const invalid of [{ ...requestRecovery, version: 'unreviewed' }, { ...requestRecovery, baselineHEAD: 'HEAD' },
+      { ...requestRecovery, baseline: {} }]) {
+      expect(() => assertApprovedSecuritySources(current, archive, HARDENED_MODEL_VERSION, reliability, invalid)).toThrow('lib/odds/client.ts');
+    }
     expect(() => assertApprovedSecuritySources(current)).toThrow('security infrastructure source mismatch');
     expect(() => assertApprovedSecuritySources(current, archive, HARDENED_MODEL_VERSION, { ...reliability, version: 'unreviewed' })).toThrow();
     for (const path of paths) {
@@ -545,7 +736,8 @@ describe('Validation infrastructure, synthetic fixtures are NOT model performanc
   });
   it('requires exact NFL_KICKING_V1 revisions, immutable archived parents and historical baseline hashes', () => {
     const archive = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
-    const current = Object.fromEntries(Object.keys(NFL_KICKING_SOURCE_APPROVED_HASHES).map(path => [path, readFileSync(resolve(ROOT, path), 'utf8')]));
+    const current = Object.fromEntries(Object.keys(NFL_KICKING_SOURCE_APPROVED_HASHES).map(path => [path,
+      path === 'lib/finder/nflEngine.ts' ? historicalSource(NFL_REQUEST_RECOVERY_BASELINE, path) : readFileSync(resolve(ROOT, path), 'utf8')]));
     const approved = (path, parent, child, parentVersion = HARDENED_MODEL_VERSION, version = NFL_KICKING_VERSION) =>
       isReviewedNFLKickingSource(path, parent, child, parentVersion, version);
     expect(Object.isFrozen(NFL_KICKING_SOURCE_APPROVED_HASHES)).toBe(true);
@@ -594,7 +786,8 @@ describe('Validation infrastructure, synthetic fixtures are NOT model performanc
   it('requires exact NFL_PARTIAL_COVERAGE_V1 paths, versions, sources and immutable parents', () => {
     const archive = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
     const baseline = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1/sources.json'), 'utf8'));
-    const current = Object.fromEntries(Object.keys(NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES).map(path => [path, readFileSync(resolve(ROOT, path), 'utf8')]));
+    const current = Object.fromEntries(Object.keys(NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES).map(path => [path,
+      path === 'lib/finder/nflEngine.ts' ? historicalSource(NFL_REQUEST_RECOVERY_BASELINE, path) : readFileSync(resolve(ROOT, path), 'utf8')]));
     const approved = (path, parent, child, parentVersion = HARDENED_MODEL_VERSION, version = NFL_PARTIAL_COVERAGE_VERSION) =>
       isReviewedNFLPartialCoverageSource(path, parent, child, parentVersion, version);
     const check = (sources, parents = archive, originals = baseline, parentVersion = HARDENED_MODEL_VERSION, version = NFL_PARTIAL_COVERAGE_VERSION) =>

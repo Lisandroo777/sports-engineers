@@ -19,6 +19,9 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 /** Hard ceiling regardless of TTL, so disk usage never grows unbounded even under heavy use. */
 const MAX_SESSIONS = 100;
 const SESSION_KEY_PREFIX = 'ai-session:';
+const KV_CHUNK_SIZE = 500_000;
+const MAX_KV_CHUNKS = 1024;
+const KV_CHUNK_READ_CONCURRENCY = 4;
 const MAX_RECOVERY_SESSIONS = 20;
 const MAX_RECOVERY_BYTES = 5 * 1024 * 1024;
 const recoverySessions = new Map<string, { stored: StoredSession; bytes: number }>();
@@ -30,10 +33,40 @@ interface StoredSession {
   session?: ResearchSession;
   sessionEncoding?: 'deflate-base64-v1';
   compressedSession?: string;
+  compressedSessionChunks?: number;
 }
 
 function compressedKVSession(session: ResearchSession): Pick<StoredSession, 'sessionEncoding' | 'compressedSession'> {
   return { sessionEncoding: 'deflate-base64-v1', compressedSession: deflateSync(Buffer.from(JSON.stringify(session))).toString('base64') };
+}
+
+function chunkKeys(id: string, stored: StoredSession): string[] | null {
+  const count = stored.compressedSessionChunks;
+  if (stored.sessionEncoding !== 'deflate-base64-v1' || typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > MAX_KV_CHUNKS) return null;
+  return Array.from({ length: count }, (_, index) => `${SESSION_KEY_PREFIX}${id}:chunk:${index}`);
+}
+
+async function saveDurableSession(stored: StoredSession): Promise<void> {
+  const key = `${SESSION_KEY_PREFIX}${stored.id}`;
+  const { compressedSession, ...manifest } = stored;
+  if (!compressedSession || compressedSession.length <= KV_CHUNK_SIZE) {
+    await kvSetJson(key, stored, TTL_MS);
+    return;
+  }
+  const chunked = { ...manifest, compressedSessionChunks: Math.ceil(compressedSession.length / KV_CHUNK_SIZE) };
+  const keys = chunkKeys(stored.id, chunked);
+  if (!keys) throw new Error('Research session exceeds storage capacity.');
+  const attempted: string[] = [];
+  try {
+    for (const [index, chunkKey] of keys.entries()) {
+      attempted.push(chunkKey);
+      await kvSetJson(chunkKey, compressedSession.slice(index * KV_CHUNK_SIZE, (index + 1) * KV_CHUNK_SIZE), TTL_MS);
+    }
+    await kvSetJson(key, chunked, TTL_MS);
+  } catch (error) {
+    await Promise.allSettled([key, ...attempted].map((entry) => kvDel(entry)));
+    throw error;
+  }
 }
 
 function sessionFromStored(stored: StoredSession): ResearchSession | null {
@@ -58,7 +91,10 @@ function rememberDurableSession(id: string, stored: StoredSession, session: Rese
   recoverySessions.delete(id);
   const expiresAt = Math.min(stored.expiresAt, stored.savedAt + TTL_MS, Date.now() + TTL_MS);
   if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
-  const snapshot: StoredSession = { id, savedAt: stored.savedAt, expiresAt, ...compressedKVSession(session) };
+  const compressed = !stored.session && stored.sessionEncoding === 'deflate-base64-v1' && typeof stored.compressedSession === 'string'
+    ? { sessionEncoding: stored.sessionEncoding, compressedSession: stored.compressedSession }
+    : compressedKVSession(session);
+  const snapshot: StoredSession = { id, savedAt: stored.savedAt, expiresAt, ...compressed };
   const bytes = Buffer.byteLength(JSON.stringify(snapshot));
   if (bytes > MAX_RECOVERY_BYTES) return;
   recoverySessions.set(id, { stored: snapshot, bytes });
@@ -118,7 +154,7 @@ export async function saveResearchSession(session: ResearchSession): Promise<str
   try {
     if (hasDurableKV()) {
       const stored = { id, savedAt, expiresAt, ...compressedKVSession(session) };
-      await kvSetJson(`${SESSION_KEY_PREFIX}${id}`, stored, TTL_MS);
+      await saveDurableSession(stored);
       rememberDurableSession(id, stored, session);
       return id;
     }
@@ -146,23 +182,46 @@ function isWellFormed(session: unknown): session is ResearchSession {
 export async function getResearchSession(id: string | null | undefined): Promise<ResearchSession | null> {
   if (!id) return null;
   if (hasDurableKV()) {
-    let stored: StoredSession | null;
     try {
-      stored = await kvGetJson<StoredSession>(`${SESSION_KEY_PREFIX}${id}`);
+      let stored = await kvGetJson<StoredSession>(`${SESSION_KEY_PREFIX}${id}`);
+      if (stored === null) {
+        recoverySessions.delete(id);
+        return null;
+      }
+      if (!stored || !Number.isFinite(stored.expiresAt) || !Number.isFinite(stored.savedAt)) {
+        throw new Error('Research session is temporarily unavailable.');
+      }
+      if (stored.expiresAt <= Date.now()) {
+        recoverySessions.delete(id);
+        return null;
+      }
+      const chunked = stored.compressedSessionChunks !== undefined;
+      if (chunked) {
+        const keys = chunkKeys(id, stored);
+        if (!keys) throw new Error('Research session is temporarily unavailable.');
+        const chunks: string[] = [];
+        for (let offset = 0; offset < keys.length; offset += KV_CHUNK_READ_CONCURRENCY) {
+          const batch = await Promise.all(keys.slice(offset, offset + KV_CHUNK_READ_CONCURRENCY).map((key) => kvGetJson<string>(key)));
+          if (!batch.every((chunk) => typeof chunk === 'string' && chunk.length > 0 && chunk.length <= KV_CHUNK_SIZE)) {
+            throw new Error('Research session is temporarily unavailable.');
+          }
+          chunks.push(...batch as string[]);
+        }
+        stored = { ...stored, compressedSession: chunks.join('') };
+      } else if (!isWellFormed(stored.session) && stored.compressedSession === undefined) {
+        throw new Error('Research session is temporarily unavailable.');
+      }
+      const session = sessionFromStored(stored);
+      if (!session && chunked) throw new Error('Research session is temporarily unavailable.');
+      if (session) rememberDurableSession(id, stored, session);
+      else recoverySessions.delete(id);
+      return session;
     } catch {
       pruneRecoverySessions();
       const recovered = recoverySessions.get(id);
       if (recovered) return sessionFromStored(recovered.stored);
       throw new Error('Research session is temporarily unavailable.');
     }
-    if (!stored || stored.expiresAt <= Date.now()) {
-      recoverySessions.delete(id);
-      return null;
-    }
-    const session = sessionFromStored(stored);
-    if (session) rememberDurableSession(id, stored, session);
-    else recoverySessions.delete(id);
-    return session;
   }
   if (!allowLocalPersistenceFallback()) return null;
   const file = filePathFor(id);
@@ -187,7 +246,9 @@ export async function deleteResearchSession(id: string | null | undefined): Prom
   if (!id) return;
   recoverySessions.delete(id);
   if (hasDurableKV()) {
+    const stored = await kvGetJson<StoredSession>(`${SESSION_KEY_PREFIX}${id}`);
     await kvDel(`${SESSION_KEY_PREFIX}${id}`);
+    if (stored) await Promise.all((chunkKeys(id, stored) ?? []).map((key) => kvDel(key)));
     return;
   }
   if (!allowLocalPersistenceFallback()) return;

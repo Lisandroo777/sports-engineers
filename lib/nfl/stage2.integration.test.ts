@@ -28,6 +28,7 @@ vi.mock('./intelligence', () => ({
 vi.mock('./sportsbook', () => ({ getNFLSportsbookEvents: vi.fn().mockResolvedValue([{ id: 'event', homeTeam: 'Kansas City Chiefs', awayTeam: 'Las Vegas Raiders', commenceTime: '2026-10-11T17:00:00Z' }]), retrieveNFLSportsbookGame: vi.fn(), inspectNFLSportsbookCoverage: vi.fn().mockResolvedValue({ state: 'CACHE_MISSING', missingMarkets: 11 }), classifyNFLProviderFailure: vi.fn().mockReturnValue('NETWORK') }));
 vi.mock('../odds/client', () => ({
   beginOddsSpendTrackingAsync: vi.fn(), getActiveOddsSpendTracker: vi.fn().mockReturnValue(null),
+  withAutomaticOddsRefresh: vi.fn((work: () => unknown) => work()),
   getOddsEventsForSport: vi.fn().mockResolvedValue([{ id: 'event', homeTeam: 'Kansas City Chiefs', awayTeam: 'Las Vegas Raiders', commenceTime: '2026-10-11T17:00:00Z' }]),
   getDiscoveredEventPlayerProps: vi.fn(), getLastOddsCreditInfo: vi.fn().mockReturnValue(null),
   inspectEventPlayerPropsCacheState: vi.fn(), isPaidRefreshAllowed: vi.fn().mockReturnValue(false),

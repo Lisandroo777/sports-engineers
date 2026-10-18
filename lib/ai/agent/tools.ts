@@ -1,5 +1,6 @@
 import { runFinderDeepSearch, type FinderResult, type FinderRunSummary } from '../../finder/engine';
 import { isAutomaticOddsRefreshEnabled } from '../../odds/autoRefreshLedger';
+import { withResearchStage } from '../../reliability/researchFailure';
 import { runNFLFinderDeepSearch, type NFLFinderSummary, type NFLFinderOptions } from '../../finder/nflEngine';
 import { runNBAFinderDeepSearch, type NBAFinderSummary, type NBACandidate } from '../../finder/nbaEngine';
 import { getMLBSchedule } from '../../mlb/schedule';
@@ -477,7 +478,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   // NFL/NBA don't yet have the MLB-only FinderResult signal modules, so their researched pool
   // lives on sport-specific candidate arrays (each carrying its own EliteResearchAnalysis) rather
   // than summary.results, which those two engines intentionally always leave empty.
-  const genericCandidates: GenericResearchCandidate[] | null =
+  const genericCandidates: GenericResearchCandidate[] | null = await withResearchStage('candidate-conversion', () =>
     sport === 'nfl'
       ? (summary as NFLFinderSummary).nflCandidates
         .filter((c) => c.playerMatch === 'MATCHED' && c.eliteAnalysis != null)
@@ -541,7 +542,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
         ? (summary as NBAFinderSummary).nbaCandidates
           .filter((c) => c.playerMatch === 'MATCHED' && c.eliteAnalysis != null)
           .map(nbaFinderCandidateToGeneric)
-        : null;
+        : null);
 
   if (sport === 'mlb') summary = { ...summary, results: summary.results.filter(result => mlbPregameIds!.includes(result.gameId ?? '')) };
   const mlbGameCoverage = sport === 'mlb' ? mlbSchedule!.filter(game => mlbPregameIds!.includes(game.id)).map(game =>
@@ -609,7 +610,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   if (sport !== 'nfl' && candidatesFound === 0) return fail('NO_CANDIDATES', 'Props were loaded but no researchable candidates were produced.', meta);
 
   // Successful research replaces the stored session so follow-ups always answer from the latest slate.
-  context.researchSession = genericCandidates != null
+  context.researchSession = await withResearchStage('session-build', () => genericCandidates != null
     ? buildResearchSessionFromCandidates({
       sport,
       date: resolved.date,
@@ -623,11 +624,11 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
       queryIntent: context.pendingQueryIntent,
       results: summary.results,
       toolMeta: meta,
-    });
+    }));
   if (requestedGameIds.length > 0) context.researchSession.scopeGameIds = requestedGameIds;
   // Persisted server-side only; the client gets back an opaque ID, never the (possibly hundreds-of-
   // candidates) session object. Replaces any previous session for this conversation.
-  context.researchSessionId = await saveResearchSession(context.researchSession);
+  context.researchSessionId = await withResearchStage('session-save', () => saveResearchSession(context.researchSession!));
 
   // Candidates are NOT returned here — with the per-run cap removed there can be hundreds, which
   // would blow the model's context/rate limit. They are held server-side in the research session;
@@ -713,7 +714,7 @@ const MIN_OFFICIAL_ODDS = -900;
 const TARGET_ODDS_TOLERANCE = 50;
 
 function classifyStoredPrice(candidate: ResearchCandidateRecord) {
-  const timestamp = candidate.nflResearchProfile?.market.provenance[0]?.publishedAt ?? candidate.retrievedAt;
+  const timestamp = candidate.nflResearchProfile?.market?.provenance?.[0]?.publishedAt ?? candidate.retrievedAt;
   if (!timestamp) return 'UNKNOWN';
   const age = Date.now() - Date.parse(timestamp);
   return Number.isFinite(age) && age >= 0 && age <= 3600000 ? 'FRESH' : 'EXPIRED';

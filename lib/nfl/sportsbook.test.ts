@@ -1,7 +1,16 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { readStalePersistentCache, writePersistentCache, writeCreditStatus } from '../odds/persistentCache';
 
-vi.mock('../odds/budget', () => ({ getOddsBudgetStatus: vi.fn().mockResolvedValue({ belowReserve: false }) }));
+// Legacy provider/cache unit boundary; real spending guards are tested in sportsbook.spendingGuard.offline.test.ts.
+vi.mock('../odds/client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../odds/client')>(),
+  withBoundedOddsRequest: async <T>(_path: string, _params: Record<string, string>, operation: () => Promise<{ data: T }>) => (await operation()).data,
+}));
+
+vi.mock('../odds/budget', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../odds/budget')>(),
+  getOddsBudgetStatus: vi.fn().mockResolvedValue({ belowReserve: false }),
+}));
 vi.mock('../odds/persistentCache', () => ({ readStalePersistentCache: vi.fn().mockResolvedValue(null), writePersistentCache: vi.fn(), writeCreditStatus: vi.fn() }));
 vi.mock('./refreshLease', () => ({ withNFLRefreshLease: vi.fn().mockImplementation(async (_key, operation) => operation()) }));
 

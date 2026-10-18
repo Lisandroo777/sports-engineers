@@ -20,6 +20,7 @@ vi.mock('../../../../lib/ai/agent/sessionStore', () => ({ deleteResearchSession:
 
 import { DELETE, POST } from './route';
 import { AIUnavailableError } from '../../../../lib/ai/agent/runner';
+import { ResearchStageError, type ResearchStage } from '../../../../lib/reliability/researchFailure';
 
 const privateText = 'private-user-query token=secret-provider-key';
 const sessionId = 'private-session-id';
@@ -154,6 +155,9 @@ describe('chat research reliability observations', () => {
     const response = await POST(request());
     expect(response.status).toBe(500);
     expect(mocks.record).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'PROVIDER_ERROR', resultsCount: 0 }));
+    expect(console.error).toHaveBeenCalledExactlyOnceWith('[ai] agent turn failed', {
+      stage: 'response-serialization', category: 'PROVIDER',
+    });
   });
 
   it('records only a failure if the client response cannot be serialized', async () => {
@@ -162,6 +166,60 @@ describe('chat research reliability observations', () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'The research agent failed to complete this request.', code: 'PROVIDER_ERROR' });
     expect(mocks.record).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'PROVIDER_ERROR', resultsCount: 0 }));
+    expect(console.error).toHaveBeenCalledExactlyOnceWith('[ai] agent turn failed', {
+      stage: 'response-serialization', category: 'INVALID_DATA',
+    });
+  });
+
+  it.each([
+    ['Redis HTTP 401 unauthorized', 'AUTH'], ['Redis HTTP 413 payload too large', 'PAYLOAD'],
+    ['Redis request timed out', 'TIMEOUT'], ['Research session could not be persisted.', 'STORAGE'],
+    ['unexpected failure', 'UNKNOWN'],
+  ])('distinguishes a failed session save from a provider failure: %s', async (message, category) => {
+    mocks.run.mockRejectedValue(new ResearchStageError('session-save', new Error(`${message} ${privateText} ${sessionId}`)));
+    const response = await POST(request());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: 'Research was evaluated, but saved research storage is temporarily unavailable. No new request was started automatically.',
+      code: 'RESEARCH_STORAGE_UNAVAILABLE',
+    });
+    expect(console.error).toHaveBeenCalledExactlyOnceWith('[ai] agent turn failed', { stage: 'session-save', category });
+    expect(mocks.record).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'UNAVAILABLE', researchComplete: false }));
+  });
+
+  it('does not claim research was evaluated when reading a saved session fails', async () => {
+    mocks.run.mockRejectedValue(new ResearchStageError('session-read', new Error(`Redis HTTP 401 ${privateText}`)));
+    const response = await POST(request());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Saved research is temporarily unavailable.', code: 'RESEARCH_STORAGE_UNAVAILABLE' });
+    expect(console.error).toHaveBeenCalledExactlyOnceWith('[ai] agent turn failed', { stage: 'session-read', category: 'AUTH' });
+    expect(mocks.record).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'UNAVAILABLE' }));
+  });
+
+  it('uses generic saved-research wording for an untagged persistence error', async () => {
+    mocks.run.mockRejectedValue(new Error(`Research session could not be persisted. ${privateText}`));
+    const response = await POST(request());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Saved research is temporarily unavailable.', code: 'RESEARCH_STORAGE_UNAVAILABLE' });
+    expect(console.error).toHaveBeenCalledExactlyOnceWith('[ai] agent turn failed', { stage: 'UNKNOWN', category: 'STORAGE' });
+  });
+
+  it.each<ResearchStage>(['candidate-conversion', 'session-build', 'intent-ranking'])(
+    'preserves generic failure compatibility and diagnostic context for %s', async (stage) => {
+      mocks.run.mockRejectedValue(new ResearchStageError(stage, new TypeError(privateText)));
+      const response = await POST(request());
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: 'The research agent failed to complete this request.', code: 'PROVIDER_ERROR' });
+      expect(console.error).toHaveBeenCalledExactlyOnceWith('[ai] agent turn failed', { stage, category: 'INVALID_DATA' });
+      expect(mocks.record).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'PROVIDER_ERROR' }));
+    });
+
+  it('logs only UNKNOWN fields for an unknown thrown value', async () => {
+    mocks.run.mockRejectedValue({ message: privateText, stage: privateText, category: sessionId });
+    const response = await POST(request());
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'The research agent failed to complete this request.', code: 'PROVIDER_ERROR' });
+    expect(console.error).toHaveBeenCalledExactlyOnceWith('[ai] agent turn failed', { stage: 'UNKNOWN', category: 'UNKNOWN' });
   });
 
   it('preserves receipt failure behavior and still records research once', async () => {

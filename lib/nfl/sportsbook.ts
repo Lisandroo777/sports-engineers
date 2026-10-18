@@ -1,6 +1,6 @@
 import { NFL_ELITE_MARKETS, getNFLMarketMetadata, type NFLAnalyzableMarketKey } from './oddsTypes';
 import type { NormalizedProp, OddsEvent } from '../odds/types';
-import { getOddsBudgetStatus } from '../odds/budget';
+import { OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withBoundedOddsRequest } from '../odds/client';
 import { readStalePersistentCache, writePersistentCache, writeCreditStatus } from '../odds/persistentCache';
 import { withNFLRefreshLease } from './refreshLease';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -64,6 +64,7 @@ export function nflFreshnessMs(kickoff: string, now = Date.now()): number {
 
 export function classifyNFLProviderFailure(error: unknown): NFLProviderFailure {
   if (error instanceof NFLSportsbookError) return error.kind;
+  if (error instanceof OddsBudgetGuardError || error instanceof OddsRefreshNotAuthorizedError) return 'RESERVE';
   if (error instanceof Error && /not configured/i.test(error.message)) return 'CONFIGURATION';
   if (error instanceof Error && /timeout|abort/i.test(error.name)) return 'TIMEOUT';
   return 'NETWORK';
@@ -82,31 +83,28 @@ async function request(path: string, markets?: string[]): Promise<unknown> {
   if (providerCircuit && providerCircuit.expiresAt > Date.now()) throw new NFLSportsbookError(providerCircuit.kind);
   const key = process.env.THE_ODDS_API_KEY?.trim();
   if (!key) throw new NFLSportsbookError('CONFIGURATION');
-  if (markets) {
-    const budget = await getOddsBudgetStatus();
-    if (budget.belowReserve || (budget.remaining != null && budget.remaining - markets.length < budget.minReserve)) throw new NFLSportsbookError('RESERVE');
-  }
+  const params: Record<string, string> = markets
+    ? { regions: 'us', markets: markets.join(','), oddsFormat: 'american', includeSids: 'true' } : {};
   const url = new URL(`${BASE}${path}`);
   url.searchParams.set('apiKey', key);
-  if (markets) {
-    url.searchParams.set('regions', 'us');
-    url.searchParams.set('markets', markets.join(','));
-    url.searchParams.set('oddsFormat', 'american');
-    url.searchParams.set('includeSids', 'true');
-  }
-  recordNFLProviderRequest(markets ? path.split('/').at(-2) : undefined, markets);
-  let response: Response;
-  try {
-    response = markets
-      ? await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20000) })
-      : await fetchWithReadRetry(url, { headers: { accept: 'application/json' } });
-  }
-  catch (error) { recordNFLProviderFailure(markets != null); throw error; }
-  recordNFLProviderResponse(response.headers, markets != null);
-  if (markets) {
-    try { await writeCreditStatus({ lastCost: response.headers.get('x-requests-last'), remaining: response.headers.get('x-requests-remaining'), used: response.headers.get('x-requests-used'), path, updatedAt: Date.now() }); }
-    catch { /* spend persistence cannot retry or invalidate a purchased response */ }
-  }
+  Object.entries(params).forEach(([name, value]) => url.searchParams.set(name, value));
+  const performRequest = async () => {
+    recordNFLProviderRequest(markets ? path.split('/').at(-2) : undefined, markets);
+    let response: Response;
+    try {
+      response = markets
+        ? await fetch(url, { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(20000) })
+        : await fetchWithReadRetry(url, { headers: { accept: 'application/json' } });
+    }
+    catch (error) { recordNFLProviderFailure(markets != null); throw error; }
+    recordNFLProviderResponse(response.headers, markets != null);
+    if (markets) {
+      try { await writeCreditStatus({ lastCost: response.headers.get('x-requests-last'), remaining: response.headers.get('x-requests-remaining'), used: response.headers.get('x-requests-used'), path, updatedAt: Date.now() }); }
+      catch { /* spend persistence cannot retry or invalidate a purchased response */ }
+    }
+    return { data: response, credits: response.headers.get('x-requests-last'), remaining: response.headers.get('x-requests-remaining') };
+  };
+  const response = markets ? await withBoundedOddsRequest(path, params, performRequest) : (await performRequest()).data;
   if (response.status === 401 || response.status === 403 || response.status === 429 || response.status === 503) {
     const kind = response.status === 429 ? 'RATE_LIMIT' : response.status === 503 ? 'PROVIDER_ERROR' : 'AUTHENTICATION';
     const retryAfter = response.headers.get('retry-after')?.trim();

@@ -64,11 +64,14 @@ export function isReviewedReliabilitySource(path, archived, current, parentModel
     && (approval.baseline === null ? baseline === undefined : typeof baseline === 'string' && hash(baseline) === approval.baseline)
     && typeof current === 'string' && hash(current) === approval.integrated);
 }
-export function assertApprovedReliabilitySources(current, archive, baseline, parentModelVersion, version, baselineHEAD) {
+export function assertApprovedReliabilitySources(current, archive, baseline, parentModelVersion, version, baselineHEAD, requestRecovery) {
   for (const [path, approval] of Object.entries(RELIABILITY_SOURCE_APPROVED_HASHES)) {
     if (!Object.hasOwn(current, path) || approval.archived === null && Object.hasOwn(archive, path)
       || approval.baseline === null && Object.hasOwn(baseline, path)
-      || !isReviewedReliabilitySource(path, archive[path], current[path], parentModelVersion, version, baseline[path], baselineHEAD)) {
+      || !(isReviewedReliabilitySource(path, archive[path], current[path], parentModelVersion, version, baseline[path], baselineHEAD)
+        || version === RELIABILITY_VERSION && baselineHEAD === RELIABILITY_BASELINE
+          && requestRecoverySourceApproved(path, archive[path], current[path], parentModelVersion, requestRecovery)
+          && (approval.baseline === null ? baseline[path] === undefined : typeof baseline[path] === 'string' && hash(baseline[path]) === approval.baseline))) {
       throw new Error(`Approved RELIABILITY_V1 source mismatch: ${path}`);
     }
   }
@@ -89,12 +92,13 @@ export function isReviewedNFLPartialCoverageSource(path, archived, current, pare
     && (approval.archived === null ? archived === undefined : typeof archived === 'string' && hash(archived) === approval.archived)
     && typeof current === 'string' && hash(current) === approval.integrated);
 }
-export function assertApprovedNFLPartialCoverageSources(current, archive, baseline, parentModelVersion, version) {
+export function assertApprovedNFLPartialCoverageSources(current, archive, baseline, parentModelVersion, version, requestRecovery) {
   for (const [path, approval] of Object.entries(NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES)) {
     if (!Object.hasOwn(current, path)
       || (approval.archived === null && Object.hasOwn(archive, path))
       || (approval.baseline === null ? Object.hasOwn(baseline, path) : typeof baseline[path] !== 'string' || hash(baseline[path]) !== approval.baseline)
-      || !isReviewedNFLPartialCoverageSource(path, archive[path], current[path], parentModelVersion, version)) {
+      || !(isReviewedNFLPartialCoverageSource(path, archive[path], current[path], parentModelVersion, version)
+        || version === NFL_PARTIAL_COVERAGE_VERSION && requestRecoverySourceApproved(path, archive[path], current[path], parentModelVersion, requestRecovery))) {
       throw new Error(`Approved NFL_PARTIAL_COVERAGE_V1 source mismatch: ${path}`);
     }
   }
@@ -117,12 +121,14 @@ export function isReviewedNFLKickingSource(path, archived, current, parentModelV
     && (approval.archived === null ? archived === undefined : typeof archived === 'string' && hash(archived) === approval.archived)
     && typeof current === 'string' && hash(current) === approval.integrated);
 }
-export function assertApprovedNFLKickingSources(current, archive, parentModelVersion, version, partialCoverageVersion) {
+export function assertApprovedNFLKickingSources(current, archive, parentModelVersion, version, partialCoverageVersion, requestRecovery) {
   for (const path of Object.keys(NFL_KICKING_SOURCE_APPROVED_HASHES)) {
     if (!Object.hasOwn(current, path)
       || NFL_KICKING_SOURCE_APPROVED_HASHES[path].archived === null && Object.hasOwn(archive, path)
       || !isReviewedNFLKickingSource(path, archive[path], current[path], parentModelVersion, version)
-        && !(version === NFL_KICKING_VERSION && isReviewedNFLPartialCoverageSource(path, archive[path], current[path], parentModelVersion, partialCoverageVersion))) {
+        && !(version === NFL_KICKING_VERSION && isReviewedNFLPartialCoverageSource(path, archive[path], current[path], parentModelVersion, partialCoverageVersion))
+        && !(version === NFL_KICKING_VERSION && partialCoverageVersion === NFL_PARTIAL_COVERAGE_VERSION
+          && requestRecoverySourceApproved(path, archive[path], current[path], parentModelVersion, requestRecovery))) {
       throw new Error(`Approved additive NFL_KICKING_V1 source mismatch: ${path}`);
     }
   }
@@ -189,10 +195,42 @@ export function isReviewedMLBEngineRevision(path, archived, current, parentModel
     && hash(archived ?? '') === REVIEWED_MLB_ENGINE_REVISION.archived
     && hash(current ?? '') === REVIEWED_MLB_ENGINE_REVISION.integrated;
 }
-export function assertApprovedSecuritySources(current, archive = {}, parentModelVersion, reliability) {
+export const NFL_REQUEST_RECOVERY_VERSION = 'NFL_REQUEST_RECOVERY_V1';
+export const NFL_REQUEST_RECOVERY_BASELINE = '61086d27ef9bccaab92fe9d4a67196b95fe4f658';
+export const NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES = Object.freeze(Object.fromEntries(Object.entries({
+  'lib/odds/client.ts': { archived: '599398c78d3a6eb3d26222c9bb89bbf8fee869a1cf4ad5d9050e50dd7457143e', baseline: '2d9c80a348d9d3e5afc2af0c5594b8b992014953d23cc6b9c03aef8ee40dae41', integrated: 'c3599291d23323c1ce49b93ad7bce55c3528d959b1c7abd309b4fbe68daa388b' },
+  'lib/nfl/sportsbook.ts': { archived: 'ece06cfdf82bd01585c0126ad0725053cbd9df3f3535d8e26efee44e73183c25', baseline: '91d26d43b63e77e75baea25318b6adecd4a3adea78dbe973145ffe8048946e5b', integrated: 'b3096fdd4ebfe2dc125b0352fec90b303bd754b7f47040f246ce0737264689b9' },
+  'lib/finder/nflEngine.ts': { archived: '275b2234cb184f524175ffca8ea7287f8bd5642be049bab3dbbb2b718847c734', baseline: '60795aca90406abf0ff57563c32f487aa9549098055a45dccc5ba4cde2023a90', integrated: '03fa89afdf117949e12e072f489c0d32596bc1a1cc519ca9a1ee662982d8d54b' },
+  'lib/ai/agent/sessionStore.ts': { archived: '383f28223aa7cbd0c6b4c5d06dafe712f5ff590684a9199c879f2714881f19b4', baseline: 'e3226a75dae5b1728bd1469676fe5494815d7e90ffd2c73273afe8dfe2c11229', integrated: 'e40cd58d8fbd9ca614d6a57e451c58f83b5341686e3a113b77b95f0387ae9466' },
+  'lib/reliability/researchFailure.ts': { archived: null, baseline: null, integrated: '8a9921c77e12c2526ff363d916230580286e98c5460d5a9e8597d817271708cd' },
+}).map(([path, approval]) => [path, Object.freeze(approval)])));
+export function isReviewedNFLRequestRecoverySource(path, archived, current, parentModelVersion, version, baseline, baselineHEAD) {
+  const approval = Object.hasOwn(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES, path) ? NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES[path] : null;
+  return Boolean(approval && parentModelVersion === HARDENED_MODEL_VERSION && version === NFL_REQUEST_RECOVERY_VERSION
+    && baselineHEAD === NFL_REQUEST_RECOVERY_BASELINE
+    && (approval.archived === null ? archived === undefined : typeof archived === 'string' && hash(archived) === approval.archived)
+    && (approval.baseline === null ? baseline === undefined : typeof baseline === 'string' && hash(baseline) === approval.baseline)
+    && typeof current === 'string' && hash(current) === approval.integrated);
+}
+function requestRecoverySourceApproved(path, archived, current, parentModelVersion, requestRecovery) {
+  return Boolean(requestRecovery && Object.hasOwn(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES, path)
+    && (NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES[path].baseline === null ? !Object.hasOwn(requestRecovery.baseline, path) : Object.hasOwn(requestRecovery.baseline, path))
+    && isReviewedNFLRequestRecoverySource(path, archived, current, parentModelVersion,
+      requestRecovery.version, requestRecovery.baseline[path], requestRecovery.baselineHEAD));
+}
+export function assertApprovedNFLRequestRecoverySources(current, archive, baseline, parentModelVersion, version, baselineHEAD) {
+  for (const [path, approval] of Object.entries(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES)) {
+    if (!Object.hasOwn(current, path) || (approval.archived === null ? Object.hasOwn(archive, path) : !Object.hasOwn(archive, path))
+      || !requestRecoverySourceApproved(path, archive[path], current[path], parentModelVersion, { version, baseline, baselineHEAD })) {
+      throw new Error(`Approved NFL_REQUEST_RECOVERY_V1 source mismatch: ${path}`);
+    }
+  }
+}
+export function assertApprovedSecuritySources(current, archive = {}, parentModelVersion, reliability, requestRecovery) {
   for (const path of ['lib/odds/client.ts', 'lib/odds/autoRefreshLedger.ts', 'lib/storage/kv.ts']) {
     if (hash(current[path] ?? '') !== APPROVED_INFRASTRUCTURE_HASHES[path]
-      && !reliabilitySourceApproved(path, archive[path], current[path], parentModelVersion, reliability)) throw new Error(`Approved security infrastructure source mismatch: ${path}`);
+      && !reliabilitySourceApproved(path, archive[path], current[path], parentModelVersion, reliability)
+      && !requestRecoverySourceApproved(path, archive[path], current[path], parentModelVersion, requestRecovery)) throw new Error(`Approved security infrastructure source mismatch: ${path}`);
   }
 }
 function sourceFiles(directory) {
@@ -201,10 +239,11 @@ function sourceFiles(directory) {
     return entry.isDirectory() ? sourceFiles(path) : /\.(?:ts|tsx|mjs|json)$/.test(entry.name) && !/\.(?:test|spec)\./.test(entry.name) ? [path] : [];
   });
 }
-export function assertFrozenInventory(current, archive, label, { parentModelVersion = HARDENED_MODEL_VERSION, kickingVersion = NFL_KICKING_VERSION, partialCoverageVersion = NFL_PARTIAL_COVERAGE_VERSION, reliability } = {}) {
+export function assertFrozenInventory(current, archive, label, { parentModelVersion = HARDENED_MODEL_VERSION, kickingVersion = NFL_KICKING_VERSION, partialCoverageVersion = NFL_PARTIAL_COVERAGE_VERSION, reliability, requestRecovery } = {}) {
   for (const path of Object.keys(archive)) if (!Object.hasOwn(current, path)) throw new Error(`${label} omitted archived source: ${path}`);
   const additions = Object.keys(current).filter((path) => !Object.hasOwn(archive, path));
   const rejected = additions.filter((path) => !NON_MODEL_ADDITION_PREFIXES.some((prefix) => path.startsWith(prefix))
+    && !requestRecoverySourceApproved(path, undefined, current[path], parentModelVersion, requestRecovery)
     && !reliabilitySourceApproved(path, undefined, current[path], parentModelVersion, reliability)
     && !(Object.hasOwn(NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES, path) && NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES[path].archived === null
       && isReviewedNFLPartialCoverageSource(path, undefined, current[path], parentModelVersion, partialCoverageVersion))
@@ -315,13 +354,18 @@ export function verifyHardenedFreeze() {
   const baseline = Object.fromEntries(Object.keys(RELIABILITY_SOURCE_APPROVED_HASHES).filter(path => baselinePaths.has(path))
     .map(path => [path, execFileSync('git', ['-C', ROOT, 'show', `${RELIABILITY_BASELINE}:${path}`], { encoding: 'utf8' })]));
   const reliability = { version: RELIABILITY_VERSION, baseline, baselineHEAD: RELIABILITY_BASELINE };
-  assertApprovedReliabilitySources(current, archive, baseline, manifest.modelVersion, reliability.version, reliability.baselineHEAD);
-  assertFrozenInventory(current, archive, 'NFL_MODEL_V1_1_HARDENED', { reliability });
-  assertApprovedSecuritySources(current, archive, manifest.modelVersion, reliability);
+  const recoveryPaths = new Set(execFileSync('git', ['-C', ROOT, 'ls-tree', '-r', '--name-only', NFL_REQUEST_RECOVERY_BASELINE], { encoding: 'utf8' }).trim().split('\n'));
+  const recoveryBaseline = Object.fromEntries(Object.keys(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES).filter(path => recoveryPaths.has(path))
+    .map(path => [path, execFileSync('git', ['-C', ROOT, 'show', `${NFL_REQUEST_RECOVERY_BASELINE}:${path}`], { encoding: 'utf8' })]));
+  const requestRecovery = { version: NFL_REQUEST_RECOVERY_VERSION, baseline: recoveryBaseline, baselineHEAD: NFL_REQUEST_RECOVERY_BASELINE };
+  assertApprovedNFLRequestRecoverySources(current, archive, recoveryBaseline, manifest.modelVersion, requestRecovery.version, requestRecovery.baselineHEAD);
+  assertApprovedReliabilitySources(current, archive, baseline, manifest.modelVersion, reliability.version, reliability.baselineHEAD, requestRecovery);
+  assertFrozenInventory(current, archive, 'NFL_MODEL_V1_1_HARDENED', { reliability, requestRecovery });
+  assertApprovedSecuritySources(current, archive, manifest.modelVersion, reliability, requestRecovery);
   assertApprovedMLBSources(current, archive, manifest.modelVersion, REVIEWED_MLB_ENGINE_VERSION, NFL_KICKING_VERSION, reliability);
   assertInheritedProductionRouting(current, archive, manifest.modelVersion, INHERITED_ROUTING_BASELINE, NFL_KICKING_VERSION);
-  assertApprovedNFLKickingSources(current, archive, manifest.modelVersion, NFL_KICKING_VERSION, NFL_PARTIAL_COVERAGE_VERSION);
-  assertApprovedNFLPartialCoverageSources(current, archive, baseSources, manifest.modelVersion, NFL_PARTIAL_COVERAGE_VERSION);
+  assertApprovedNFLKickingSources(current, archive, manifest.modelVersion, NFL_KICKING_VERSION, NFL_PARTIAL_COVERAGE_VERSION, requestRecovery);
+  assertApprovedNFLPartialCoverageSources(current, archive, baseSources, manifest.modelVersion, NFL_PARTIAL_COVERAGE_VERSION, requestRecovery);
   for (const path of NBA_PRESENTATION_ADDITIONS) if (hash(current[path] ?? '') !== APPROVED_INFRASTRUCTURE_HASHES[path]) throw new Error(`Approved presentation source mismatch: ${path}`);
   for (const [path, digest] of Object.entries(NBA_DESCRIPTIVE_EVIDENCE_HASHES)) if (hash(current[path] ?? '') !== digest) throw new Error(`Approved descriptive evidence source mismatch: ${path}`);
   for (const [path, content] of Object.entries(archive)) {
@@ -336,8 +380,9 @@ export function verifyHardenedFreeze() {
     const exactKickingSource = isReviewedNFLKickingSource(path, content, current[path], manifest.modelVersion, NFL_KICKING_VERSION);
     const exactPartialCoverageSource = isReviewedNFLPartialCoverageSource(path, content, current[path], manifest.modelVersion, NFL_PARTIAL_COVERAGE_VERSION);
     const exactReliabilitySource = reliabilitySourceApproved(path, content, current[path], manifest.modelVersion, reliability);
+    const exactRequestRecoverySource = requestRecoverySourceApproved(path, content, current[path], manifest.modelVersion, requestRecovery);
     const inheritedProductionRouting = isInheritedProductionRouting(path, content, current[path], manifest.modelVersion, INHERITED_ROUTING_BASELINE);
-    if (hash(content) !== manifest.files[path] || current[path] !== content && !guardedNBAChange && !exactDependencyAddition && !exactSecurityChange && !exactDescriptiveChange && !exactCacheTransport && !exactMLBRevision && !exactMLBSource && !inheritedProductionRouting && !exactKickingSource && !exactPartialCoverageSource && !exactReliabilitySource) throw new Error(`Hardened archive source mismatch: ${path}`);
+    if (hash(content) !== manifest.files[path] || current[path] !== content && !guardedNBAChange && !exactDependencyAddition && !exactSecurityChange && !exactDescriptiveChange && !exactCacheTransport && !exactMLBRevision && !exactMLBSource && !inheritedProductionRouting && !exactKickingSource && !exactPartialCoverageSource && !exactReliabilitySource && !exactRequestRecoverySource) throw new Error(`Hardened archive source mismatch: ${path}`);
     if (path in baseSources && baseSources[path] !== content && !HARDENED_ALLOWED_DELTAS.includes(path)) throw new Error(`Unapproved V1.1 source delta: ${path}`);
     if (!(path in baseSources) && !path.startsWith('communication/')) throw new Error(`Unapproved new V1.1 source: ${path}`);
   }
