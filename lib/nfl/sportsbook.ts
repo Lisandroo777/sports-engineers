@@ -6,8 +6,9 @@ import { withNFLRefreshLease } from './refreshLease';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { recordNFLCacheRead, recordNFLProviderFailure, recordNFLProviderRequest, recordNFLProviderResponse } from './spendTelemetry';
 import { fetchWithReadRetry } from '../reliability/retry';
+import { AutoRefreshLedgerError, recordProviderRemaining } from '../odds/autoRefreshLedger';
 
-export type NFLProviderFailure = 'TIMEOUT' | 'AUTHENTICATION' | 'CONFIGURATION' | 'RATE_LIMIT' | 'MALFORMED_RESPONSE' | 'NETWORK' | 'PROVIDER_ERROR' | 'RESERVE' | 'STALE_PRICE' | 'EVENT_UNAVAILABLE' | 'RESEARCH_FAILED';
+export type NFLProviderFailure = 'TIMEOUT' | 'AUTHENTICATION' | 'CONFIGURATION' | 'RATE_LIMIT' | 'MALFORMED_RESPONSE' | 'NETWORK' | 'PROVIDER_ERROR' | 'RESERVE' | 'CREDIT_BALANCE_UNKNOWN' | 'DAILY_LIMIT' | 'SEARCH_LIMIT' | 'REFRESH_UNAVAILABLE' | 'REFRESH_NOT_AUTHORIZED' | 'CACHE_ONLY' | 'STALE_PRICE' | 'EVENT_UNAVAILABLE' | 'RESEARCH_FAILED';
 export class NFLSportsbookError extends Error {
   constructor(public readonly kind: NFLProviderFailure) { super(kind); }
 }
@@ -64,7 +65,23 @@ export function nflFreshnessMs(kickoff: string, now = Date.now()): number {
 
 export function classifyNFLProviderFailure(error: unknown): NFLProviderFailure {
   if (error instanceof NFLSportsbookError) return error.kind;
-  if (error instanceof OddsBudgetGuardError || error instanceof OddsRefreshNotAuthorizedError) return 'RESERVE';
+  const ledger = error instanceof AutoRefreshLedgerError ? error
+    : error instanceof OddsBudgetGuardError && error.cause instanceof AutoRefreshLedgerError ? error.cause : null;
+  if (ledger) {
+    switch (ledger.reason) {
+      case 'REMAINING_UNKNOWN': return 'CREDIT_BALANCE_UNKNOWN';
+      case 'DAILY_CAP': return 'DAILY_LIMIT';
+      case 'RATE_LIMIT': return 'RATE_LIMIT';
+      case 'RESERVE': return 'RESERVE';
+      default: return 'REFRESH_UNAVAILABLE';
+    }
+  }
+  if (error instanceof OddsBudgetGuardError) return 'RESERVE';
+  if (error instanceof OddsRefreshNotAuthorizedError) {
+    if (error.message === 'Paid refresh disabled: cache-only request.') return 'CACHE_ONLY';
+    if (error.message === 'Paid request or credit ceiling reached. No provider request made.') return 'SEARCH_LIMIT';
+    return 'REFRESH_NOT_AUTHORIZED';
+  }
   if (error instanceof Error && /not configured/i.test(error.message)) return 'CONFIGURATION';
   if (error instanceof Error && /timeout|abort/i.test(error.name)) return 'TIMEOUT';
   return 'NETWORK';
@@ -114,6 +131,11 @@ async function request(path: string, markets?: string[]): Promise<unknown> {
     throw new NFLSportsbookError(kind);
   }
   if (!response.ok) throw new NFLSportsbookError('PROVIDER_ERROR');
+  if (!markets) {
+    await recordProviderRemaining(response.headers.get('x-requests-remaining'));
+    try { await writeCreditStatus({ lastCost: response.headers.get('x-requests-last'), remaining: response.headers.get('x-requests-remaining'), used: response.headers.get('x-requests-used'), path, updatedAt: Date.now() }); }
+    catch {}
+  }
   try { return await response.json(); } catch { throw new NFLSportsbookError('MALFORMED_RESPONSE'); }
 }
 
@@ -279,6 +301,9 @@ export async function retrieveNFLSportsbookGame(input: { date: string; gameId: s
         }
       } catch (error) {
         const failure = classifyNFLProviderFailure(error);
+        if (error instanceof OddsBudgetGuardError || error instanceof OddsRefreshNotAuthorizedError || error instanceof AutoRefreshLedgerError) {
+          console.info('[nfl:refresh-blocked]', { gameId: input.gameId, reason: failure, stage: 'paid-refresh' });
+        }
         for (const market of needed) snapshot.markets[market] = { props: [], status: 'FAILED', failure, retrievedAt: new Date().toISOString(), expiresAt: Date.now() + 60000 };
       }
       memory.set(key, snapshot);

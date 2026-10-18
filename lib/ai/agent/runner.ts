@@ -243,16 +243,26 @@ export function filterRecommendationResults(results: unknown[], sport?: string, 
 }
 
 function nflIncompleteSummary(meta: Record<string, unknown> | null): string {
-  const ledger = meta?.nflLedger as { eligiblePregame?: number; researchedGames?: number; retrievedGames?: number; zeroMarketGames?: number; failedGames?: number; notFetchedGames?: number } | undefined;
-  if ((ledger?.researchedGames ?? 0) > 0) {
-    return `Partial NFL coverage: ${ledger!.researchedGames}/${ledger!.eligiblePregame} pregame games researched. No independently qualified picks from the fully researched games are currently available; other games remain unavailable.`;
-  }
+  const ledger = meta?.nflLedger as Partial<NFLSlateLedger> | undefined;
   const fullyCheckedEmpty = ledger != null && (ledger.eligiblePregame ?? 0) > 0
     && ledger.retrievedGames === ledger.eligiblePregame && ledger.zeroMarketGames === ledger.eligiblePregame
     && ledger.failedGames === 0 && ledger.notFetchedGames === 0;
-  return fullyCheckedEmpty
-    ? 'NFL sportsbook player-prop markets have not been posted for this slate yet.'
-    : 'Required NFL sportsbook market data is currently unavailable.';
+  if (fullyCheckedEmpty) return 'NFL sportsbook player-prop markets have not been posted for this slate yet.';
+  const failures = new Set((ledger?.games ?? [])
+    .filter((game) => game.eligibility === 'PREGAME' && game.state !== 'RESEARCHED')
+    .map((game) => game.failure));
+  const reasons = [
+    failures.has('CREDIT_BALANCE_UNKNOWN') ? 'NFL refresh could not verify the current provider credit balance. No new sportsbook request was made.' : null,
+    failures.has('DAILY_LIMIT') || failures.has('SEARCH_LIMIT') ? 'NFL research reached its configured refresh limit; an authorized refresh is required to research the remaining games.' : null,
+    failures.has('REFRESH_UNAVAILABLE') ? 'NFL refresh verification is currently unavailable. Current market coverage could not be confirmed.' : null,
+    failures.has('REFRESH_NOT_AUTHORIZED') ? 'NFL sportsbook refresh was not authorized. An authorized refresh is required to research the remaining games.' : null,
+    failures.has('CACHE_ONLY') ? 'No fresh cached NFL sportsbook data is available for the remaining games. An authorized refresh is required.' : null,
+    failures.has('RATE_LIMIT') ? 'NFL sportsbook refresh reached a request rate limit. Research remains incomplete.' : null,
+  ].filter((reason): reason is string => reason != null);
+  if ((ledger?.researchedGames ?? 0) > 0) {
+    return `Partial NFL coverage: ${ledger!.researchedGames}/${ledger!.eligiblePregame} pregame games researched. No independently qualified picks from the fully researched games are currently available; ${reasons.length ? `other games remain unchecked. ${reasons.join(' ')}` : 'other games remain unavailable.'}`;
+  }
+  return reasons.length ? reasons.join(' ') : 'Required NFL sportsbook market data is currently unavailable.';
 }
 
 function filterPartialNFLResults(results: unknown[], ledger: NFLSlateLedger | undefined): unknown[] {

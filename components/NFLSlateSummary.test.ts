@@ -39,6 +39,13 @@ describe('NFL user-facing research coverage', () => {
     ['NOT_FETCHED', null, 'Not fetched'],
     ['FAILED', 'STALE_PRICE', 'Quote stale'],
     ['FAILED', 'NETWORK', 'Request failed'],
+    ['FAILED', 'CREDIT_BALANCE_UNKNOWN', 'Current provider credit balance could not be verified; no new sportsbook request made'],
+    ['FAILED', 'DAILY_LIMIT', 'Configured daily refresh limit reached'],
+    ['FAILED', 'SEARCH_LIMIT', 'Configured search refresh limit reached'],
+    ['FAILED', 'REFRESH_UNAVAILABLE', 'Refresh verification unavailable'],
+    ['FAILED', 'REFRESH_NOT_AUTHORIZED', 'Sportsbook refresh not authorized'],
+    ['FAILED', 'CACHE_ONLY', 'No fresh cached sportsbook data available; authorized refresh required'],
+    ['FAILED', 'RATE_LIMIT', 'Refresh request rate limit reached'],
   ] as const)('explains missing games in state %s with failure %s', (state, failure, reason) => {
     const markup = renderToStaticMarkup(createElement(NFLSlateSummary, { ledger: createLedger(1, [{ state, failure }]) }));
     expect(markup).toContain(`Away 1 @ Home 1: ${reason}`);

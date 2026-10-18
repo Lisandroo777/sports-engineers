@@ -212,16 +212,45 @@ export function isReviewedNFLRequestRecoverySource(path, archived, current, pare
     && (approval.baseline === null ? baseline === undefined : typeof baseline === 'string' && hash(baseline) === approval.baseline)
     && typeof current === 'string' && hash(current) === approval.integrated);
 }
+export const NFL_REFRESH_BOOTSTRAP_VERSION = 'NFL_REFRESH_BOOTSTRAP_V1';
+export const NFL_REFRESH_BOOTSTRAP_BASELINE = 'a45b605ff32ebf419030c9b9bfb981f20ca2f3dd';
+export const NFL_REFRESH_BOOTSTRAP_SOURCE_APPROVED_HASHES = Object.freeze(Object.fromEntries(Object.entries({
+  'lib/nfl/sportsbook.ts': { archived: 'ece06cfdf82bd01585c0126ad0725053cbd9df3f3535d8e26efee44e73183c25', baseline: 'b3096fdd4ebfe2dc125b0352fec90b303bd754b7f47040f246ce0737264689b9', integrated: '76c042380aa219ca44bd69fb904bf018a5217a4600bcff5d97e1540195ba6d2b' },
+}).map(([path, approval]) => [path, Object.freeze(approval)])));
+export function isReviewedNFLRefreshBootstrapSource(path, archived, current, parentModelVersion, version, baseline, baselineHEAD) {
+  const approval = Object.hasOwn(NFL_REFRESH_BOOTSTRAP_SOURCE_APPROVED_HASHES, path) ? NFL_REFRESH_BOOTSTRAP_SOURCE_APPROVED_HASHES[path] : null;
+  return Boolean(approval && parentModelVersion === HARDENED_MODEL_VERSION && version === NFL_REFRESH_BOOTSTRAP_VERSION
+    && baselineHEAD === NFL_REFRESH_BOOTSTRAP_BASELINE
+    && typeof archived === 'string' && hash(archived) === approval.archived
+    && typeof baseline === 'string' && hash(baseline) === approval.baseline
+    && typeof current === 'string' && hash(current) === approval.integrated);
+}
+function refreshBootstrapSourceApproved(path, archived, current, parentModelVersion, refreshBootstrap) {
+  return Boolean(refreshBootstrap && refreshBootstrap.baseline && Object.hasOwn(refreshBootstrap.baseline, path)
+    && isReviewedNFLRefreshBootstrapSource(path, archived, current, parentModelVersion,
+      refreshBootstrap.version, refreshBootstrap.baseline[path], refreshBootstrap.baselineHEAD));
+}
+export function assertApprovedNFLRefreshBootstrapSources(current, archive, baseline, parentModelVersion, version, baselineHEAD) {
+  for (const path of Object.keys(NFL_REFRESH_BOOTSTRAP_SOURCE_APPROVED_HASHES)) {
+    if (!Object.hasOwn(current, path) || !Object.hasOwn(archive, path)
+      || !refreshBootstrapSourceApproved(path, archive[path], current[path], parentModelVersion, { version, baseline, baselineHEAD })) {
+      throw new Error(`Approved NFL_REFRESH_BOOTSTRAP_V1 source mismatch: ${path}`);
+    }
+  }
+}
 function requestRecoverySourceApproved(path, archived, current, parentModelVersion, requestRecovery) {
   return Boolean(requestRecovery && Object.hasOwn(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES, path)
     && (NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES[path].baseline === null ? !Object.hasOwn(requestRecovery.baseline, path) : Object.hasOwn(requestRecovery.baseline, path))
-    && isReviewedNFLRequestRecoverySource(path, archived, current, parentModelVersion,
-      requestRecovery.version, requestRecovery.baseline[path], requestRecovery.baselineHEAD));
+    && (isReviewedNFLRequestRecoverySource(path, archived, current, parentModelVersion,
+      requestRecovery.version, requestRecovery.baseline[path], requestRecovery.baselineHEAD)
+      || isReviewedNFLRequestRecoverySource(path, archived, requestRecovery.refreshBootstrap?.baseline?.[path], parentModelVersion,
+        requestRecovery.version, requestRecovery.baseline[path], requestRecovery.baselineHEAD)
+        && refreshBootstrapSourceApproved(path, archived, current, parentModelVersion, requestRecovery.refreshBootstrap)));
 }
-export function assertApprovedNFLRequestRecoverySources(current, archive, baseline, parentModelVersion, version, baselineHEAD) {
+export function assertApprovedNFLRequestRecoverySources(current, archive, baseline, parentModelVersion, version, baselineHEAD, refreshBootstrap) {
   for (const [path, approval] of Object.entries(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES)) {
     if (!Object.hasOwn(current, path) || (approval.archived === null ? Object.hasOwn(archive, path) : !Object.hasOwn(archive, path))
-      || !requestRecoverySourceApproved(path, archive[path], current[path], parentModelVersion, { version, baseline, baselineHEAD })) {
+      || !requestRecoverySourceApproved(path, archive[path], current[path], parentModelVersion, { version, baseline, baselineHEAD, refreshBootstrap })) {
       throw new Error(`Approved NFL_REQUEST_RECOVERY_V1 source mismatch: ${path}`);
     }
   }
@@ -357,8 +386,12 @@ export function verifyHardenedFreeze() {
   const recoveryPaths = new Set(execFileSync('git', ['-C', ROOT, 'ls-tree', '-r', '--name-only', NFL_REQUEST_RECOVERY_BASELINE], { encoding: 'utf8' }).trim().split('\n'));
   const recoveryBaseline = Object.fromEntries(Object.keys(NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES).filter(path => recoveryPaths.has(path))
     .map(path => [path, execFileSync('git', ['-C', ROOT, 'show', `${NFL_REQUEST_RECOVERY_BASELINE}:${path}`], { encoding: 'utf8' })]));
-  const requestRecovery = { version: NFL_REQUEST_RECOVERY_VERSION, baseline: recoveryBaseline, baselineHEAD: NFL_REQUEST_RECOVERY_BASELINE };
-  assertApprovedNFLRequestRecoverySources(current, archive, recoveryBaseline, manifest.modelVersion, requestRecovery.version, requestRecovery.baselineHEAD);
+  const bootstrapBaseline = Object.fromEntries(Object.keys(NFL_REFRESH_BOOTSTRAP_SOURCE_APPROVED_HASHES)
+    .map(path => [path, execFileSync('git', ['-C', ROOT, 'show', `${NFL_REFRESH_BOOTSTRAP_BASELINE}:${path}`], { encoding: 'utf8' })]));
+  const refreshBootstrap = { version: NFL_REFRESH_BOOTSTRAP_VERSION, baseline: bootstrapBaseline, baselineHEAD: NFL_REFRESH_BOOTSTRAP_BASELINE };
+  assertApprovedNFLRefreshBootstrapSources(current, archive, bootstrapBaseline, manifest.modelVersion, refreshBootstrap.version, refreshBootstrap.baselineHEAD);
+  const requestRecovery = { version: NFL_REQUEST_RECOVERY_VERSION, baseline: recoveryBaseline, baselineHEAD: NFL_REQUEST_RECOVERY_BASELINE, refreshBootstrap };
+  assertApprovedNFLRequestRecoverySources(current, archive, recoveryBaseline, manifest.modelVersion, requestRecovery.version, requestRecovery.baselineHEAD, refreshBootstrap);
   assertApprovedReliabilitySources(current, archive, baseline, manifest.modelVersion, reliability.version, reliability.baselineHEAD, requestRecovery);
   assertFrozenInventory(current, archive, 'NFL_MODEL_V1_1_HARDENED', { reliability, requestRecovery });
   assertApprovedSecuritySources(current, archive, manifest.modelVersion, reliability, requestRecovery);

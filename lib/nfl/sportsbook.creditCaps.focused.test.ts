@@ -79,13 +79,13 @@ afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 describe('NFL shared paid credit authorization', () => {
   it('fails closed without an ALS scope even with the legacy paid flag', async () => {
     vi.stubEnv('ODDS_ALLOW_PAID_REFRESH', 'true');
-    expect((await retrieve()).failure).toBe('RESERVE');
+    expect((await retrieve()).failure).toBe('REFRESH_NOT_AUTHORIZED');
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it('blocks two markets under a one-credit approval before fetch', async () => {
     const result = await withOneRunPaidRefresh(() => retrieve(), { maxCredits: 1 });
-    expect(result.failure).toBe('RESERVE');
+    expect(result.failure).toBe('SEARCH_LIMIT');
     expect(fetch).not.toHaveBeenCalled();
     expect(ledger.reservations.size).toBe(0);
   });
@@ -93,7 +93,7 @@ describe('NFL shared paid credit authorization', () => {
   it('shares the 50-credit search cap across NFL games', async () => {
     await withAutomaticOddsRefresh(async () => {
       for (let index = 0; index < 3; index += 1) expect((await retrieve(NFL_ELITE_MARKETS.slice(0, 13))).complete).toBe(true);
-      expect((await retrieve(NFL_ELITE_MARKETS.slice(0, 13))).failure).toBe('RESERVE');
+      expect((await retrieve(NFL_ELITE_MARKETS.slice(0, 13))).failure).toBe('SEARCH_LIMIT');
     });
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(ledger.spent).toBe(39);
@@ -102,17 +102,21 @@ describe('NFL shared paid credit authorization', () => {
   it('combines MLB and NFL spend inside one search scope', async () => {
     await withOneRunPaidRefresh(async () => {
       await getEventMarkets(`mlb-${++sequence}`, 'baseball_mlb');
-      expect((await retrieve()).failure).toBe('RESERVE');
+      expect((await retrieve()).failure).toBe('SEARCH_LIMIT');
     }, { maxRequests: 3, maxCredits: 2 });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(ledger.spent).toBe(1);
   });
 
-  it.each(['daily', 'floor', 'storage'])('blocks the durable %s limit before provider fetch', async (limit) => {
+  it.each([
+    ['daily', 'DAILY_LIMIT'],
+    ['floor', 'RESERVE'],
+    ['storage', 'REFRESH_UNAVAILABLE'],
+  ] as const)('blocks the durable %s limit before provider fetch', async (limit, failure) => {
     if (limit === 'daily') ledger.spent = 299;
     if (limit === 'floor') ledger.remaining = 2001;
     if (limit === 'storage') ledger.durable = false;
-    expect((await withAutomaticOddsRefresh(() => retrieve())).failure).toBe('RESERVE');
+    expect((await withAutomaticOddsRefresh(() => retrieve())).failure).toBe(failure);
     expect(fetch).not.toHaveBeenCalled();
   });
 

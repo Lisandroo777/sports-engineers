@@ -78,7 +78,7 @@ describe('request-local cache-only odds', () => {
         date: '2026-10-18', gameId: 'cache-only-nfl', eventId: 'cache-only-nfl',
         kickoff: '2026-10-18T17:00:00Z', markets: ['player_pass_yds'],
       }), { forceFresh: true })));
-    expect(result).toMatchObject({ complete: false, failure: 'RESERVE', props: [] });
+    expect(result).toMatchObject({ complete: false, failure: 'CACHE_ONLY', props: [] });
     expectNoPaidWork();
   });
 

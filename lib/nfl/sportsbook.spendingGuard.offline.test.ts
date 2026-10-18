@@ -110,20 +110,20 @@ afterEach(() => {
 describe('NFL real spending guard with offline durable storage', () => {
   it('does not authorize a purchase using the legacy environment flag alone', async () => {
     vi.stubEnv('ODDS_ALLOW_PAID_REFRESH', 'true');
-    expect((await retrieve()).failure).toBe('RESERVE');
+    expect((await retrieve()).failure).toBe('REFRESH_NOT_AUTHORIZED');
     expect(fetch).not.toHaveBeenCalled();
     expect(ledger.reservations.size).toBe(0);
   });
 
   it('does not authorize automatic purchases when automatic refresh is disabled', async () => {
     vi.stubEnv('ODDS_AUTO_REFRESH', 'false');
-    expect((await client.withAutomaticOddsRefresh(() => retrieve())).failure).toBe('RESERVE');
+    expect((await client.withAutomaticOddsRefresh(() => retrieve())).failure).toBe('REFRESH_NOT_AUTHORIZED');
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it('blocks a two-market request under a one-credit approval', async () => {
     const result = await client.withOneRunPaidRefresh(() => retrieve(['player_pass_yds', 'player_receptions']), { maxCredits: 1 });
-    expect(result.failure).toBe('RESERVE');
+    expect(result.failure).toBe('SEARCH_LIMIT');
     expect(fetch).not.toHaveBeenCalled();
     expect(ledger.requests).toBe(0);
   });
@@ -131,7 +131,7 @@ describe('NFL real spending guard with offline durable storage', () => {
   it('preserves the one-request approval even when credits remain', async () => {
     await client.withOneRunPaidRefresh(async () => {
       expect((await retrieve()).complete).toBe(true);
-      expect((await retrieve()).failure).toBe('RESERVE');
+      expect((await retrieve()).failure).toBe('SEARCH_LIMIT');
     }, { maxRequests: 1, maxCredits: 50 });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(ledger.spent).toBe(1);
@@ -144,20 +144,26 @@ describe('NFL real spending guard with offline durable storage', () => {
         expect((await retrieve(NFL_ELITE_MARKETS.slice(0, 10))).complete).toBe(true);
       }
       const blocked = await client.withOneRunPaidRefresh(() => retrieve(), { maxRequests: 50, maxCredits: 50 });
-      expect(blocked.failure).toBe('RESERVE');
+      expect(blocked.failure).toBe('SEARCH_LIMIT');
     });
     expect(fetch).toHaveBeenCalledTimes(5);
     expect(ledger.spent).toBe(50);
     expect(ledger.pending).toBe(0);
   });
 
-  it.each(['daily cap', 'reserve floor', 'missing storage', 'unknown balance', 'rate cap'] as const)('blocks %s before provider I/O', async (limit) => {
+  it.each([
+    ['daily cap', 'DAILY_LIMIT'],
+    ['reserve floor', 'RESERVE'],
+    ['missing storage', 'REFRESH_UNAVAILABLE'],
+    ['unknown balance', 'CREDIT_BALANCE_UNKNOWN'],
+    ['rate cap', 'RATE_LIMIT'],
+  ] as const)('blocks %s before provider I/O', async (limit, failure) => {
     if (limit === 'daily cap') ledger.spent = 300;
     if (limit === 'reserve floor') ledger.remaining = 2000;
     if (limit === 'missing storage') ledger.durable = false;
     if (limit === 'unknown balance') ledger.observed = false;
     if (limit === 'rate cap') ledger.requests = 10;
-    expect((await client.withAutomaticOddsRefresh(() => retrieve())).failure).toBe('RESERVE');
+    expect((await client.withAutomaticOddsRefresh(() => retrieve())).failure).toBe(failure);
     expect(fetch).not.toHaveBeenCalled();
     expect(ledger.pending).toBe(0);
     expect(ledger.settlements).toEqual([]);

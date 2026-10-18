@@ -33,16 +33,33 @@ describe('NFL free read retries and paid single attempts', () => {
   it('recovers free events in three attempts without reserving paid credits', async () => {
     const { getOddsBudgetStatus } = await import('../odds/budget');
     const { writeCreditStatus } = await import('../odds/persistentCache');
+    const { withNFLSpendTelemetry, getNFLSpendTelemetry } = await import('./spendTelemetry');
     const timeout = vi.spyOn(AbortSignal, 'timeout');
     vi.mocked(fetch).mockRejectedValueOnce(new DOMException('fixture', 'TimeoutError'))
-      .mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(Response.json(events));
-    const pending = api.getNFLSportsbookEvents();
+      .mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(Response.json(events, {
+        headers: { 'x-requests-last': '0', 'x-requests-remaining': '20000', 'x-requests-used': '0' },
+      }));
+    const pending = withNFLSpendTelemetry(async () => {
+      const result = await api.getNFLSportsbookEvents();
+      expect(getNFLSpendTelemetry()).toMatchObject({
+        providerRequestsMade: 1, paidRequestsMade: 0, creditsSpent: 0, creditsConsumed: 0,
+        actualSpendKnown: true, spendBasis: 'NONE', creditsBefore: 20000, creditsAfter: 20000,
+        refreshedGames: [], refreshedMarkets: [],
+      });
+      return result;
+    }, null);
     await vi.runAllTimersAsync();
     expect(await pending).toEqual([{ id: 'event', homeTeam: 'Home', awayTeam: 'Away', commenceTime: kickoff }]);
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(timeout.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([8000, 8000, 8000]);
     expect(getOddsBudgetStatus).not.toHaveBeenCalled();
-    expect(writeCreditStatus).not.toHaveBeenCalled();
+    expect(writeCreditStatus).toHaveBeenCalledExactlyOnceWith({
+      lastCost: '0', remaining: '20000', used: '0',
+      path: '/sports/americanfootball_nfl/events', updatedAt: Date.now(),
+    });
+    for (const [input] of vi.mocked(fetch).mock.calls) {
+      expect(new URL(String(input)).pathname).toBe('/v4/sports/americanfootball_nfl/events');
+    }
   });
 
   it.each([429, 503, 'timeout'] as const)('makes exactly one paid network call for %s', async failure => {
