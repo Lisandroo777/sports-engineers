@@ -5,6 +5,7 @@ import { readStalePersistentCache, writePersistentCache, writeCreditStatus } fro
 import { withNFLRefreshLease } from './refreshLease';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { recordNFLCacheRead, recordNFLProviderFailure, recordNFLProviderRequest, recordNFLProviderResponse } from './spendTelemetry';
+import { fetchWithReadRetry } from '../reliability/retry';
 
 export type NFLProviderFailure = 'TIMEOUT' | 'AUTHENTICATION' | 'CONFIGURATION' | 'RATE_LIMIT' | 'MALFORMED_RESPONSE' | 'NETWORK' | 'PROVIDER_ERROR' | 'RESERVE' | 'STALE_PRICE' | 'EVENT_UNAVAILABLE' | 'RESEARCH_FAILED';
 export class NFLSportsbookError extends Error {
@@ -95,16 +96,23 @@ async function request(path: string, markets?: string[]): Promise<unknown> {
   }
   recordNFLProviderRequest(markets ? path.split('/').at(-2) : undefined, markets);
   let response: Response;
-  try { response = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20000) }); }
+  try {
+    response = markets
+      ? await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20000) })
+      : await fetchWithReadRetry(url, { headers: { accept: 'application/json' } });
+  }
   catch (error) { recordNFLProviderFailure(markets != null); throw error; }
   recordNFLProviderResponse(response.headers, markets != null);
   if (markets) {
     try { await writeCreditStatus({ lastCost: response.headers.get('x-requests-last'), remaining: response.headers.get('x-requests-remaining'), used: response.headers.get('x-requests-used'), path, updatedAt: Date.now() }); }
     catch { /* spend persistence cannot retry or invalidate a purchased response */ }
   }
-  if (response.status === 401 || response.status === 403 || response.status === 429) {
-    const kind = response.status === 429 ? 'RATE_LIMIT' : 'AUTHENTICATION';
-    providerCircuit = { kind, expiresAt: Date.now() + 60000 };
+  if (response.status === 401 || response.status === 403 || response.status === 429 || response.status === 503) {
+    const kind = response.status === 429 ? 'RATE_LIMIT' : response.status === 503 ? 'PROVIDER_ERROR' : 'AUTHENTICATION';
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    const retryDelay = retryAfter && /^\d+(?:\.\d+)?$/.test(retryAfter)
+      ? Number(retryAfter) * 1000 : retryAfter ? Date.parse(retryAfter) - Date.now() : 0;
+    providerCircuit = { kind, expiresAt: Date.now() + Math.min(24 * 3600000, Math.max(60000, Number.isNaN(retryDelay) ? 0 : retryDelay)) };
     throw new NFLSportsbookError(kind);
   }
   if (!response.ok) throw new NFLSportsbookError('PROVIDER_ERROR');
@@ -131,6 +139,28 @@ function marketSnapshotNeedsRefresh(entry: MarketSnapshot | undefined, kickoff: 
 
 function marketSnapshotExpiry(entry: MarketSnapshot, kickoff: string): number {
   return entry.status === 'ZERO_MARKETS' ? Date.parse(entry.retrievedAt) + nflFreshnessMs(kickoff) : entry.expiresAt;
+}
+
+function snapshotMatches(snapshot: EventSnapshot | undefined, input: Pick<EventSnapshot, 'date' | 'gameId' | 'eventId' | 'kickoff'>): snapshot is EventSnapshot {
+  return snapshot?.version === 1 && snapshot.sport === 'nfl' && snapshot.date === input.date && snapshot.gameId === input.gameId
+    && snapshot.eventId === input.eventId && snapshot.kickoff === input.kickoff;
+}
+
+function mergeSnapshots(persisted: EventSnapshot | undefined, local: EventSnapshot | undefined, kickoff: string): EventSnapshot | undefined {
+  if (!persisted || !local) return persisted || local ? structuredClone((persisted ?? local)!) : undefined;
+  const snapshot = structuredClone(persisted);
+  const now = Date.now();
+  for (const market of NFL_ELITE_MARKETS) {
+    const stored = snapshot.markets[market];
+    const cached = local.markets[market];
+    if (!cached) continue;
+    const storedFresh = marketSnapshotFresh(stored, kickoff, now);
+    const cachedFresh = marketSnapshotFresh(cached, kickoff, now);
+    if (!stored || (cachedFresh !== storedFresh ? cachedFresh : Date.parse(cached.retrievedAt) > Date.parse(stored.retrievedAt))) {
+      snapshot.markets[market] = structuredClone(cached);
+    }
+  }
+  return snapshot;
 }
 
 export async function getNFLSportsbookEvents(): Promise<OddsEvent[]> {
@@ -207,9 +237,15 @@ export async function retrieveNFLSportsbookGame(input: { date: string; gameId: s
   }
   const key = `nfl-sportsbook:v1:${input.date}:${input.gameId}:${input.eventId}`;
   return exclusive(key, () => withNFLRefreshLease(key, async () => {
-    const persisted = (await readStalePersistentCache<EventSnapshot>(key))?.data;
-    let snapshot = persisted ?? memory.get(key);
-    if (!snapshot || snapshot.version !== 1 || snapshot.sport !== 'nfl' || snapshot.date !== input.date || snapshot.gameId !== input.gameId || snapshot.eventId !== input.eventId || snapshot.kickoff !== input.kickoff) {
+    const cached = memory.get(key);
+    const local = snapshotMatches(cached, input) ? cached : undefined;
+    let persisted: EventSnapshot | undefined;
+    try { persisted = (await readStalePersistentCache<EventSnapshot>(key))?.data; }
+    catch (error) {
+      if (!local || !requested.every((market) => marketSnapshotFresh(local.markets[market], input.kickoff))) throw error;
+    }
+    let snapshot = mergeSnapshots(snapshotMatches(persisted, input) ? persisted : undefined, local, input.kickoff);
+    if (!snapshot) {
       snapshot = { version: 1, sport: 'nfl', date: input.date, gameId: input.gameId, eventId: input.eventId, kickoff: input.kickoff, markets: {} };
       const discovery = await readStalePersistentCache<{ bookmakers?: Array<{ markets?: Array<{ key: string }> }> }>(`${BASE}/sports/americanfootball_nfl/events/${input.eventId}/markets?regions=us`);
       const legacyMarkets = [...new Set((discovery?.data.bookmakers ?? []).flatMap((book) => book.markets ?? []).map((market) => market.key))].filter((market) => market.startsWith('player_'));
@@ -251,12 +287,15 @@ export async function retrieveNFLSportsbookGame(input: { date: string; gameId: s
       try { await writePersistentCache(key, snapshot, Math.max(...Object.values(snapshot.markets).map((market) => market!.expiresAt))); } catch { /* memory still prevents duplicate local purchases */ }
     }
     memory.set(key, snapshot);
-    const returned = requested.filter((market) => snapshot!.markets[market]?.status === 'RETURNED');
-    const zero = requested.filter((market) => snapshot!.markets[market]?.status === 'ZERO_MARKETS');
-    const failed = requested.filter((market) => snapshot!.markets[market]?.status === 'FAILED');
+    const assembledAt = Date.now();
+    const fresh = requested.filter((market) => marketSnapshotFresh(snapshot!.markets[market], input.kickoff, assembledAt));
+    const returned = fresh.filter((market) => snapshot!.markets[market]?.status === 'RETURNED');
+    const zero = fresh.filter((market) => snapshot!.markets[market]?.status === 'ZERO_MARKETS');
+    const failed = requested.filter((market) => !fresh.includes(market));
+    const stale = failed.some((market) => snapshot!.markets[market]?.status !== 'FAILED');
     const entries = requested.map((market) => snapshot!.markets[market]!);
-    return { props: entries.flatMap((market) => market.props), requestedMarkets: requested, returnedMarkets: returned, zeroMarkets: zero, failedMarkets: failed,
-      complete: failed.length === 0, failure: failed.length ? snapshot.markets[failed[0]]!.failure! : null,
+    return { props: returned.flatMap((market) => snapshot!.markets[market]!.props), requestedMarkets: requested, returnedMarkets: returned, zeroMarkets: zero, failedMarkets: failed,
+      complete: failed.length === 0, failure: stale ? 'STALE_PRICE' : failed.length ? snapshot.markets[failed[0]]!.failure! : null,
       fromCache: needed.length === 0, retrievedAt: entries.map((market) => market.retrievedAt).sort()[0] ?? null,
       expiresAt: entries.length ? Math.min(...entries.map((market) => marketSnapshotExpiry(market, input.kickoff))) : now + 120000 };
   }));

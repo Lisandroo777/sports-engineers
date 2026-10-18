@@ -21,7 +21,9 @@ import { buildNFLRoleContext, type NFLRoleContext } from '../nfl/roleContext';
 import { buildNFLOpponentContext, getNFLOpponentDefenseGames, type NFLDefenseGame, type NFLOpponentContext } from '../nfl/opponentContext';
 import { buildNFLInjuryContext, evaluateNFLPlayerAvailability, getNFLInjurySnapshot, type NFLInjuryContext, type NFLInjuryReport, type NFLInjurySnapshot } from '../nfl/injuries';
 import { getNFLWeatherContext, type NFLWeatherContext } from '../nfl/weather';
-import { buildNFLResearchProfile, reviewNFLSourceConflicts, type NFLResearchProfile } from '../nfl/researchModel';
+import { getNFLKickingResearch, type NFLKickingResearch } from '../nfl/kickingResearch';
+import { getNFLKickingOpportunity, type NFLKickingOpportunityResult } from '../nfl/kickingOpportunity';
+import { buildNFLResearchProfile, reviewNFLSourceConflicts, type NFLResearchProfile, type NFLSourceProvenance } from '../nfl/researchModel';
 import { buildNFLPlayerIntelligence, getNFLNewsSnapshot, type NFLNewsSnapshot } from '../nfl/intelligence';
 import { buildNFLGameScriptResearch } from '../nfl/gameScript';
 import { recordNFLPropPriceSnapshot, summarizeNFLPropPriceMovement } from '../nfl/marketSnapshots';
@@ -93,6 +95,7 @@ export interface NFLCandidate {
   /** Fail-closed Elite analysis; null only when the player isn't confidently matched (no official research). */
   eliteAnalysis: EliteResearchAnalysis | null;
   nflResearchProfile?: NFLResearchProfile | null;
+  nflKickingResearch?: NFLKickingResearch | null;
 }
 
 export interface NFLFinderSummary extends FinderRunSummary {
@@ -366,7 +369,7 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
     const seen = new Set<string>();
     for (const prop of props) {
       const meta = getNFLMarketMetadata(prop.marketKey);
-      // Unsupported markets (kicking) fail closed — never turned into fake zero-history candidates.
+      // Unsupported markets fail closed — never turned into fake zero-history candidates.
       if (!meta || meta.historicalSupport !== 'full' || prop.isAlternate || !markets.includes(meta.canonicalMarketKey as NFLAnalyzableMarketKey)) { unsupportedProps += 1; continue; }
 
       for (const [side, odds] of [['over', prop.overOdds] as const, ['under', prop.underOdds] as const]) {
@@ -384,6 +387,7 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
         ledgerRow.propsEvaluated += 1;
 
         const market = meta.canonicalMarketKey as NFLAnalyzableMarketKey;
+        const isKickingMarket = market === 'player_field_goals' || market === 'player_kicking_points';
         let history: NFLMarketHistory | null = null;
         let projection: NFLMarketProjection | null = null;
         let eliteAnalysis: EliteResearchAnalysis | null = null;
@@ -393,6 +397,11 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
         let injuryContext: NFLInjuryContext | null = null;
         let weatherContext: NFLWeatherContext | null = null;
         let nflResearchProfile: NFLResearchProfile | null = null;
+        let nflKickingResearch: NFLKickingResearch | null = null;
+        let kickingOpponentContext: NFLOpponentContext | null = null;
+        const kickingSupportingReasons: string[] = [];
+        const kickingCounterReasons: string[] = [];
+        const kickingProvenance = new Map<string, NFLSourceProvenance>();
         let outlierDependency: NFLOutlierDependency | null = null;
         let playerPriceHistory: Awaited<ReturnType<typeof recordNFLPropPriceSnapshot>> = [];
         // Reuses the MLB-proven, already sport-agnostic optimizer/cross-book functions — they operate
@@ -437,6 +446,10 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
           const seasonPhase = classifyNFLSeasonPhase({ season: game.season ?? season, week: game.week, seasonType: game.seasonType ?? null, playoffRound: game.playoffRound ?? null });
           projection = projectNFLMarket({ logs, market, roleContext, historySample, injuryContext, position: match.position, seasonPhase });
           outlierDependency = computeNFLOutlierDependency(logs, market);
+          if (isKickingMarket) {
+            if (!weatherContextCache.has(game.id)) weatherContextCache.set(game.id, getNFLWeatherContext(game));
+            weatherContext = await weatherContextCache.get(game.id)!;
+          }
 
           const researchCandidate: NFLResearchCandidate = {
             candidateId: `${event.id}|${prop.player}|${meta.canonicalMarketKey}|${prop.line}|${side}|${prop.sportsbookKey}`,
@@ -489,6 +502,105 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
             projectionModel: projection.projectionModel, phase3Projection: projection.projection, phase3Uncertainty: projection.uncertainty,
             injuryContext, weatherContext, now: new Date(nflResearchNow()),
           });
+          if (isKickingMarket) {
+            const opportunity = await memoNFLResearchInput<NFLKickingOpportunityResult>(`kicking-opportunity:${match.teamId}:${opponentTeamId}:${season}:${game.gameTime}`, async () => {
+              try {
+                if (match.teamId == null || opponentTeamId == null) throw new Error('Resolved matchup team IDs unavailable.');
+                return await getNFLKickingOpportunity({ teamId: match.teamId, opponentTeamId, season, before: game.gameTime, currentLogs: current });
+              } catch {
+                return { facts: {}, evidence: [{ field: 'loader', status: 'UNAVAILABLE', sourceURL: null,
+                  retrievedAt: new Date(nflResearchNow()).toISOString(), sampleId: `${game.id}:${match.teamId}`, gameIds: [],
+                  reason: 'Kicking opportunity acquisition unavailable; no opportunity counts inferred.' }],
+                  missingFields: ['loader'], gameIds: [], sourceURLs: [] };
+              }
+            });
+            const teamTotal = gameScript.value?.homeAway === 'HOME' ? gameScript.value.homeTeamTotal
+              : gameScript.value?.homeAway === 'AWAY' ? gameScript.value.awayTeamTotal : null;
+            const teamTotalSource = gameScript.provenance.find((source) => source.sourceType === 'SPORTSBOOK');
+            const priorLogs = previousLogCache.get(playerId);
+            const opportunityFacts = { ...opportunity.facts };
+            if (!['fourthDownAttempts', 'fourthDownOpportunities'].every((field) => opportunity.evidence.some((entry) => entry.field === field && entry.status === 'AVAILABLE'))) {
+              delete opportunityFacts.fourthDownOpportunities;
+            }
+            nflKickingResearch = getNFLKickingResearch({
+              logs, season, before: game.gameTime, weatherContext, injuryContext,
+              ...(priorLogs ? { careerLogs: [...historySample.currentSeason, ...priorLogs.filter((log) => log.result != null && Date.parse(log.date) < Date.parse(game.gameTime))] } : {}),
+              opportunity: { ...opportunityFacts, ...(teamTotal != null && teamTotalSource?.retrievedAt ? {
+                teamTotal: { value: teamTotal, source: `${teamTotalSource.source} (derived market-implied team total, not observed scoring)`,
+                  retrievedAt: teamTotalSource.retrievedAt, sampleId: `${game.id}:${match.teamId}` },
+              } : {}) },
+            });
+            const coverage: NFLKickingResearch['evidence'] = opportunity.evidence.filter((entry) => entry.field !== 'teamTotal' || !nflKickingResearch!.opportunity.facts.teamTotal)
+              .map((entry) => ({ id: `opportunity.coverage.${entry.field}`, status: entry.status === 'AVAILABLE' ? 'AVAILABLE' as const : 'UNAVAILABLE' as const,
+                source: entry.sourceURL, retrievedAt: entry.retrievedAt,
+                reason: entry.status === 'AVAILABLE' ? null : `${entry.status}: ${entry.reason ?? 'Complete opportunity coverage unavailable.'}` }));
+            for (const field of opportunity.missingFields) {
+              if ((field === 'teamTotal' && nflKickingResearch.opportunity.facts.teamTotal) || coverage.some((entry) => entry.id === `opportunity.coverage.${field}`)) continue;
+              coverage.push({ id: `opportunity.coverage.${field}`, status: 'UNAVAILABLE', source: null,
+                retrievedAt: null, reason: 'Opportunity loader reports missing coverage; no value inferred.' });
+            }
+            nflKickingResearch.evidence.push(...coverage);
+            nflKickingResearch.unavailableEvidence.push(...coverage.filter((entry) => entry.status === 'UNAVAILABLE'));
+            const opponentRate = nflKickingResearch.opportunity.opponentRedZoneTouchdownRate;
+            const opponentCoverage = opportunity.evidence.filter((entry) => ['opponentRedZoneTrips', 'opponentRedZoneTouchdowns'].includes(entry.field));
+            if (opponentTeamId != null && opponentRate?.rate != null
+              && ['opponentRedZoneTrips', 'opponentRedZoneTouchdowns'].every((field) => opponentCoverage.some((entry) => entry.field === field && entry.status === 'AVAILABLE'))) {
+              kickingOpponentContext = { opponentTeamId, status: 'PARTIAL',
+                sampleSize: new Set(opponentCoverage.flatMap((entry) => entry.gameIds)).size, trend: 'INSUFFICIENT_SAMPLE',
+                sourceStatus: { provider: 'ESPN', schedule: 'UNAVAILABLE', boxscores: 'AVAILABLE' }, metrics: [], availableMetrics: [],
+                missingFields: ['Kicking opportunity context only; opponent efficiency and positional matchup metrics unavailable.'],
+                evidence: [`Observed opponent red-zone touchdowns/trips ${opponentRate.numerator}/${opponentRate.denominator}; neutral historical context, not a favorable matchup rating. Source: ${opponentRate.source}; retrieved ${opponentRate.retrievedAt}; sample ${opponentRate.sampleId}.`] };
+            }
+            const logSource: NFLSourceProvenance = { source: 'ESPN NFL game logs (supplied historical sample only)', sourceType: 'ESPN',
+              publishedAt: null, retrievedAt: null, affectedPlayer: prop.player, affectedTeam: match.teamName };
+            for (const sample of [nflKickingResearch.recentL3, nflKickingResearch.recentL5, nflKickingResearch.currentSeason, nflKickingResearch.career]) {
+              if (!sample) continue;
+              const counts = `${sample.label}: ${sample.made.total ?? 'unavailable'} field goals made (${sample.made.observedGames} observed games), ${sample.attempted.total ?? 'unavailable'} exact field-goal attempts (${sample.attempted.observedGames} observed games); source: supplied ESPN game logs.`;
+              kickingSupportingReasons.push(counts);
+              kickingProvenance.set(counts, logSource);
+              if (sample.accuracy?.rate != null) {
+                const accuracy = `${sample.label}: paired field-goal accuracy ${sample.accuracy.numerator}/${sample.accuracy.denominator}; not a forecast.`;
+                kickingSupportingReasons.push(accuracy);
+                kickingProvenance.set(accuracy, logSource);
+              }
+            }
+            const totalFact = nflKickingResearch.opportunity.facts.teamTotal;
+            for (const key of ['teamRedZoneTouchdownRate', 'opponentRedZoneTouchdownRate', 'teamRedZoneTripsPerDrive', 'fourthDownAttemptRate'] as const) {
+              const rate = nflKickingResearch.opportunity[key];
+              if (rate?.rate == null) continue;
+              const reason = `Observed kicking opportunity ${key}: ${rate.numerator}/${rate.denominator}; sample ${rate.sampleId}. Neutral historical context, not a directional signal or projection modifier.`;
+              kickingSupportingReasons.push(reason);
+              kickingProvenance.set(reason, { ...logSource, source: rate.source, retrievedAt: rate.retrievedAt });
+            }
+            if (totalFact) {
+              const totalReason = `Market-implied team total ${totalFact.value}; source: ${totalFact.source}; retrieved ${totalFact.retrievedAt}; sample ${totalFact.sampleId}. A team total does not establish field-goal opportunities.`;
+              kickingSupportingReasons.push(totalReason);
+              kickingProvenance.set(totalReason, { ...logSource, source: totalFact.source, sourceType: 'SPORTSBOOK', retrievedAt: totalFact.retrievedAt });
+            }
+            if (weatherContext) {
+              const weatherReason = `Kicking weather: ${weatherContext.environment}; wind ${weatherContext.wind?.speed ?? 'unavailable'} mph, gusts ${weatherContext.gusts?.speed ?? 'unavailable'} mph, temperature ${weatherContext.temperature?.value ?? 'unavailable'} F, precipitation ${weatherContext.precipitation?.amount ?? 'unavailable'} in; source: ${weatherContext.sources.forecast ?? weatherContext.sources.venue}; forecast ${weatherContext.forecastTimestamp ?? 'unavailable'}.`;
+              kickingSupportingReasons.push(weatherReason);
+              kickingProvenance.set(weatherReason, { ...logSource, source: weatherContext.sources.forecast ?? weatherContext.sources.venue,
+                sourceType: weatherContext.sources.forecast ? 'WEATHER' : 'ESPN', publishedAt: weatherContext.forecastTimestamp });
+            }
+            kickingCounterReasons.push(market === 'player_field_goals'
+              ? side === 'over' ? 'Field-goal over countercase: touchdowns instead of stalled drives, fourth-down attempts, or missed kicks can leave made field goals below the line.'
+                : 'Field-goal under countercase: repeated stalled drives can create additional attempts; historical accuracy does not cap made field goals.'
+              : side === 'over' ? 'Kicking-points over countercase: touchdowns may yield only extra points, while fourth-down attempts or missed field goals can remove three-point opportunities.'
+                : 'Kicking-points under countercase: additional field-goal attempts or touchdown-driven extra points can exceed the line.');
+            const recentAccuracy = nflKickingResearch.recentL5.accuracy;
+            if (recentAccuracy?.rate != null) {
+              const observedCounter = `Field-goal sample countercase: last 5 supplied games recorded ${recentAccuracy.numerator} made from ${recentAccuracy.denominator} paired attempts (${recentAccuracy.denominator - recentAccuracy.numerator} misses); attempts and conversion are separate uncertainties, not guaranteed future scoring.`;
+              kickingCounterReasons.push(observedCounter);
+              kickingProvenance.set(observedCounter, logSource);
+            }
+            kickingCounterReasons.push(...nflKickingResearch.unavailableEvidence.map((evidence) => {
+              const reason = `Kicking evidence unavailable: ${evidence.id}; ${evidence.reason} Source: ${evidence.source ?? 'unavailable'}; timestamp: ${evidence.retrievedAt ?? 'unavailable'}.`;
+              if (evidence.source) kickingProvenance.set(reason, { ...logSource, source: evidence.source,
+                sourceType: evidence.id.startsWith('opportunity.coverage.') ? 'ESPN' : 'UNKNOWN', retrievedAt: evidence.retrievedAt });
+              return reason;
+            }));
+          }
           projection = applyNFLGameEnvironmentToProjection(projection, { market, position: match.position, teamId: match.teamId,
             direction: side, season, researchMode: options.researchMode ?? 'STANDARD', gameScript, injuryContext, weatherContext, now: new Date(nflResearchNow()) });
           if (gameScript.value) gameScript.value.environmentModel = projection.projectionModel?.gameEnvironmentModel;
@@ -524,6 +636,7 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
           });
           howItLoses = [...new Set([...howItLoses, ...(projection.projectionModel?.matchupModel?.counterCase ?? [])])];
           howItLoses = [...new Set([...howItLoses, ...(projection.projectionModel?.gameEnvironmentModel?.counterCase ?? [])])];
+          if (isKickingMarket) howItLoses = [...new Set([...howItLoses, ...kickingCounterReasons])];
           const intelligenceItems = newsSnapshot ? buildNFLPlayerIntelligence({ snapshot: newsSnapshot, playerId,
             player: prop.player, teamId: match.teamId, team: match.teamName, opponentTeamId, market,
             retrievedAt: newsSnapshot.fetchedAt }) : [];
@@ -555,11 +668,11 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
             valueQualified: eliteAnalysis.valueQualified, existingEliteQualified: eliteAnalysis.eliteQualified,
             dataQuality: eliteAnalysis.dataQuality, rawEdge: eliteAnalysis.rawEdge,
             position: match.position, roleContext, roleLogs: logs, projectionModel: projection.projectionModel ?? null,
-            opponentContext, injuryContext, weatherContext, marketSupport: meta.historicalSupport,
+            opponentContext: kickingOpponentContext ?? opponentContext, injuryContext, weatherContext, marketSupport: meta.historicalSupport,
             historyGames: history?.gamesUsed ?? null, projectionAvailable: projection.status === 'OK',
             availabilityEligible: evaluateNFLPlayerAvailability(injuryContext).eligible,
             alternatePrices: alternateLines.options.map((option) => ({ sportsbook: option.bestBook, price: option.bestOdds, line: option.line })),
-            supportingReasons: [...eliteAnalysis.whyQualified, ...(eliteAnalysis.rawEdge == null ? [] : [`Current-line projection edge: ${eliteAnalysis.rawEdge.toFixed(2)}.`])],
+            supportingReasons: [...eliteAnalysis.whyQualified, ...(eliteAnalysis.rawEdge == null ? [] : [`Current-line projection edge: ${eliteAnalysis.rawEdge.toFixed(2)}.`]), ...kickingSupportingReasons],
             counterReasons: [...howItLoses, ...roleContext.unavailableEvidence.map((field) => `Role evidence unavailable: ${field}.`),
               ...(opponentContext?.missingFields ?? []).map((field) => `Scheme evidence unavailable: ${field}.`)],
             intelligenceItems, intelligenceStatus: newsSnapshot?.status ?? 'UNAVAILABLE',
@@ -568,6 +681,12 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
             scoreRatings,
             layerOverrides: { gameScript },
           });
+          if (isKickingMarket) {
+            for (const evidence of [...nflResearchProfile.evidence.for, ...nflResearchProfile.evidence.against]) {
+              const source = kickingProvenance.get(evidence.statement);
+              if (source) evidence.source = source;
+            }
+          }
         }
         roleContext ??= buildNFLRoleContext([], market);
 
@@ -609,6 +728,7 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
           howItLoses,
           eliteAnalysis,
           nflResearchProfile,
+          ...(isKickingMarket ? { nflKickingResearch } : {}),
         });
       }
     }
@@ -622,9 +742,9 @@ async function runNFLFinderResearch(slateDate: string, options: NFLFinderOptions
   nflLedger = finishNFLSlateLedger(nflLedger);
   for (const candidate of candidates) {
     const row = nflLedger.games.find((game) => game.gameId === candidate.gameId);
-    if (candidate.eliteAnalysis && (!nflLedger.researchComplete || row?.eligibility !== 'PREGAME')) candidate.eliteAnalysis = {
+    if (candidate.eliteAnalysis && (row?.state !== 'RESEARCHED' || row.eligibility !== 'PREGAME' || row.failure != null)) candidate.eliteAnalysis = {
       ...candidate.eliteAnalysis, eliteQualified: false, researchQualified: false, qualification: 'REJECT', whyQualified: [],
-      rejectedReasons: [...candidate.eliteAnalysis.rejectedReasons, 'The requested NFL research is incomplete or the game is no longer pregame.'],
+      rejectedReasons: [...candidate.eliteAnalysis.rejectedReasons, 'This NFL game research is incomplete or the game is no longer pregame.'],
     };
   }
   return {

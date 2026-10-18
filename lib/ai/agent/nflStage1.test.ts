@@ -5,6 +5,7 @@ import { buildResearchSessionFromCandidates, type GenericResearchCandidate, type
 import { nflNameMatches, parseNFLRequestScope } from './nflRequestScope';
 import { selectRankedCandidates } from './tools';
 import type { NFLInjuryContext } from '../../nfl/injuries';
+import { matchNFLPlayer } from '../../finder/nflEngine';
 
 function nflInput(): EliteCandidateInput {
   return {
@@ -51,14 +52,38 @@ function session(candidates: GenericResearchCandidate[] = [nflCandidate()]) {
 }
 
 describe('NFL official response boundary', () => {
-  it('requires a strict Elite flag and a fully supported offensive market', () => {
+  it('requires a strict Elite flag and a fully supported primary market', () => {
     const saved = session();
     const official = saved.candidates[0];
     const rows = [official, { ...official, eliteQualified: false }, { ...official, eliteQualified: 'true' },
       { ...official, marketKey: 'player_anytime_td' }, { ...official, marketKey: 'player_sacks' },
-      { ...official, marketKey: 'player_field_goals' }, { ...official, isAlternate: true }, null];
+      { ...official, isAlternate: true }, null];
     expect(filterOfficialResults(rows, 'nfl')).toEqual([official]);
     expect(resolveStructuredResults(rows, true, saved)).toMatchObject([official]);
+  });
+
+  it('publishes a matched dedicated kicker only with passing profile gates', async () => {
+    const match = await matchNFLPlayer('Harrison Butker', async () => [
+      { id: 2330, name: 'Harrison Butker', position: 'K', team: { id: 12, displayName: 'Kansas City Chiefs' } },
+    ]);
+    expect(match).toMatchObject({ state: 'MATCHED', playerId: 2330, position: 'K' });
+    const analysis = analyzePickCandidate({ ...nflInput(), candidateId: 'kicker', playerId: match.playerId,
+      player: 'Harrison Butker', market: 'player_field_goals', line: 0.5, projection: 2.5, projectionUncertainty: 1 });
+    const candidate = nflCandidate({ candidateId: 'kicker', playerId: match.playerId, player: 'Harrison Butker',
+      position: match.position, marketLabel: 'Field Goals Made', marketKey: 'player_field_goals',
+      line: 0.5, projection: 2.5, projectionUncertainty: 1, analysis });
+    const injury = candidate.injuryContext as NFLInjuryContext;
+    candidate.injuryContext = { ...injury, player: { ...injury.player, player: candidate.player,
+      playerId: match.playerId, position: 'K' } };
+    const official = session([candidate]).candidates[0];
+    expect(official.eliteQualified).toBe(true);
+    expect(filterOfficialResults([official], 'nfl')).toEqual([official]);
+    for (const gate of ['requiredDataPresent', 'roleClear', 'majorInjuryResolved'] as const) {
+      const blocked = { ...official, nflResearchProfile: { ...official.nflResearchProfile!, productionEliteQualified: false,
+        hardGates: { ...official.nflResearchProfile!.hardGates, [gate]: { passed: false, reason: `${gate} failed.` } } } };
+      expect(filterOfficialResults([blocked], 'nfl')).toEqual([]);
+      expect(selectRankedCandidates([blocked], 'Best NFL props', { sport: 'nfl' }).selected).toEqual([]);
+    }
   });
 
   it.each([true, false])('protects the final client boundary in production=%s', (production) => {

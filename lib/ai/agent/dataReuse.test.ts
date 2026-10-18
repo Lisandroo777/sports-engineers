@@ -33,7 +33,7 @@ function candidate(over: Partial<ResearchCandidateRecord>): ResearchCandidateRec
   return {
     candidateId: 'c1', rank: 1, player: 'Test Player', team: 'New York Yankees', opponent: 'Boston Red Sox',
     market: 'Hits', marketKey: 'batter_hits', line: 0.5, direction: 'over', book: 'DK', odds: -110,
-    availableBooks: 3, projection: 1.2, projectionUncertainty: 0.6, edge: 0.7, sampleSize: 10, priceCurrent: true, valueQualified: true,
+    availableBooks: 3, projection: 1.2, projectionUncertainty: 0.6, edge: 0.7, sampleSize: 10, priceCurrent: true, valueQualified: true, modelProbability: 70,
     l5Rate: 80, l10Rate: 80, l20Rate: 75, seasonRate: 78, researchScore: 80, signalAgreement: 5,
     signalsAvailable: 6, evidenceCoverage: 93, priceFreshness: 'FRESH', trueProbability: 70,
     evPercent: 5, isAlternate: false, dataQuality: 100, trapRisk: 0, qualification: 'WATCH',

@@ -4,6 +4,9 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppSidebar } from "../../components/AppSidebar";
+import { classifyResearchFailure } from "../../components/aiResearchOutcome";
+import { canReuseResearchEvidence, captureResearchEvidence, classifyEvidenceFreshness, isRecoverableResearchFailure, recoverResearchEvidence, resolveRecoverySessionId, type ResearchScope, type ResearchSnapshot } from "../../components/researchRecovery";
+import { withResponseDisplayRanks } from "../../components/aiRecommendationOrder";
 import { FuturisticBackground } from "../../components/FuturisticBackground";
 import { MobileBottomNav } from "../../components/MobileBottomNav";
 import { DeepSideLogo } from "../../components/DeepSideLogo";
@@ -26,6 +29,9 @@ import type { NBAProjectionResult } from "../../lib/nba/prediction/types";
 import type { GameRecommendation, ModeledGameResearch } from "../../lib/nba/prediction/gameLines/recommendations";
 import { NBAGameRecommendationCard, NBAModeledGameResearch } from "../../components/NBAGameRecommendationCard";
 import { NBAPresentationCards, type NBAClientPresentation } from "../../components/NBAPresentationCards";
+import { MLBContextFacts, MLBGameCoverage, MLBMarketResearch, type MLBGameMarketResearch } from "../../components/MLBMarketResearch";
+import { NFLKickingResearch } from "../../components/NFLKickingResearch";
+import type { MLBResearchContext } from "../../lib/mlb/researchContext";
 import type { PickTier } from "../../lib/ai/agent/pickTiers";
 import { getResearchHref } from "../../lib/researchHref";
 import { resolveSlateDate, todaySlateDate, tomorrowSlateDate, presetForSlateDate } from "../../lib/dateModel";
@@ -63,7 +69,7 @@ const PICK_TIER_STYLES: Record<PickTier, { badge: string; label: string; border:
 
 type SearchMode = "quick" | "deep" | "builder";
 type FinderStatus = 'IDLE' | 'LOADING' | 'SLATE_COMPLETE' | 'EVENT_LIST_REQUIRED' | 'SPORTSBOOK_DATA_REQUIRED' | 'SPORTSBOOK_UNAVAILABLE' | 'RESEARCHING' | 'NO_ELITE_RESULTS' | 'RESULTS' | 'ERROR'
-  | 'DATA_UNAVAILABLE' | 'TEMP_UNAVAILABLE' | 'CONNECTION_ERROR' | 'CLARIFY' | 'ANSWER' | 'RESEARCH_INCOMPLETE';
+  | 'DATA_UNAVAILABLE' | 'TEMP_UNAVAILABLE' | 'CONNECTION_ERROR' | 'CLARIFY' | 'ANSWER' | 'RESEARCH_INCOMPLETE' | 'MLB_GAME_RESEARCH';
 
 const SEARCH_TOOLS = new Set(['get_sportsbook_candidates', 'rank_candidates', 'run_elite_filter']);
 
@@ -111,6 +117,7 @@ interface AgentToolTrace {
 }
 
 interface AgentResultRecord {
+  nflKickingResearch?: import('../../lib/nfl/kickingResearch').NFLKickingResearch;
   sport?: string;
   candidateId: string;
   rank?: number;
@@ -181,12 +188,14 @@ interface AgentResultRecord {
   nflResearchProfile?: NFLResearchProfile;
   nbaPrediction?: NBAProjectionResult | null;
   nbaInjuryEvidence?: import('../../lib/nba/prediction/types').NBAInjuryEvidence;
+  mlbContext?: MLBResearchContext;
 }
 
 type UiAiResult = AiResult & { sourceRecord?: AgentResultRecord; closestMiss?: boolean };
 
 interface AgentChatResponse {
   reply: string;
+  mlbGameMarkets?: MLBGameMarketResearch;
   nbaPresentation?: NBAClientPresentation;
   toolTrace?: AgentToolTrace[];
   results?: (AgentResultRecord | GameRecommendation)[];
@@ -207,6 +216,7 @@ interface PersistedAIFinderSession {
   query: string;
   criteria: AiSearchCriteria | null;
   results: UiAiResult[];
+  mlbGameMarkets?: MLBGameMarketResearch | null;
   totalMatched: number;
   finderStatus: FinderStatus;
   showCount: number;
@@ -610,6 +620,9 @@ function StructuredPickCard({ result, index, expanded, selectedForCompare, onTog
         {nbaPrediction.contextMissing.length > 0 && <p className="text-[10px] text-slate-500">Context gaps: {nbaPrediction.contextMissing.slice(0, 3).join('; ')}</p>}
         <p className="text-[10px] text-amber-200">Probability model is UNVALIDATED; this estimate is not proven accuracy.</p>
       </div>}
+
+      {prop.sport === 'MLB' && source?.mlbContext && <MLBContextFacts context={source.mlbContext} />}
+      {prop.sport === 'NFL' && source?.nflKickingResearch && <NFLKickingResearch research={source.nflKickingResearch} />}
 
       <div className="mt-3 space-y-2 text-xs leading-5">
         {reasons.map((reason, reasonIndex) => <p key={`${reasonIndex}-${reason}`} className="text-slate-300"><span className="font-bold text-emerald-300">{reasonIndex === 0 ? 'Why:' : 'Also:'}</span> {reason}</p>)}
@@ -1131,6 +1144,7 @@ function AiFinderPageContent() {
   const [gameResults, setGameResults] = useState<GameRecommendation[]>([]);
   const [modeledGames, setModeledGames] = useState<ModeledGameResearch[]>([]);
   const [nbaPresentation, setNbaPresentation] = useState<NBAClientPresentation | null>(null);
+  const [mlbGameMarkets, setMlbGameMarkets] = useState<MLBGameMarketResearch | null>(null);
   const [ledgerReceipt, setLedgerReceipt] = useState<string | null>(null);
   const [ledgerCaptureIssue, setLedgerCaptureIssue] = useState<string | null>(null);
   const acknowledgedReceipt = useRef<string | null>(null);
@@ -1147,6 +1161,9 @@ function AiFinderPageContent() {
   const [toolTrace, setToolTrace] = useState<AgentToolTrace[]>([]);
   const [agentMeta, setAgentMeta] = useState<Record<string, unknown> | null>(null);
   const [researchSessionId, setResearchSessionId] = useState<string | null>(null);
+  const researchSessionScope = useRef<ResearchScope | null>(null);
+  const lastVerifiedResearch = useRef<ResearchSnapshot | null>(null);
+  const [recoveredResearch, setRecoveredResearch] = useState<ResearchSnapshot | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [loadDetail, setLoadDetail] = useState<string | null>(null);
   const [researchScope, setResearchScope] = useState<{ label: string; games: number | null } | null>(null);
@@ -1223,6 +1240,7 @@ function AiFinderPageContent() {
         restore(() => setCriteria(saved.criteria ?? null));
         const restoredResults = Array.isArray(saved.results) ? saved.results.filter(hasAllowedOfficialPrice) : [];
         restore(() => setResults(restoredResults));
+        restore(() => setMlbGameMarkets(saved.mlbGameMarkets ?? null));
         restore(() => setTotalMatched(typeof saved.totalMatched === 'number' ? saved.totalMatched : 0));
         restore(() => setFinderStatus(restoredResults.length > 0 ? 'RESULTS' : saved.finderStatus ?? 'IDLE'));
         restore(() => setShowCount(typeof saved.showCount === 'number' ? saved.showCount : 15));
@@ -1230,6 +1248,7 @@ function AiFinderPageContent() {
         restore(() => setToolTrace(Array.isArray(saved.toolTrace) ? saved.toolTrace : []));
         restore(() => setAgentMeta(saved.agentMeta ?? null));
         restore(() => setResearchSessionId(typeof saved.researchSessionId === 'string' ? saved.researchSessionId : null));
+        restore(() => { researchSessionScope.current = typeof saved.sport === 'string' && typeof saved.date === 'string' ? { sport: saved.sport, date: saved.date } : null; });
         restore(() => setSelectedIds(new Set(Array.isArray(saved.selectedIds) ? saved.selectedIds : [])));
         restore(() => setDeepSummary(saved.deepSummary ?? null));
         restore(() => setDeepSummarySport(saved.deepSummarySport ?? null));
@@ -1268,13 +1287,14 @@ function AiFinderPageContent() {
       query,
       criteria,
       results,
+      mlbGameMarkets,
       totalMatched,
       finderStatus,
       showCount,
       conversation,
       toolTrace,
       agentMeta,
-      researchSessionId,
+      researchSessionId: researchSessionScope.current && canReuseResearchEvidence(researchSessionScope.current, { sport: finderSport, date: finderDate }) ? researchSessionId : null,
       selectedIds: [...selectedIds],
       // Never persist hundreds of raw candidates: only the (naturally small) Elite-qualified subset can
       // ever be displayed by this grid, so that's all storage needs to survive a reload.
@@ -1290,7 +1310,7 @@ function AiFinderPageContent() {
     } catch {
       // Session persistence is best-effort and must never block the Finder UI.
     }
-  }, [agentMeta, conversation, criteria, deepSummary, deepSummarySport, finderAltFilter, finderBookFilter, finderDate, finderGameFilter, finderMarketFilter, finderPlayerFilter, finderSideFilter, finderSortBy, finderSport, finderStatus, finderTeamFilter, minBooks, minEv, minFinderScore, mode, query, researchSessionId, results, selectedIds, sessionRestored, showCount, toolTrace, totalMatched]);
+  }, [agentMeta, conversation, criteria, deepSummary, deepSummarySport, finderAltFilter, finderBookFilter, finderDate, finderGameFilter, finderMarketFilter, finderPlayerFilter, finderSideFilter, finderSortBy, finderSport, finderStatus, finderTeamFilter, minBooks, minEv, minFinderScore, mlbGameMarkets, mode, query, researchSessionId, results, selectedIds, sessionRestored, showCount, toolTrace, totalMatched]);
 
   useEffect(() => {
     if (!isSearching) return;
@@ -1304,7 +1324,31 @@ function AiFinderPageContent() {
   // still decides qualification, and results render through the existing DeepSide cards.
   async function runSearch(q: string, appendUser = true) {
     if (!q.trim()) return;
+    const requestScope = { sport: (detectSport(q) ?? finderSport).toUpperCase(), date: resolveDateFromText(q)?.resolvedDate ?? finderDate };
+    const previousSession = researchSessionScope.current ? { scope: researchSessionScope.current, id: researchSessionId } : null;
+    const requestSessionId = resolveRecoverySessionId(previousSession, requestScope, undefined, false);
+    const recoverFailure = (status: string, scope = requestScope, incomingSession?: string | null) => {
+      setRecoveredResearch(recoverResearchEvidence(lastVerifiedResearch.current, scope, status));
+      const sessionId = resolveRecoverySessionId(previousSession, scope, incomingSession, true);
+      setResearchSessionId(sessionId);
+      researchSessionScope.current = sessionId ? scope : null;
+      setResults([]);
+      setGameResults([]);
+      setModeledGames([]);
+      setNbaPresentation(null);
+      setMlbGameMarkets(null);
+      setClosestMisses([]);
+      setTotalMatched(0);
+      setLedgerReceipt(null);
+      setAgentMeta(null);
+    };
+    setRecoveredResearch(null);
+    setResults([]);
+    setClosestMisses([]);
+    setTotalMatched(0);
     setNbaPresentation(null);
+    setMlbGameMarkets(null);
+    setAgentMeta(previous => previous?.mlbGameCoverage == null ? previous : { ...previous, mlbGameCoverage: undefined });
     setGameResults([]);
     setModeledGames([]);
     setLedgerReceipt(null);
@@ -1333,7 +1377,7 @@ function AiFinderPageContent() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           messages: history.map((entry) => ({ role: entry.role === "ai" ? "assistant" : "user", content: entry.text })),
-          researchSessionId,
+          researchSessionId: requestSessionId,
           context: { sport: finderSport.toLowerCase(), date: finderDate },
         }),
       });
@@ -1344,8 +1388,7 @@ function AiFinderPageContent() {
         setRestrictionMessage(message);
         setConversation((prev) => [...prev, { role: "ai", text: message }]);
         setFinderStatus("ERROR");
-        setResults([]);
-        setTotalMatched(0);
+        recoverFailure('HTTP_ERROR', requestScope, payload.researchSessionId);
         setIsSearching(false);
         return;
       }
@@ -1354,12 +1397,12 @@ function AiFinderPageContent() {
       setAgentError(message);
       setConversation((prev) => [...prev, { role: "ai", text: message }]);
       setFinderStatus("ERROR");
+      recoverFailure('CONNECTION_ERROR');
       setIsSearching(false);
       return;
     }
 
     setToolTrace(payload.toolTrace ?? []);
-    setLedgerReceipt(payload.ledgerReceipt ?? null);
     const responseSport = String(payload.meta?.sport ?? finderSport).toLowerCase();
     if (responseSport === 'nfl' && (payload.results?.length ?? 0) > 0 && !payload.ledgerReceipt) {
       setLedgerCaptureIssue('This displayed NFL recommendation was not tracked because a signed ledger receipt is unavailable.');
@@ -1367,24 +1410,49 @@ function AiFinderPageContent() {
     // Follow-up turns that only read stored memory (get_closest_misses etc.) return no meta —
     // keep showing the last real analysis instead of blanking the panel.
     if (payload.meta) setAgentMeta(payload.meta);
-    if (payload.researchSessionId !== undefined) setResearchSessionId(payload.researchSessionId);
 
     const meta = payload.meta ?? {};
-    const sportLabel = String(meta.sport ?? finderSport).toUpperCase();
+    const sportLabel = String(meta.sport ?? requestScope.sport).toUpperCase();
     const sport = sportLabel === 'ALL' ? 'ALL' : sportLabel === 'NFL' ? 'NFL' : sportLabel === 'NBA' ? 'NBA' : 'MLB';
-    const requestDate = typeof meta.date === "string" ? meta.date : finderDate;
+    const requestDate = typeof meta.date === "string" ? meta.date : requestScope.date;
+    const responseScope = { sport, date: requestDate };
+    const trace = payload.toolTrace ?? [];
+    const lastLoad = [...trace].reverse().find((entry) => entry.name === 'get_sportsbook_candidates');
+    const failureStatus = lastLoad && lastLoad.status !== 'SUCCESS' ? lastLoad.status : String(meta.status ?? '');
+    const specificFailure = classifyResearchFailure(failureStatus, meta.researchComplete as boolean | undefined);
+    const recoveryStatus = isRecoverableResearchFailure(failureStatus) ? failureStatus : specificFailure ?? failureStatus;
+    const responseSessionId = resolveRecoverySessionId(previousSession, responseScope, payload.researchSessionId, isRecoverableResearchFailure(recoveryStatus));
+    setResearchSessionId(responseSessionId);
+    researchSessionScope.current = responseSessionId ? responseScope : null;
     if (requestDate !== finderDate) setFinderDate(requestDate);
     if (sport !== finderSport) setFinderSport(sport);
 
     setConversation((prev) => [...prev, { role: "ai", text: payload.reply }]);
+    if (payload.mlbGameMarkets != null) {
+      lastVerifiedResearch.current = null;
+      setMlbGameMarkets(payload.mlbGameMarkets);
+      setResults([]);
+      setGameResults([]);
+      setModeledGames([]);
+      setClosestMisses([]);
+      setTotalMatched(0);
+      setFinderStatus('MLB_GAME_RESEARCH');
+      setIsSearching(false);
+      return;
+    }
     if (sport === 'NBA' && payload.nbaPresentation?.schemaVersion === 'deepside-nba-pick-presentation/1') {
+      const recommendedIds = new Set(payload.nbaPresentation.recommendedCandidateIds ?? []);
+      lastVerifiedResearch.current = captureResearchEvidence(responseScope, (payload.results ?? []).filter(record => 'candidateId' in record && recommendedIds.has(record.candidateId)));
       setNbaPresentation(payload.nbaPresentation);
       setResults([]);
       setGameResults([]);
       setModeledGames([]);
       setClosestMisses([]);
       setTotalMatched(payload.nbaPresentation.recommendedCandidateIds?.length ?? 0);
-      setFinderStatus(payload.nbaPresentation.picks.length > 0 ? 'RESULTS' : 'NO_ELITE_RESULTS');
+      const nbaOutcome = payload.nbaPresentation.picks.length > 0 ? 'RESULTS' : specificFailure ?? 'NO_ELITE_RESULTS';
+      if (nbaOutcome === 'DATA_UNAVAILABLE' || nbaOutcome === 'SLATE_COMPLETE') setLoadDetail(payload.reply);
+      if (nbaOutcome !== 'RESULTS') recoverFailure(recoveryStatus, responseScope);
+      setFinderStatus(nbaOutcome);
       setIsSearching(false);
       return;
     }
@@ -1394,7 +1462,10 @@ function AiFinderPageContent() {
     setModeledGames(payload.modeledGames ?? []);
 
     if ((payload.results ?? []).length > 0) {
-      const structuredResults = responseProps.filter((record) => (record.pickTier != null || record.eliteQualified) && record.odds != null && record.odds >= -900).slice(0, 15).map((record) => recordToUiResult(record, sport));
+      const orderedProps = sport === 'MLB' ? withResponseDisplayRanks(responseProps) : responseProps;
+      const structuredResults = orderedProps.filter((record) => (record.pickTier != null || record.eliteQualified) && record.odds != null && record.odds >= -900).slice(0, 15).map((record) => recordToUiResult(record, sport));
+      lastVerifiedResearch.current = captureResearchEvidence(responseScope, structuredResults.map(result => result.sourceRecord));
+      setLedgerReceipt(structuredResults.length > 0 ? payload.ledgerReceipt ?? null : null);
       setTotalMatched(structuredResults.length + responseGames.length);
       setResults(structuredResults);
       setClosestMisses([]);
@@ -1407,13 +1478,13 @@ function AiFinderPageContent() {
     setTotalMatched(0);
     setClosestMisses((payload.closestMisses ?? []).slice(0, 5).map((record) => closestMissToUiResult(record, sport)));
 
-    const trace = payload.toolTrace ?? [];
-    const lastLoad = [...trace].reverse().find((entry) => entry.name === 'get_sportsbook_candidates');
     const ranSearch = trace.some((entry) => SEARCH_TOOLS.has(entry.name));
-    const outcome = sport === 'ALL' ? 'NO_ELITE_RESULTS' as const : meta.researchComplete === false ? 'RESEARCH_INCOMPLETE' as const : meta.status === 'SLATE_COMPLETE' ? 'SLATE_COMPLETE' as const : meta.status === 'NOT_FOUND' ? 'CLARIFY' as const : lastLoad && lastLoad.status !== 'SUCCESS'
+    const outcome = sport === 'ALL' ? 'NO_ELITE_RESULTS' as const : specificFailure ?? (lastLoad && lastLoad.status !== 'SUCCESS'
       ? classifyLoadFailure(lastLoad.status)
       : ranSearch || meta.researchComplete === true ? 'NO_ELITE_RESULTS' as const
-        : payload.reply.trim().endsWith('?') && trace.length === 0 ? 'CLARIFY' as const : 'ANSWER' as const;
+        : payload.reply.trim().endsWith('?') && trace.length === 0 ? 'CLARIFY' as const : 'ANSWER' as const);
+    if (isRecoverableResearchFailure(recoveryStatus)) recoverFailure(recoveryStatus, responseScope, payload.researchSessionId);
+    else lastVerifiedResearch.current = null;
     if (outcome === 'DATA_UNAVAILABLE' || outcome === 'CONNECTION_ERROR') {
       console.warn('[DeepSide AI]', lastLoad?.status, lastLoad?.summary?.error ?? '');
     }
@@ -1457,6 +1528,9 @@ function AiFinderPageContent() {
 
   function resetSearchSession() {
     sessionClearedRef.current = true;
+    lastVerifiedResearch.current = null;
+    researchSessionScope.current = null;
+    setRecoveredResearch(null);
     window.sessionStorage.removeItem(AI_FINDER_SESSION_KEY);
     if (researchSessionId) {
       fetch('/api/ai/chat', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ researchSessionId }) }).catch(() => {});
@@ -1472,6 +1546,7 @@ function AiFinderPageContent() {
     setAgentError(null);
     setResults([]);
     setNbaPresentation(null);
+    setMlbGameMarkets(null);
     setGameResults([]);
     setModeledGames([]);
     setTotalMatched(0);
@@ -1524,6 +1599,7 @@ function AiFinderPageContent() {
     ? { researched: agentMeta.gamesFound, expected: agentMeta.gamesScheduled }
     : null;
   const nflLedger = finderSport === 'NFL' ? agentMeta?.nflLedger as NFLSlateLedger | undefined : undefined;
+  const hasIncompleteCoverage = agentMeta?.partialCoverage === true || agentMeta?.researchComplete === false || nflLedger?.researchComplete === false;
   const keyFindings = useMemo(() => {
     if (results.length === 0) return [];
     const findings = [`${results.length} play${results.length === 1 ? '' : 's'} passed DeepSide's qualification filter`];
@@ -1812,11 +1888,27 @@ function AiFinderPageContent() {
                     </div>
                   )}
 
+                  {recoveredResearch && canReuseResearchEvidence(recoveredResearch.scope, { sport: finderSport, date: finderDate }) && (
+                    <section aria-label="Previous research evidence" className="min-w-0 border-y border-amber-400/25 py-4">
+                      <p role="status" className="text-sm font-semibold text-amber-200">Previous research - refresh failed; not current recommendations</p>
+                      <p className="mt-1 text-xs text-slate-400">{recoveredResearch.scope.sport} / {recoveredResearch.scope.date} / Saved {recoveredResearch.capturedAt}</p>
+                      <ul className="mt-3 divide-y divide-white/10">
+                        {recoveredResearch.evidence.map((evidence, index) => (
+                          <li key={index} className="min-w-0 break-words py-2 text-sm text-slate-300">
+                            <p>{evidence.player} / {evidence.market} / {evidence.direction} {evidence.line}</p>
+                            <p className="text-xs text-slate-400">{evidence.book} / Quoted odds {evidence.odds > 0 ? '+' : ''}{evidence.odds} / Quote updated {evidence.quotedAt}</p>
+                            <p className="text-xs text-amber-200">{classifyEvidenceFreshness(evidence.quotedAt, Date.parse(recoveredResearch.capturedAt))}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
+
                   {(finderStatus === 'RESULTS' || finderStatus === 'NO_ELITE_RESULTS') && (
                     <div className="rounded-2xl border border-white/8 bg-white/3 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">{agentMeta?.partialCoverage === true ? 'Partial Research Coverage' : '✓ Research Complete'}</p>
+                          <p className={`text-[10px] font-bold uppercase tracking-[0.18em] ${hasIncompleteCoverage ? 'text-amber-300' : 'text-emerald-300'}`}>{hasIncompleteCoverage ? 'Partial Research Coverage' : '✓ Research Complete'}</p>
                           <p className="mt-1 text-base font-bold text-white">{slateLabel}</p>
                         </div>
                         <button onClick={startNewSearch} className="min-h-9 shrink-0 rounded-xl border border-white/10 px-3 text-xs font-semibold text-slate-300 hover:text-white">New Search</button>
@@ -1832,6 +1924,9 @@ function AiFinderPageContent() {
                           {nbaPresentation?.recommendedCandidateIds?.length ?? results.length + gameResults.length} {agentMeta?.includePasses === true ? 'PASS candidate' : 'recommended play'}{(nbaPresentation?.recommendedCandidateIds?.length ?? results.length + gameResults.length) === 1 ? '' : 's'}
                         </span>}
                       </div>
+                      {finderStatus === 'RESULTS' && hasIncompleteCoverage && <p role="status" className="mt-3 border-l-2 border-amber-300 px-3 py-2 text-sm text-amber-100">
+                        Partial coverage: {nflLedger ? `${nflLedger.researchedGames} / ${nflLedger.eligiblePregame} pregame games researched; ` : ''}picks shown only for fully researched games.
+                      </p>}
                       {finderSport === 'NBA' && typeof agentMeta?.unsupportedMarketNotice === 'string'
                         && <p role="status" className="mt-3 border-l-2 border-amber-300 px-3 py-2 text-xs leading-relaxed text-amber-100">{agentMeta.unsupportedMarketNotice}</p>}
                       {Array.isArray(agentMeta?.coverage) && <div className="mt-3 space-y-1 border-t border-white/8 pt-3">
@@ -1847,7 +1942,7 @@ function AiFinderPageContent() {
                       {finderStatus === 'NO_ELITE_RESULTS' && (
                         <div className="mt-4 border-t border-white/6 pt-4">
                           <p className="text-sm font-black uppercase tracking-[0.14em] text-white">No recommendable plays</p>
-                          <p className="mt-1 text-sm text-slate-400">{agentMeta?.partialCoverage === true ? 'Some sportsbook markets could not be evaluated. See sport coverage above; unavailable wagers are not treated as researched rejections.' : 'DeepSide found no plays that passed publication gates and the requested quality floor.'}</p>
+                          <p className="mt-1 text-sm text-slate-400">{hasIncompleteCoverage ? 'Some sportsbook markets could not be evaluated. See sport coverage above; unavailable wagers are not treated as researched rejections.' : 'DeepSide found no plays that passed publication gates and the requested quality floor.'}</p>
                           <button onClick={adjustSearch} className="mt-3 min-h-10 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 text-sm font-semibold text-emerald-300">Adjust Search</button>
                         </div>
                       )}
@@ -1880,12 +1975,14 @@ function AiFinderPageContent() {
 
                   {finderStatus === 'RESEARCH_INCOMPLETE' && (
                     <section className="space-y-3 border-t border-amber-400/25 py-4">
-                      <p className="text-sm font-bold text-amber-200">Research Incomplete</p>
+                      <p className="text-sm font-bold text-amber-200">{nflLedger && nflLedger.researchedGames > 0 ? 'Partial coverage' : 'Research Incomplete'}</p>
                       <p className="text-base font-bold text-white">{slateLabel}</p>
-                      <p className="text-sm text-slate-300">{nflLedger && nflLedger.eligiblePregame > 0 && nflLedger.retrievedGames === nflLedger.eligiblePregame && nflLedger.zeroMarketGames === nflLedger.eligiblePregame && nflLedger.failedGames === 0 && nflLedger.notFetchedGames === 0
+                      <p className="text-sm text-slate-300">{nflLedger && nflLedger.researchedGames > 0
+                        ? 'No qualifying picks were found in the fully researched games. Other games could not be fully researched.'
+                        : nflLedger && nflLedger.eligiblePregame > 0 && nflLedger.retrievedGames === nflLedger.eligiblePregame && nflLedger.zeroMarketGames === nflLedger.eligiblePregame && nflLedger.failedGames === 0 && nflLedger.notFetchedGames === 0
                         ? 'Sportsbook player-prop markets have not been posted for this slate yet.'
                         : 'Required sportsbook market data is currently unavailable.'}</p>
-                      <p className="text-sm text-slate-400">DeepSide will not issue Elite Picks until the required markets and research evidence are available.</p>
+                      <p className="text-sm text-slate-400">Picks require complete market data and research evidence for their game. Missing games are not treated as researched rejections.</p>
                       {nflLedger && <NFLSlateSummary ledger={nflLedger} />}
                     </section>
                   )}
@@ -1932,6 +2029,8 @@ function AiFinderPageContent() {
                   )}
 
                   {/* Result cards */}
+                  {mlbGameMarkets && <MLBMarketResearch research={mlbGameMarkets} coverage={agentMeta?.mlbGameCoverage} meta={agentMeta} />}
+                  {!mlbGameMarkets && agentMeta?.mlbGameCoverage != null && <MLBGameCoverage coverage={agentMeta.mlbGameCoverage} />}
                   {finderSport === 'NBA' && nbaPresentation && <NBAPresentationCards presentation={nbaPresentation} />}
                   {modeledGames.length > 0 && <section className="space-y-3 border-t border-white/10 pt-4">
                     <h2 className="text-xs font-bold uppercase text-slate-400">Team research · Not a recommendation</h2>
@@ -2059,7 +2158,7 @@ function AiFinderPageContent() {
                   <div className="rounded-2xl border border-teal-500/15 bg-teal-500/5 p-4">
                     <div className="mb-2 flex items-center justify-between">
                       <h3 className="text-sm font-semibold text-white">Last Analysis</h3>
-                      <button onClick={() => { setResults([]); setNbaPresentation(null); setToolTrace([]); }} className="text-[10px] text-slate-500 hover:text-white">Clear</button>
+                      <button onClick={() => { lastVerifiedResearch.current = null; setRecoveredResearch(null); setResults([]); setNbaPresentation(null); setMlbGameMarkets(null); setToolTrace([]); }} className="text-[10px] text-slate-500 hover:text-white">Clear</button>
                     </div>
                     <div className="space-y-1">
                       {analysisChips.map(({ label, value }) => (

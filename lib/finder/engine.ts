@@ -1,7 +1,8 @@
 import { getMLBSchedule } from '../mlb/schedule';
 import type { MLBGame } from '../mlb/types';
-import { getPlayerGameLogs } from '../mlb/stats';
+import { getMLBResearchGameLogs } from '../mlb/stats';
 import { getMLBPlayer } from '../mlb/players';
+import { getMLBResearchContext, isMLBGameEligibleForResearch, isMLBGameFinished, withMLBPlayerContext, type MLBResearchContext } from '../mlb/researchContext';
 import { getEventProps } from '../odds/eventProps';
 import { getEventPlayerProps, getPropsCacheTtlMs } from '../odds/client';
 import { readPersistentCache } from '../odds/persistentCache';
@@ -9,8 +10,8 @@ import { HITTER_MARKETS, PITCHER_MARKETS } from '../odds/types';
 import { findMLBPlayerIdByName } from '../mlb/players';
 import { buildAllMarketOpportunities, type AnyMarketOpportunity } from '../odds/anyOpportunities';
 import { getLastOddsCreditInfo, OddsBudgetGuardError, OddsRefreshNotAuthorizedError, getOddsEvents, hasCachedEventMarkets, inspectEventPlayerPropsCacheState, isPaidRefreshAllowed, beginOddsSpendTrackingAsync, getActiveOddsSpendTracker, type OddsSpendTracker } from '../odds/client';
-import { findOddsEventForTeam, oddsEventSlateDate } from '../odds/match';
-import { buildHistoricalSignal } from './signals';
+import { matchOddsEvent, oddsEventSlateDate } from '../odds/match';
+import { buildHistoricalSignal, getStatForCanonicalMarket } from './signals';
 import { buildMatchupSignal } from './matchup';
 import { computeFinderScore } from './score';
 import { buildExplanation } from './explain';
@@ -62,12 +63,26 @@ export interface FinderResult {
   /** Grounded, computed-only failure modes — never invented flavor text. */
   howItLoses: string[];
   sources: string[];
+  mlbContext?: MLBResearchContext;
+  matchupEvidenceAvailable?: boolean;
+}
+
+export interface FinderGameCoverage {
+  gameId: string;
+  slateDate: string;
+  homeTeam: string;
+  awayTeam: string;
+  gameTime: string;
+  eventId: string | null;
+  eventTime: string | null;
+  status: 'NOT_LISTED' | 'RESEARCHED' | 'NO_MARKETS' | 'PROVIDER_ERROR' | 'BUDGET_BLOCKED' | 'NOT_FETCHED';
 }
 
 export interface FinderRunSummary {
   results: FinderResult[];
-  /** Bettable games actually processed this run \u2014 with no per-run cap, this always equals gamesEligible. */
+  /** Games whose posted opportunities were successfully researched this run. */
   gamesAnalyzed: number;
+  gameCoverage?: FinderGameCoverage[];
   /** Scheduled games that are not yet final/postponed, i.e. eligible for research regardless of cache state. */
   gamesEligible: number;
   gamesScheduled: number;
@@ -105,9 +120,6 @@ function bestBookFor(opportunity: AnyMarketOpportunity, all: AnyMarketOpportunit
   const best = sameLine.reduce((champion, entry) => (entry.odds > champion.odds ? entry : champion), sameLine[0]);
   return { best, books: new Set(sameLine.map((entry) => entry.sportsbookKey)) };
 }
-
-/** Sportsbooks pull props once a game ends, so completed games can never yield candidates. */
-const COMPLETED_GAME_STATUSES = /final|game over|completed|postponed|cancell?ed|suspended/i;
 
 /** Observed per-event cost of the two paid sub-requests (markets ~1 + odds 10-30). */
 export const VALIDATION_COST_PER_EVENT = { low: 11, expected: 18, high: 31 } as const;
@@ -253,21 +265,59 @@ export async function runFinderDeepSearch(
 ): Promise<FinderRunSummary> {
   await beginOddsSpendTrackingAsync();
   const scheduled = await getMLBSchedule(slateDate);
-  const bettable = scheduled.filter((game) => !COMPLETED_GAME_STATUSES.test(game.status));
-  const slateComplete = scheduled.length > 0 && bettable.length === 0;
+  const now = Date.now();
+  const bettable = scheduled.filter((game) => isMLBGameEligibleForResearch(game, now));
+  const slateComplete = scheduled.length > 0 && scheduled.every(isMLBGameFinished);
 
   // Every bettable game is eligible for research — no fixed per-run cap. Cost is controlled per-game
   // by the Odds client's own CACHE_FRESH/CACHE_STALE/CACHE_MISSING + isPaidRefreshAllowed() gate
   // (see lib/odds/client.ts), not by truncating the slate. Cached-first ordering just means a slow
   // run still surfaces already-paid-for games' results first.
-  const oddsEvents = await getOddsEvents();
-  const planned = (await Promise.all([...bettable]
-    .map(async (game) => {
-      const event =
-        findOddsEventForTeam(game.homeTeam.name, oddsEvents, slateDate) ??
-        findOddsEventForTeam(game.awayTeam.name, oddsEvents, slateDate);
-      return { game, event, cached: event ? await hasCachedEventMarkets(event.id) : false };
-    })))
+  const gameCoverage: FinderGameCoverage[] = scheduled.map(game => ({
+    gameId: game.id, slateDate, homeTeam: game.homeTeam.name, awayTeam: game.awayTeam.name,
+    gameTime: game.gameTime, eventId: null, eventTime: null, status: 'NOT_FETCHED',
+  }));
+  const coverageByGame = new Map(gameCoverage.map(coverage => [coverage.gameId, coverage]));
+  if (bettable.length === 0) {
+    return {
+      ...emptySummary(slateDate, scheduled.length, 0, slateComplete),
+      gameCoverage,
+      ...(options.preflight ? { validationPreflight: {
+        eligibleGames: 0, matchedEvents: 0, selectedValidationGames: 0,
+        cacheHits: 0, cacheMisses: 0, estimatedPaidSubRequests: 0,
+        estimatedCreditCostLow: 0, estimatedCreditCostExpected: 0, estimatedCreditCostHigh: 0,
+        estimatedCostStatus: 'KNOWN' as const, preflightState: 'NO_SCHEDULE' as const,
+        eventListDates: [], researchPriorityGames: [], paidRefreshAuthorized: isPaidRefreshAllowed(), games: [],
+      } } : {}),
+    };
+  }
+  let oddsEvents: Awaited<ReturnType<typeof getOddsEvents>>;
+  try {
+    oddsEvents = await getOddsEvents();
+  } catch (error) {
+    const blocked = error instanceof OddsBudgetGuardError || error instanceof OddsRefreshNotAuthorizedError;
+    for (const game of bettable) coverageByGame.get(game.id)!.status = blocked ? 'BUDGET_BLOCKED' : 'PROVIDER_ERROR';
+    return {
+      ...emptySummary(slateDate, scheduled.length, bettable.length, slateComplete),
+      gameCoverage, budgetLimited: blocked,
+      blockReason: error instanceof OddsBudgetGuardError ? 'RESERVE' : error instanceof OddsRefreshNotAuthorizedError ? 'NOT_AUTHORIZED' : null,
+    };
+  }
+  const usedEvents = new Set<string>();
+  const assignments = bettable.map(game => ({ game, event: matchOddsEvent(game, oddsEvents, slateDate, game.gameTime) }))
+    .sort((first, second) => {
+      const distance = (entry: typeof first) => entry.event ? Math.abs(Date.parse(entry.event.commenceTime) - Date.parse(entry.game.gameTime)) : Infinity;
+      return distance(first) - distance(second) || first.game.id.localeCompare(second.game.id);
+    });
+  const planned = (await Promise.all(assignments.map(async ({ game, event: candidate }) => {
+    const event = candidate && !usedEvents.has(candidate.id) ? candidate : null;
+    if (event) usedEvents.add(event.id);
+    const coverage = coverageByGame.get(game.id)!;
+    coverage.eventId = event?.id ?? null;
+    coverage.eventTime = event?.commenceTime ?? null;
+    coverage.status = event ? 'NOT_FETCHED' : 'NOT_LISTED';
+    return { game, event, cached: event ? await hasCachedEventMarkets(event.id) : false };
+  })))
     .sort((a, b) => Number(b.cached) - Number(a.cached));
 
   // Validation selection is deterministic and edge-blind: only games with a matched sportsbook event,
@@ -300,6 +350,7 @@ export async function runFinderDeepSearch(
     const eventListUnavailable = preflightState === 'EVENT_LIST_REQUIRED';
     return {
       ...emptySummary(slateDate, scheduled.length, bettable.length, slateComplete),
+      gameCoverage,
       validationPreflight: {
         eligibleGames: bettable.length,
         matchedEvents: selectable.length,
@@ -328,14 +379,14 @@ export async function runFinderDeepSearch(
     };
   }
 
-  const games = (selectedIds ? planned.filter((entry) => selectedIds.has(entry.game.id)) : planned).map((entry) => entry.game);
-  const playerLogCache = new Map<number, Awaited<ReturnType<typeof getPlayerGameLogs>>>();
+  const games = selectedIds ? planned.filter((entry) => selectedIds.has(entry.game.id)) : planned;
+  const playerLogCache = new Map<string, Promise<Awaited<ReturnType<typeof getMLBResearchGameLogs>> | null>>();
   const playerTeamCache = new Map<number, number | null>();
   const results: FinderResult[] = [];
   const booksSeen = new Set<string>();
   let propsAnalyzed = 0;
   let rawPropsTotal = 0;
-  let eventsMatched = 0;
+  const eventsMatched = selectable.length;
   let sawNetworkCall = false;
   let maxCacheAgeMs: number | null = null;
   let budgetLimited = false;
@@ -345,7 +396,9 @@ export async function runFinderDeepSearch(
   let estimatedNextGameCostReported: number | undefined;
   let creditsRemainingInValidationBudgetReported: number | undefined;
 
-  for (const game of games) {
+  for (const { game, event } of games) {
+    const coverage = coverageByGame.get(game.id)!;
+    if (!event) continue;
     // TRUE hard ceiling: computed BEFORE any paid work starts for this game, using a conservative
     // (worst-case) per-event cost. Checking only AFTER a game finished let a 2-game batch exceed
     // the cap (game 1 alone under the cap, but game 1 + game 2 over it) — see canAffordNextValidationGame.
@@ -359,34 +412,39 @@ export async function runFinderDeepSearch(
         estimatedNextGameCostReported = estimatedNextGameCost;
         creditsRemainingInValidationBudgetReported = options.validationMaxCredits - spent;
         gamesSkippedByCreditCap += 1;
+        coverage.status = 'BUDGET_BLOCKED';
         continue;
       }
     }
     let eventProps;
     try {
-      const event = planned.find(entry => entry.game.id === game.id)?.event;
-      const primary = event ? await getCachedMLBPrimaryMarkets(event.id) : null;
-      if (event && primary) {
+      const primary = await getCachedMLBPrimaryMarkets(event.id);
+      if (primary) {
         const props = await getEventPlayerProps(event.id, primary, getPropsCacheTtlMs(event.commenceTime));
         const ids = new Map<string, number | null>();
-        await Promise.all([...new Set(props.map(prop => prop.player))].map(async player => ids.set(player, await findMLBPlayerIdByName(player))));
+        await Promise.all([...new Set(props.map(prop => prop.player))].map(async player => ids.set(player, await findMLBPlayerIdByName(player).catch(() => null))));
         eventProps = { event, props: props.map(prop => ({ ...prop, playerId: ids.get(prop.player) ?? null })) };
-      } else eventProps = await getEventProps(game.homeTeam.name, game.awayTeam.name, slateDate);
+      } else eventProps = await getEventProps(game.homeTeam.name, game.awayTeam.name, slateDate, event, game.gameTime);
       const info = getLastOddsCreditInfo();
       if (info) {
         if (info.source === 'network') sawNetworkCall = true;
         if (info.cacheAgeMs != null) maxCacheAgeMs = Math.max(maxCacheAgeMs ?? 0, info.cacheAgeMs);
       }
     } catch (error) {
+      coverage.status = error instanceof OddsBudgetGuardError || error instanceof OddsRefreshNotAuthorizedError ? 'BUDGET_BLOCKED' : 'PROVIDER_ERROR';
       if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
       else if (error instanceof OddsRefreshNotAuthorizedError) { budgetLimited = true; blockReason ??= 'NOT_AUTHORIZED'; }
       continue;
     }
-    if (eventProps.event) eventsMatched += 1;
-    if (!eventProps.event || eventProps.props.length === 0) continue;
+    if (!eventProps.event || eventProps.props.length === 0) {
+      coverage.status = eventProps.event ? 'NO_MARKETS' : 'NOT_LISTED';
+      continue;
+    }
     rawPropsTotal += eventProps.props.length;
 
     const opportunities = buildAllMarketOpportunities(eventProps.props);
+    const gameContext = opportunities.length ? await getMLBResearchContext(game.id) : null;
+    coverage.status = 'NO_MARKETS';
     propsAnalyzed += opportunities.length;
     opportunities.forEach((opportunity) => booksSeen.add(opportunity.sportsbookKey));
 
@@ -413,28 +471,46 @@ export async function runFinderDeepSearch(
       let outlier: OutlierDependency = { available: false, sampleGames: 0, raw: { games: 0, total: 0, mean: null }, withoutTopGame: { games: 0, total: 0, mean: null }, withoutTop2Games: { games: 0, total: 0, mean: null }, explosiveDependencePercent: null, median: null, standardDeviation: null };
       let volumeEfficiency: VolumeEfficiency = { available: false, basis: 'unavailable', estimatedVolume: null, requiredRatePerUnit: null, actualRatePerUnit: null, meetsRequiredRate: null };
       let historicalSampleGames = 0;
+      let historyContext: MLBResearchContext['history'];
 
       if (opportunity.playerId) {
+        const group = opportunity.marketKey.startsWith('pitcher_') ? 'pitching' : 'hitting';
+        const historyKey = `${opportunity.playerId}|${group}`;
+        if (!playerLogCache.has(historyKey)) {
+          playerLogCache.set(historyKey, getMLBResearchGameLogs(opportunity.playerId, slateDate, opportunity.marketKey).catch(() => null));
+        }
+        const history = await playerLogCache.get(historyKey)!;
+        const historicalLogs = history?.regularSeason ?? [];
+        const completeMarketHistory = historicalLogs.length > 0 && historicalLogs.every(log => {
+          const value = getStatForCanonicalMarket(log, opportunity.marketKey);
+          return value != null && Number.isFinite(value);
+        });
+        historyContext = {
+          regularSeasonGames: historicalLogs.length,
+          postseasonGames: history?.postseason.length ?? 0,
+          postseasonRecent: history?.postseason.slice(-5).map(log => ({
+            date: log.date, gamePk: log.gamePk, gameType: log.gameType,
+            value: getStatForCanonicalMarket(log, opportunity.marketKey),
+          })) ?? [],
+          qualityNotes: [
+            ...(history?.qualityNotes ?? ['Player history unavailable; no substitute history inferred.']),
+            'Postseason history is factual context only; excluded from projections, hit rates, and scoring.',
+            ...(!completeMarketHistory ? ['Regular-season market history is missing or incomplete; projection unavailable.'] : []),
+          ],
+        };
+        if (opportunity.historicalAnalysisAvailable && completeMarketHistory) {
+          historical = buildHistoricalSignal(historicalLogs, opportunity.marketKey, opportunity.line, opportunity.side);
+          historicalSampleGames = historicalLogs.length;
+          outlier = computeOutlierDependency(historicalLogs, opportunity.marketKey);
+          volumeEfficiency = computeVolumeEfficiency(historicalLogs, opportunity.marketKey, opportunity.line, opportunity.side, group === 'pitching');
+        }
         try {
-          if (!playerLogCache.has(opportunity.playerId)) {
-            playerLogCache.set(opportunity.playerId, await getPlayerGameLogs(opportunity.playerId, new Date().getUTCFullYear()));
-          }
-          if (opportunity.historicalAnalysisAvailable) {
-            // Only games strictly before the selected slate date count as history — critical for "Tomorrow" runs.
-            const historicalLogs = playerLogCache.get(opportunity.playerId)!.filter((log) => log.date < slateDate);
-            historical = buildHistoricalSignal(historicalLogs, opportunity.marketKey, opportunity.line, opportunity.side);
-            historicalSampleGames = historicalLogs.length;
-            const isPitcher = opportunity.marketKey.startsWith('pitcher_');
-            outlier = computeOutlierDependency(historicalLogs, opportunity.marketKey);
-            volumeEfficiency = computeVolumeEfficiency(historicalLogs, opportunity.marketKey, opportunity.line, opportunity.side, isPitcher);
-          }
-
           if (!playerTeamCache.has(opportunity.playerId)) {
             const player = await getMLBPlayer(opportunity.playerId);
             playerTeamCache.set(opportunity.playerId, player.currentTeam?.id ?? null);
           }
           const teamId = playerTeamCache.get(opportunity.playerId);
-          resolvedTeamId = teamId ?? null;
+          resolvedTeamId = teamId === game.homeTeam.id || teamId === game.awayTeam.id ? teamId : null;
           if (teamId === game.homeTeam.id) opposingPitcherId = game.awayProbableStarter?.id ?? null;
           else if (teamId === game.awayTeam.id) opposingPitcherId = game.homeProbableStarter?.id ?? null;
         } catch { /* leave signals unavailable */ }
@@ -481,6 +557,12 @@ export async function runFinderDeepSearch(
         availableBooks: books.size,
       });
 
+      const mlbContext = gameContext ? withMLBPlayerContext(gameContext, game, opportunity.playerId ?? null, opportunity.playerId ? playerTeamCache.get(opportunity.playerId) ?? null : null, opportunity.marketKey.startsWith('pitcher_')) : undefined;
+      if (mlbContext && historyContext) mlbContext.history = historyContext;
+      const teamMembership = mlbContext?.player?.teamMembership;
+      const contextConcerns = teamMembership?.status === 'AVAILABLE' && !teamMembership.value.matchesScheduledTeam
+        ? ['Resolved player currentTeam does not match either scheduled team; team and opponent attribution are unavailable.'] : [];
+
       results.push({
         sport: 'mlb',
         id: opportunity.id,
@@ -516,7 +598,7 @@ export async function runFinderDeepSearch(
           seasonRate: historical.available ? historical.windows.season.rate : null,
         },
         signals: marketMovement.available && marketMovement.direction === 'shortened' ? [...explanation.signals, marketMovement.label!] : explanation.signals,
-        concerns: marketMovement.available && marketMovement.direction === 'lengthened' ? [...explanation.concerns, marketMovement.label!] : explanation.concerns,
+        concerns: [...(marketMovement.available && marketMovement.direction === 'lengthened' ? [...explanation.concerns, marketMovement.label!] : explanation.concerns), ...contextConcerns],
         gameId: game.id,
         eventId: opportunity.eventId,
         marketUpdatedAt: best?.lastUpdate ?? opportunity.lastUpdate ?? null,
@@ -526,9 +608,12 @@ export async function runFinderDeepSearch(
         alternateLineOptimizer,
         crossBookThreshold,
         howItLoses,
-        sources: REAL_DATA_SOURCES,
+        sources: [...REAL_DATA_SOURCES, ...(mlbContext?.sources ?? []), ...(teamMembership?.status === 'AVAILABLE' ? [teamMembership.source] : [])],
+        mlbContext,
+        matchupEvidenceAvailable: matchup.available,
       });
     }
+    if (opportunities.length > 0) coverage.status = 'RESEARCHED';
   }
 
   results.sort((a, b) => b.finderScore - a.finderScore);
@@ -536,7 +621,8 @@ export async function runFinderDeepSearch(
     // Every valid, deduped opportunity above is already fully researched and scored — no cap here.
     // Callers (rank_candidates, the UI) apply Elite Filter + a top-15 display cap afterward.
     results,
-    gamesAnalyzed: games.length,
+    gamesAnalyzed: gameCoverage.filter(coverage => coverage.status === 'RESEARCHED').length,
+    gameCoverage,
     gamesEligible: bettable.length,
     gamesScheduled: scheduled.length,
     slateComplete,

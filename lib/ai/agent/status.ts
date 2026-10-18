@@ -30,6 +30,8 @@ export interface ToolMetadata {
   gamesFound?: number;
   gamesScheduled?: number;
   gamesInProgress?: number;
+  mlbGameCoverage?: import('../../finder/engine').FinderGameCoverage[];
+  partialCoverage?: boolean;
   booksFound?: number;
   propsFound?: number;
   candidatesFound?: number;

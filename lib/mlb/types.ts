@@ -78,6 +78,8 @@ export interface MLBPlayer {
 
 export interface MLBGameLog {
   date: string;
+  gamePk?: number;
+  gameType?: string;
   opponent: string;
   homeAway: string;
   /** Every stat below is `null` when the MLB Stats API genuinely omitted the field for this game — never silently coerced to 0. Absent (undefined) for stats that don't apply to this game's group (hitting vs pitching). */
@@ -103,4 +105,21 @@ export interface HitRateResult {
   hits: number;
   games: number;
   percentage: number;
+}
+
+export type MLBStatsGroup = 'hitting' | 'pitching';
+export type MLBHistoryGameType = 'R' | 'F' | 'D' | 'L' | 'W';
+
+export interface MLBGameLogOptions {
+  group?: MLBStatsGroup;
+  gameTypes?: readonly MLBHistoryGameType[];
+}
+
+export interface MLBResearchGameLogs {
+  season: number;
+  slateDate: string;
+  group: MLBStatsGroup;
+  regularSeason: MLBGameLog[];
+  postseason: MLBGameLog[];
+  qualityNotes: string[];
 }

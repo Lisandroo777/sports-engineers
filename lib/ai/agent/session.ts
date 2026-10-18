@@ -6,6 +6,7 @@ import { buildEvidenceBoard } from '../../finder/evidenceBoard';
 import type { CrossBookThresholdResult } from '../../finder/crossBookThreshold';
 import type { MarketMovementSignal } from '../../finder/marketMovement';
 import type { NFLMarketHistory } from '../../nfl/history';
+import type { NFLKickingResearch } from '../../nfl/kickingResearch';
 import type { NFLResearchProfile } from '../../nfl/researchModel';
 import type { NBAProjectionResult } from '../../nba/prediction/types';
 import { classifyPickTier } from './pickTiers';
@@ -47,6 +48,13 @@ export interface GenericOpponentContext {
 
 /** One fully researched candidate, flattened for storage and for follow-up tool answers. */
 export interface ResearchCandidateRecord {
+  mlbContext?: import('../../mlb/researchContext').MLBResearchContext;
+  mlbEligibilityFailures?: string[];
+  mlbEligibilityFacts?: {
+    roleKnown: boolean;
+    statusKnown: boolean;
+    matchupAvailable: boolean;
+  };
   recommendationType?: 'PLAYER_PROP';
   candidateId: string;
   /** Position when all researched candidates are ordered by researchScore descending (1 = best). */
@@ -127,6 +135,7 @@ export interface ResearchCandidateRecord {
   injuryContext: unknown | null;
   weatherContext: unknown | null;
   nflHistory?: NFLMarketHistory | null;
+  nflKickingResearch?: NFLKickingResearch;
   gameId?: string;
   eventId?: string;
   retrievedAt?: string | null;
@@ -143,6 +152,12 @@ export interface ResearchCandidateRecord {
 }
 
 export interface ResearchSessionToolMeta {
+  mlbGameCoverage?: import('../../finder/engine').FinderGameCoverage[];
+  nbaGameCoverage?: import('../../finder/nbaEngine').NBAGameCoverage[];
+  slateComplete?: boolean;
+  blockReason?: import('../../finder/nbaEngine').NBAFinderSummary['blockReason'];
+  oddsSpend?: import('../../finder/nbaEngine').NBAFinderSummary['oddsSpend'];
+  partialCoverage?: boolean;
   gamesFound: number;
   gamesScheduled: number;
   propsFound: number;
@@ -189,9 +204,29 @@ function sportFilterIdentity(sport: string) {
 
 function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: number): ResearchCandidateRecord {
   const deep = buildDeepResearchCard(result, analysis);
+  const mapper = finderResultToEliteCandidate(result);
+  const isMLB = mapper.sport === 'mlb';
+  const evidenceBoard = isMLB ? deep.evidenceBoard.map((entry) => {
+    if (entry.signal === 'Expected Role') return {
+      ...entry,
+      status: mapper.roleKnown ? 'agree' as const : 'unavailable' as const,
+      detail: mapper.roleKnown ? 'Listed in the confirmed batting order or probable starter evidence.' : 'No confirmed batting order membership or probable starter evidence.',
+    };
+    if (entry.signal === 'Opponent Matchup') return {
+      ...entry,
+      status: mapper.matchupAvailable ? 'agree' as const : 'unavailable' as const,
+      detail: mapper.matchupAvailable ? 'Matchup evidence available.' : 'Matchup evidence unavailable.',
+    };
+    return entry;
+  }) : deep.evidenceBoard;
   const historicalSampleSizes = [result.historical.l5, result.historical.l10, result.historical.l20, result.historical.season]
     .map((window) => Number(window.split('/')[1])).filter(Number.isFinite);
   const record: ResearchCandidateRecord = {
+    ...(result.mlbContext ? { mlbContext: result.mlbContext } : {}),
+    ...(isMLB ? {
+      mlbEligibilityFailures: mapper.sourceRejectionReasons ?? [],
+      mlbEligibilityFacts: { roleKnown: mapper.roleKnown, statusKnown: mapper.statusKnown, matchupAvailable: mapper.matchupAvailable },
+    } : {}),
     candidateId: result.id,
     gameId: result.gameId,
     eventId: result.eventId,
@@ -237,7 +272,7 @@ function toRecord(result: FinderResult, analysis: EliteResearchAnalysis, rank: n
     projectedRange: deep.projectedRange,
     bestAlternateLine: deep.bestAlternateLine,
     howItLoses: deep.howItLoses,
-    evidenceBoard: deep.evidenceBoard,
+    evidenceBoard,
     outlierDependencePercent: result.outlierDependency.explosiveDependencePercent,
     position: null,
     modelProbability: analysis.modelProbability,
@@ -372,6 +407,7 @@ export interface GenericResearchCandidate {
   injuryContext?: unknown | null;
   weatherContext?: unknown | null;
   nflHistory?: NFLMarketHistory | null;
+  nflKickingResearch?: NFLKickingResearch;
   nbaPrediction?: NBAProjectionResult | null;
   nbaInjuryEvidence?: import('../../nba/prediction/types').NBAInjuryEvidence;
   nbaResearchEvidence?: import('../../nba/researchEvidence').NBAResearchEvidence | null;
@@ -472,6 +508,7 @@ function toGenericRecord(candidate: GenericResearchCandidate, rank: number): Res
     injuryContext: candidate.injuryContext ?? null,
     weatherContext: candidate.weatherContext ?? null,
     nflHistory: candidate.nflHistory ?? null,
+    ...(candidate.nflKickingResearch ? { nflKickingResearch: candidate.nflKickingResearch } : {}),
       ...(candidate.sport?.toLowerCase() === 'nba' && candidate.nbaPrediction ? { nbaPrediction: candidate.nbaPrediction } : {}),
       ...(candidate.sport?.toLowerCase() === 'nba' && candidate.nbaInjuryEvidence ? { nbaInjuryEvidence: candidate.nbaInjuryEvidence } : {}),
       ...(candidate.sport?.toLowerCase() === 'nba' ? { nbaResearchEvidence: candidate.nbaResearchEvidence ?? null, nbaHistory: candidate.nbaHistory ?? null } : {}),

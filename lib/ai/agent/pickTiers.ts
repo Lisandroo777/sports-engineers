@@ -1,5 +1,6 @@
 import { ELITE_THRESHOLDS } from '../eliteResearchFilter';
 import type { ResearchCandidateRecord } from './session';
+import { getMarketMetadata } from '../../odds/types';
 
 export const PICK_TIERS = ['NUKE', 'ELITE', 'SHARP', 'EDGE', 'LEAN', 'PASS'] as const;
 export type PickTier = typeof PICK_TIERS[number];
@@ -36,6 +37,12 @@ export function tierMeetsFloor(tier: PickTier, floor: PickTier): boolean {
 export function classifyPickTier(candidate: ResearchCandidateRecord, sport?: string): PickTierDecision {
   const profile = candidate.nflResearchProfile;
   const isNFL = sport === 'nfl' || profile != null;
+  const isMLB = sport === 'mlb';
+  const mlbEligibilityFailures = isMLB ? [...(candidate.mlbEligibilityFailures ?? [])] : [];
+  if (isMLB && candidate.mlbContext?.playerInjuries.status === 'AVAILABLE'
+    && candidate.mlbContext.playerInjuries.value.some((player) => player.playerId === candidate.playerId && player.explicitlyInjured === true)) {
+    mlbEligibilityFailures.push('MLB player explicitly injured');
+  }
   const gates = profile?.hardGates;
   const nflGateFailures = gates ? Object.entries(gates).filter(([, gate]) => !gate.passed).map(([key, gate]) => gate.reason ?? `${key} failed.`) : [];
   const profileEvidenceReady = !profile || Boolean(gates
@@ -55,11 +62,22 @@ export function classifyPickTier(candidate: ResearchCandidateRecord, sport?: str
     ['Minimum research quality', candidate.dataQuality >= 70],
     [`Risk within the existing ${ELITE_THRESHOLDS.trapRisk}-point ceiling`, candidate.trapRisk <= ELITE_THRESHOLDS.trapRisk],
     ['NFL hard gates, availability, role, evidence, and counter-case pass', profileEvidenceReady],
+    ...(isMLB ? [
+      ['MLB source eligibility has no explicit rejection', mlbEligibilityFailures.length === 0],
+      ['MLB market has supported historical analysis', getMarketMetadata(candidate.marketKey)?.historicalAnalysisAvailable === true],
+      ['MLB model probability is valid', candidate.modelProbability != null && Number.isFinite(candidate.modelProbability)
+        && candidate.modelProbability > 0 && candidate.modelProbability <= 100],
+      ['MLB calibrated probability is valid', candidate.trueProbability != null && Number.isFinite(candidate.trueProbability)
+        && candidate.trueProbability > 0 && candidate.trueProbability <= 100],
+      ['MLB edge and EV are finite', [candidate.edge, candidate.evPercent, candidate.priceEdgePercent]
+        .every(value => value != null && Number.isFinite(value))],
+    ] as Array<[string, boolean]> : []),
   ];
   const tierRequirementsPassed = requirements.filter(([, passed]) => passed).map(([name]) => name);
   const tierRequirementsFailed = [
     ...requirements.filter(([, passed]) => !passed).map(([name]) => name),
     ...nflGateFailures,
+    ...new Set(mlbEligibilityFailures),
     ...(isNFL && profile && !profile.evidence.counterCaseReviewed ? ['Counter-case was not reviewed.'] : []),
     ...(isNFL && profile?.evidence.conflictStatus === 'UNRESOLVED' ? ['Material evidence conflict is unresolved.'] : []),
   ];

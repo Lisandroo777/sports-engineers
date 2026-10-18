@@ -10,6 +10,8 @@ const store = vi.hoisted(() => new Map<string, unknown>());
 vi.mock('../lib/ai/agent/sessionStore', () => ({ getResearchSession: vi.fn(async (id: string) => store.get(id) ?? null),
   saveResearchSession: vi.fn(async (session: unknown) => { const id = `session-${store.size}`; store.set(id, structuredClone(session)); return id; }) }));
 vi.mock('../lib/finder/nflEngine', async (original) => ({ ...await original<typeof import('../lib/finder/nflEngine')>(), runNFLFinderDeepSearch: vi.fn() }));
+vi.mock('../lib/ai/agent/tools', async (original) => ({ ...await original<typeof import('../lib/ai/agent/tools')>(),
+  hasNFLRequestedMarketCoverage: vi.fn(() => true) }));
 const snapshotSession = (): ResearchSession => ({ sport: 'nfl', date: '2026-10-05', generatedAt: source.snapshotTime, queryIntent: '',
   candidates: source.outputs.filter((row: { researchMode: string }) => row.researchMode === 'DEEP').map((row: { record: ResearchCandidateRecord }) => structuredClone(row.record)),
   toolMeta: { gamesFound: 1, gamesScheduled: 1, propsFound: 7, booksFound: 1, candidatesFound: 7, eliteFound: 5, cached: true, dataFreshnessSeconds: 0, budgetLimited: false, researchComplete: true },
@@ -19,7 +21,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Provider calls disabled in communication execution tests')));
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
-describe('Actual chat-turn intent execution, saved archived quotes', () => {
+describe('Actual chat-turn intent execution, saved archived quotes with market coverage isolated', () => {
   it.each([['Give me the best 5 NFL plays', 5], ['Give me the safest 3', 3], ['Give me the best value 3', 3],
     ['Give me a 2 man', 2], ['Give me the best 3 Unders', 0], ['Anything for Chris Olave?', 2], ['Give me your favorite', 1]])('returns requested cards for %s', async (query, count) => {
     const result = await runAgentTurn([{ role: 'user', content: query }], 'seed');
@@ -62,6 +64,7 @@ describe('Actual chat-turn intent execution, saved archived quotes', () => {
     const result = await runAgentTurn([{ role: 'user', content: 'Why do you like number 1?' }], first.researchSessionId);
     expect(result.reply).toContain('stored research, not a current verified recommendation');
     expect(result.results).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
     expect(runNFLFinderDeepSearch).not.toHaveBeenCalled();
   });
   it('answers betting capabilities and refuses to invent previous settlements', async () => {

@@ -1,9 +1,11 @@
 import { MLBDataUnavailableError, mlbFetch } from './client';
-import type { HitRateResult, MLBGameLog, MLBRange, PropMarket, PropSide } from './types';
+import type { HitRateResult, MLBGameLog, MLBGameLogOptions, MLBHistoryGameType, MLBRange, MLBResearchGameLogs, PropMarket, PropSide } from './types';
 
 /** Returns null when the raw value is genuinely absent — never masks missing data as 0. */
 function toNumberOrNull(value: unknown): number | null {
   if (value == null) return null;
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
   const num = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(num) ? num : null;
 }
@@ -32,9 +34,17 @@ export function mapRawGameLogSplit(split: Record<string, unknown>, group: 'pitch
   const opponent = String((split.opponent as Record<string, unknown> | undefined)?.name ?? 'TBD');
   const homeAway = String(split.homeAway ?? '');
   const date = String(toDateValue(split.date) || split.date || '');
+  const game = split.game as Record<string, unknown> | undefined;
+  const rawGamePk = toNumberOrNull(game?.gamePk ?? split.gamePk);
+  const rawGameType = game?.gameType ?? split.gameType;
+  const identity = {
+    ...(rawGamePk != null && Number.isInteger(rawGamePk) && rawGamePk > 0 ? { gamePk: rawGamePk } : {}),
+    ...(typeof rawGameType === 'string' ? { gameType: rawGameType } : {}),
+  };
 
   if (group === 'pitching') {
     return {
+      ...identity,
       date,
       opponent,
       homeAway,
@@ -51,6 +61,7 @@ export function mapRawGameLogSplit(split: Record<string, unknown>, group: 'pitch
   }
 
   return {
+    ...identity,
     date,
     opponent,
     homeAway,
@@ -68,7 +79,23 @@ export function mapRawGameLogSplit(split: Record<string, unknown>, group: 'pitch
   } satisfies MLBGameLog;
 }
 
-export async function getPlayerGameLogs(playerId: string | number, season: number): Promise<MLBGameLog[]> {
+function chronologicalUniqueLogs(logs: MLBGameLog[]): MLBGameLog[] {
+  const unique = new Map<string, MLBGameLog>();
+  for (const log of logs) {
+    const key = log.gamePk != null
+      ? `game:${log.gamePk}`
+      : JSON.stringify([log.date, log.opponent, log.homeAway, log.gameType]);
+    if (!unique.has(key)) unique.set(key, log);
+  }
+  return [...unique.values()].sort((left, right) => left.date.localeCompare(right.date)
+    || (left.gamePk ?? 0) - (right.gamePk ?? 0));
+}
+
+export async function getPlayerGameLogs(
+  playerId: string | number,
+  season: number,
+  { group: requestedGroup, gameTypes }: MLBGameLogOptions = {},
+): Promise<MLBGameLog[]> {
   const id = typeof playerId === 'string' ? Number(playerId) : playerId;
 
   if (!id) {
@@ -76,19 +103,64 @@ export async function getPlayerGameLogs(playerId: string | number, season: numbe
   }
 
   try {
-    const player = await import('./players').then((module) => module.getMLBPlayer(id));
-    const isPitcher = player.position?.toUpperCase().includes('P');
-    const group = isPitcher ? 'pitching' : 'hitting';
-    const payload = await mlbFetch<{ stats?: Array<{ splits?: Array<Record<string, unknown>> }> }>(`/people/${id}/stats?stats=gameLog&group=${group}&season=${season}`, {
-      revalidate: 3600,
-    });
-
-    const splits = payload.stats?.[0]?.splits ?? [];
-    return splits.map((split) => mapRawGameLogSplit(split, group));
+    if (gameTypes?.length === 0) return [];
+    const player = requestedGroup ? null : await import('./players').then((module) => module.getMLBPlayer(id));
+    const group = requestedGroup ?? (player?.position?.toUpperCase().includes('P') ? 'pitching' : 'hitting');
+    const requestedTypes = gameTypes ? [...new Set(gameTypes)] : [undefined];
+    const results = await Promise.all(requestedTypes.map(async (gameType) => {
+      const gameTypeQuery = gameType ? `&gameType=${gameType}` : '';
+      const payload = await mlbFetch<{ stats?: Array<{ splits?: Array<Record<string, unknown>> }> }>(`/people/${id}/stats?stats=gameLog&group=${group}&season=${season}${gameTypeQuery}`, {
+        revalidate: 3600,
+      });
+      return (payload.stats ?? []).flatMap((entry) => entry.splits ?? [])
+        .map((split) => {
+          const log = mapRawGameLogSplit(split, group);
+          return { ...log, gameType: log.gameType ?? gameType ?? 'R' };
+        })
+        .filter((log) => log.gameType === (gameType ?? 'R'));
+    }));
+    return chronologicalUniqueLogs(results.flat());
   } catch (error) {
     console.error('[mlb] Unable to load player game logs.', error);
     throw error instanceof MLBDataUnavailableError ? error : new MLBDataUnavailableError();
   }
+}
+
+export async function getMLBResearchGameLogs(
+  playerId: string | number,
+  slateDate: string,
+  marketKey: string,
+): Promise<MLBResearchGameLogs> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(slateDate)
+    || !Number.isFinite(Date.parse(slateDate))
+    || new Date(slateDate).toISOString().slice(0, 10) !== slateDate) {
+    throw new Error('MLB history requires a valid YYYY-MM-DD slate date.');
+  }
+  const group = marketKey.startsWith('pitcher_') ? 'pitching'
+    : marketKey.startsWith('batter_') ? 'hitting' : null;
+  if (!group) throw new Error('MLB history requires a batter_ or pitcher_ market key.');
+
+  const season = Number(slateDate.slice(0, 4));
+  const gameTypes: MLBHistoryGameType[] = ['R', 'F', 'D', 'L', 'W'];
+  const results = await Promise.allSettled(gameTypes.map((gameType) =>
+    getPlayerGameLogs(playerId, season, { group, gameTypes: [gameType] })));
+  const qualityNotes: string[] = [];
+  const logs = chronologicalUniqueLogs(results.flatMap((result, index) => {
+    if (result.status === 'fulfilled') return result.value;
+    qualityNotes.push(`Game type ${gameTypes[index]} history unavailable; coverage is incomplete.`);
+    return [];
+  })).filter((log) => /^\d{4}-\d{2}-\d{2}$/.test(log.date)
+    && Number.isFinite(Date.parse(log.date))
+    && new Date(log.date).toISOString().slice(0, 10) === log.date
+    && log.date.startsWith(`${season}-`) && log.date < slateDate);
+  const regularSeason = logs.filter((log) => log.gameType === 'R');
+  const postseason = logs.filter((log) => log.gameType !== 'R');
+  if (regularSeason.length === 0) qualityNotes.push('No regular-season history available before the selected date.');
+  if (postseason.length === 0) qualityNotes.push('No postseason context available before the selected date.');
+  if (logs.some((log) => log.gamePk == null)) {
+    qualityNotes.push('Some game IDs are missing; date/opponent/venue-side deduplication cannot reliably distinguish doubleheaders.');
+  }
+  return { season, slateDate, group, regularSeason, postseason, qualityNotes };
 }
 
 export function calculateHits(game: MLBGameLog) {
@@ -132,20 +204,23 @@ export function calculateOutsRecorded(inningsPitched: number | string | null | u
 }
 
 function selectGames(games: MLBGameLog[], sampleSize: MLBRange) {
+  const recentGames = [...games].sort((left, right) => right.date.localeCompare(left.date)
+    || (right.gamePk ?? 0) - (left.gamePk ?? 0));
+
   if (sampleSize === 'L5') {
-    return games.slice(0, 5);
+    return recentGames.slice(0, 5);
   }
 
   if (sampleSize === 'L10') {
-    return games.slice(0, 10);
+    return recentGames.slice(0, 10);
   }
 
   if (sampleSize === 'L20') {
-    return games.slice(0, 20);
+    return recentGames.slice(0, 20);
   }
 
   if (sampleSize === 'L40') {
-    return games.slice(0, 40);
+    return recentGames.slice(0, 40);
   }
 
   const year = sampleSize === '2026' ? '2026' : '2025';

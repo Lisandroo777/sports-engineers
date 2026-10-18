@@ -26,7 +26,7 @@ export function normalizeMLBTeamName(name: string) {
  * The event's calendar date in the sports time zone, as YYYY-MM-DD.
  * Slicing the UTC timestamp instead would file any game after ~8pm ET under the following day.
  */
-export function oddsEventSlateDate(event: OddsEvent): string {
+export function oddsEventSlateDate(event: Pick<OddsEvent, 'commenceTime'> & Partial<OddsEvent>): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: SPORTS_TIME_ZONE,
     year: 'numeric',
@@ -35,10 +35,30 @@ export function oddsEventSlateDate(event: OddsEvent): string {
   }).format(new Date(event.commenceTime));
 }
 
-export function matchOddsEvent(game: MLBGame, oddsEvents: OddsEvent[]): OddsEvent | null {
+export function matchOddsEvent(
+  game: Pick<MLBGame, 'homeTeam' | 'awayTeam'> & Partial<Pick<MLBGame, 'date' | 'gameTime'>>,
+  oddsEvents: OddsEvent[],
+  slateDate: string | undefined = game.date,
+  gameTime: string | undefined = game.gameTime,
+): OddsEvent | null {
   const home = normalizeMLBTeamName(game.homeTeam.name);
   const away = normalizeMLBTeamName(game.awayTeam.name);
-  return oddsEvents.find((event) => normalizeMLBTeamName(event.homeTeam) === home && normalizeMLBTeamName(event.awayTeam) === away) ?? null;
+  const start = gameTime ? Date.parse(gameTime) : NaN;
+  if (gameTime && !Number.isFinite(start)) return null;
+  const actualSlate = gameTime && Number.isFinite(start) ? oddsEventSlateDate({ commenceTime: gameTime }) : undefined;
+  if (slateDate && actualSlate && slateDate !== actualSlate) return null;
+  const targetSlate = slateDate ?? actualSlate;
+  const candidates = oddsEvents.filter((event) =>
+    normalizeMLBTeamName(event.homeTeam) === home &&
+    normalizeMLBTeamName(event.awayTeam) === away &&
+    Number.isFinite(Date.parse(event.commenceTime)) &&
+    (!targetSlate || oddsEventSlateDate(event) === targetSlate));
+  if (Number.isFinite(start)) {
+    candidates.sort((first, second) =>
+      Math.abs(Date.parse(first.commenceTime) - start) - Math.abs(Date.parse(second.commenceTime) - start) ||
+      first.id.localeCompare(second.id));
+  }
+  return candidates[0] ?? null;
 }
 
 /**

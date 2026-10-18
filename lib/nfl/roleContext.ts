@@ -62,7 +62,7 @@ const NFL_OPPORTUNITY_STAT: Record<NFLAnalyzableMarketKey, string | null> = {
   player_tackles_assists: 'totalTackles', player_solo_tackles: 'totalTackles',
   player_rush_longest: null, player_reception_longest: null,
   player_sacks: null, player_defensive_interceptions: null,
-  player_kicking_points: null, player_field_goals: null,
+  player_kicking_points: 'fieldGoalsAttempted', player_field_goals: 'fieldGoalsAttempted',
 };
 
 export type NFLWorkloadTrend = 'WORKLOAD_INCREASE' | 'WORKLOAD_DECREASE' | 'WORKLOAD_STABLE' | 'HIGH_WORKLOAD_VOLATILITY' | 'INSUFFICIENT_OPPORTUNITY_DATA';
@@ -156,8 +156,11 @@ export function computeNFLOpportunityTrend(logs: NFLGameLogEntry[], market: NFLA
       : market === 'player_reception_yds' ? 'receivingYards' : null;
     const rawProduction = yardageStat ? log.stats[yardageStat] : null;
     if (rawProduction != null && rawProduction < 0 && getNFLMarketHistoricalValue(market, log.stats) == null) return null;
-    const opportunity = statKey === 'touches' ? touchesValue(log.stats) : log.stats[statKey] ?? null;
-    return opportunity != null && Number.isFinite(opportunity) && opportunity >= 0 ? opportunity : null;
+    const opportunity = statKey === 'touches' ? touchesValue(log.stats)
+      : statKey === 'fieldGoalsAttempted' ? log.stats.fieldGoalAttempts ?? log.stats.fieldGoalsAttempted ?? null
+        : log.stats[statKey] ?? null;
+    return opportunity != null && Number.isFinite(opportunity) && opportunity >= 0
+      && (statKey !== 'fieldGoalsAttempted' || Number.isInteger(opportunity)) ? opportunity : null;
   });
 }
 
@@ -184,8 +187,10 @@ export function assessNFLRoleStability(logs: NFLGameLogEntry[], market: NFLAnaly
     .sort((first, second) => Date.parse(first.date) - Date.parse(second.date));
   const valueFor = (log: NFLGameLogEntry) => statKey === 'touches'
     ? touchesValue(log.stats)
-    : statKey ? log.stats[statKey] ?? null : null;
-  const values = current.map(valueFor).filter((value): value is number => value != null && Number.isFinite(value));
+    : statKey === 'fieldGoalsAttempted' ? log.stats.fieldGoalAttempts ?? log.stats.fieldGoalsAttempted ?? null
+      : statKey ? log.stats[statKey] ?? null : null;
+  const values = current.map(valueFor).filter((value): value is number => value != null && Number.isFinite(value)
+    && (statKey !== 'fieldGoalsAttempted' || value >= 0 && Number.isInteger(value)));
   if (!statKey || values.length < 6) return {
     status: 'UNCERTAIN', games: values.length, recentMean: values.length ? mean(values.slice(-3)) : null,
     earlierSeasonMean: null, relativeChange: null,

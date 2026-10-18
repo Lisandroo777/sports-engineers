@@ -8,6 +8,7 @@
 const SITE_BASE_URL = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl';
 const WEB_BASE_URL = 'https://site.web.api.espn.com/apis';
 import { memoNFLResearchInput } from './researchSnapshot';
+import { fetchWithReadRetry } from '../reliability/retry';
 
 export class NFLDataUnavailableError extends Error {
   constructor(message = 'NFL data is currently unavailable.') {
@@ -19,10 +20,9 @@ export class NFLDataUnavailableError extends Error {
 async function fetchJson<T>(url: string, revalidate: number): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetchWithReadRetry(url, {
       headers: { accept: 'application/json' },
       ...(revalidate === 0 ? { cache: 'no-store' as const } : { next: { revalidate } }),
-      signal: AbortSignal.timeout(15000),
     });
   } catch {
     throw new NFLDataUnavailableError('Unable to reach the NFL data provider.');

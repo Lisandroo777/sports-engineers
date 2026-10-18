@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { MLBResearchGameLogs } from '../../mlb/types';
 
 const store = vi.hoisted(() => ({
   remaining: 16948 as number | null, observedAt: 0, pending: 0, spent: 0, owners: new Map<string, string>(),
@@ -59,10 +60,18 @@ vi.mock('../../mlb/players', () => ({
 }));
 vi.mock('../../mlb/stats', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../mlb/stats')>(),
-  getPlayerGameLogs: async () => Array.from({ length: 30 }, (_, index) => ({
-    date: `2026-09-${String(index + 1).padStart(2, '0')}`, hits: 2, totalBases: 3, homeRuns: 0, runs: 1, rbi: 1,
-    strikeOuts: 1, atBats: 4, plateAppearances: 4, opponent: 'Fixture', isHome: index % 2 === 0,
-  })),
+  getMLBResearchGameLogs: async (_playerId: number, slateDate: string, marketKey: string): Promise<MLBResearchGameLogs> => ({
+    season: Number(slateDate.slice(0, 4)), slateDate, group: marketKey.startsWith('pitcher_') ? 'pitching' : 'hitting',
+    regularSeason: Array.from({ length: 30 }, (_, index) => ({
+      date: `${slateDate.slice(0, 4)}-09-${String(index + 1).padStart(2, '0')}`, gamePk: 1000 + index, gameType: 'R',
+      hits: 2, doubles: 1, triples: 0, totalBases: 3, homeRuns: 0, runs: 1, rbi: 1,
+      strikeouts: 1, walks: 0, atBats: 4, plateAppearances: 4, opponent: 'Fixture', homeAway: index % 2 === 0 ? 'home' : 'away',
+    })),
+    postseason: [{ date: `${slateDate.slice(0, 4)}-10-01`, gamePk: 2000, gameType: 'D',
+      hits: 0, doubles: 0, triples: 0, homeRuns: 0, totalBases: 0, strikeouts: 2,
+      atBats: 4, plateAppearances: 4, opponent: 'Fixture', homeAway: 'home' }],
+    qualityNotes: [],
+  }),
 }));
 vi.mock('../../mlb/schedule', () => ({
   getMLBSchedule: async (date: string) => [{
@@ -88,6 +97,11 @@ const MLB_MARKETS = ['batter_hits', 'batter_total_bases', 'batter_home_runs', 'b
 function oddsApi() {
   return vi.fn(async (input: string | URL) => {
     const url = new URL(String(input));
+    if (url.origin !== 'https://api.the-odds-api.com'
+      || !new Set(['/v4/sports/baseball_mlb/events', `/v4/sports/baseball_mlb/events/${EVENT_ID}/markets`,
+        `/v4/sports/baseball_mlb/events/${EVENT_ID}/odds`]).has(url.pathname)) {
+      throw new Error(`Unexpected offline fixture request: ${url.origin}${url.pathname}`);
+    }
     store.calls.push(url.pathname);
     const headers = { 'x-requests-remaining': String(store.remaining ?? 16948), 'x-requests-used': '3052' };
     if (url.pathname.endsWith('/events')) {
@@ -145,9 +159,11 @@ describe('MLB automatic live research', () => {
   it('reports a started slate specifically and spends nothing', async () => {
     Object.assign(store, { gameStatus: 'In Progress', startOffsetMs: -20 * 60_000 });
     const result = await loadMLB();
-    expect(result).toMatchObject({ status: 'SLATE_COMPLETE', gamesInProgress: 1 });
+    expect(result).toMatchObject({ status: 'SLATE_COMPLETE', gamesScheduled: 0, gamesFound: 0 });
     expect((result as { error?: string }).error).toContain('already started');
-    expect(store.calls.filter(path => !path.endsWith('/events'))).toEqual([]);
+    expect(store.calls).toEqual([]);
+    expect(store.spent).toBe(0);
+    expect(store.reservations.size).toBe(0);
   });
 
   it('distinguishes no posted player props from a provider outage', async () => {

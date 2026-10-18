@@ -1,3 +1,5 @@
+import { fetchWithReadRetry } from '../reliability/retry';
+
 type RedisCommand = Array<string | number>;
 
 function redisConfig() {
@@ -43,17 +45,21 @@ export function allowLocalPersistenceFallback() {
 async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
   const config = redisConfig();
   if (!config) throw new Error('Durable KV is not configured.');
-  const response = await fetch(config.url, {
+  const init: RequestInit = {
     method: 'POST',
     headers: {
       authorization: `Bearer ${config.token}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(command),
-  });
+  };
+  const isRead = ['GET', 'SCAN', 'PING', 'HGET', 'HGETALL'].includes(String(command[0]).toUpperCase());
+  const response = isRead
+    ? await fetchWithReadRetry(config.url, init)
+    : await fetch(config.url, { ...init, signal: AbortSignal.timeout(8000) });
   if (!response.ok) throw new Error(`Durable KV request failed (${response.status})`);
   const payload = await response.json() as { result?: T; error?: string };
-  if (payload.error) throw new Error(payload.error);
+  if (payload.error) throw new Error('Durable KV command failed.');
   return payload.result as T;
 }
 

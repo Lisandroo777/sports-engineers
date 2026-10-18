@@ -60,7 +60,19 @@ export const NFL_ELITE_MARKETS: NFLAnalyzableMarketKey[] = [
   'player_pass_yds', 'player_pass_attempts', 'player_pass_completions', 'player_pass_tds', 'player_pass_interceptions',
   'player_rush_yds', 'player_rush_attempts', 'player_rush_tds',
   'player_reception_yds', 'player_receptions', 'player_reception_tds',
+  'player_field_goals', 'player_kicking_points',
 ];
+
+export const NFL_UNSUPPORTED_FIELD_GOAL_CONCEPTS = [
+  { label: 'field goals attempted', pattern: /\b(?:(?:fgs?|field[\s-]*goals?)\s+(?:attempts?|attempted)|(?:attempted|attempting)\s+(?:fgs?|field[\s-]*goals?))\b/i },
+  { label: 'longest field goal', pattern: /\blongest\s+(?:made\s+)?(?:fgs?|field[\s-]*goals?)\b/i },
+  { label: 'team field goals', pattern: /\b(?:teams?\s+(?:total\s+)?(?:fgs?|field[\s-]*goals?)|(?:fgs?|field[\s-]*goals?)(?:\s+made)?\s+(?:by|for|per)\s+(?:the\s+)?teams?)\b/i },
+] as const;
+
+export function getNFLUnsupportedFieldGoalConcept(query: string): string | null {
+  if (!/\b(?:fgs?|field[\s-]*goals?)\b/i.test(query)) return null;
+  return NFL_UNSUPPORTED_FIELD_GOAL_CONCEPTS.find(({ pattern }) => pattern.test(query))?.label ?? null;
+}
 
 export const NFL_ALTERNATE_MARKET_SUFFIX = '_alternate';
 
@@ -168,17 +180,20 @@ export function getNFLMarketHistoricalValue(
     case 'player_receptions': value = stats.receptions ?? null; break;
     case 'player_reception_longest': value = stats.longReception ?? null; break;
     case 'player_reception_tds': value = stats.receivingTouchdowns ?? null; break;
+    case 'player_field_goals': value = stats.fieldGoalsMade ?? null; break;
+    case 'player_kicking_points': value = stats.kickingPoints ?? null; break;
     case 'player_tackles_assists': value = stats.totalTackles ?? null; break;
     case 'player_sacks': value = stats.sacks ?? null; break;
     case 'player_solo_tackles': value = stats.soloTackles ?? null; break;
     case 'player_defensive_interceptions': value = stats.interceptions ?? null; break;
     default: value = null;
   }
+  if ((marketKey === 'player_field_goals' || marketKey === 'player_kicking_points')
+    && value != null && (!Number.isInteger(value) || value < 0)) return null;
   return value != null && (!Number.isFinite(value) || !yardageSourcePairIsValid(marketKey, value, stats)) ? null : value;
 }
 
 function historicalSupportFor(marketKey: NFLAnalyzableMarketKey): NFLMarketMetadata['historicalSupport'] {
-  if (['player_kicking_points', 'player_field_goals'].includes(marketKey)) return 'unsupported';
   if (['player_pass_longest_completion', 'player_rush_longest', 'player_reception_longest', 'player_rush_rec_yds', 'player_anytime_td'].includes(marketKey)) return 'partial';
   return 'full';
 }

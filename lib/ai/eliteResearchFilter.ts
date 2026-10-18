@@ -74,6 +74,7 @@ export interface EliteCandidateInput {
   lastUpdatedAt: string | null;
   requiredMarketSupported: boolean;
   marketSupport?: MarketSupport;
+  sourceRejectionReasons?: string[];
   /** Signals with no connected data source for this sport — treated as neutral, never as risk. */
   unsupportedSignals?: Array<keyof typeof ELITE_RESEARCH_WEIGHTS>;
   /** NBA_MODEL_V1 only. When absent or used by another sport, the existing shared probability path is unchanged. */
@@ -223,7 +224,7 @@ export function historicalHitRate(params: {
 /** One deterministic gate for every AI-generated pick. No provider calls, guesses, or fallback stats. */
 export function analyzePickCandidate(input: EliteCandidateInput): EliteResearchAnalysis {
   const adapter = getSportResearchAdapter(input.sport);
-  const rejectedReasons: string[] = [];
+  const rejectedReasons: string[] = [...(input.sourceRejectionReasons ?? [])];
   const trapComponents: TrapComponent[] = [];
   const unsupported = new Set(input.unsupportedSignals ?? []);
 
@@ -493,6 +494,30 @@ export function finderResultToEliteCandidate(result: FinderResult): EliteCandida
   const sampleSizes = [result.historical.l5, result.historical.l10, result.historical.l20, result.historical.season]
     .map((value) => Number(value.split('/')[1]))
     .filter((value) => Number.isFinite(value));
+  const isMLB = (result.sport ?? 'mlb') === 'mlb';
+  const context = isMLB ? result.mlbContext : undefined;
+  const isPitcher = result.marketKey.startsWith('pitcher_');
+  const lineup = result.homeAway ? context?.confirmedLineups[result.homeAway] : undefined;
+  const inConfirmedLineup = result.playerId != null && lineup?.status === 'AVAILABLE'
+    && lineup.value.some((player) => player.id === result.playerId);
+  const scheduledStarter = context?.player?.scheduledStarter;
+  const isProbableStarter = result.playerId != null && (
+    (scheduledStarter?.status === 'AVAILABLE' && scheduledStarter.value.playerId === result.playerId
+      && scheduledStarter.value.isListedProbableStarter)
+    || Object.values(context?.probablePitchers ?? {}).some((pitcher) => pitcher.status === 'AVAILABLE' && pitcher.value.id === result.playerId)
+  );
+  const playerStatus = context?.playerInjuries.status === 'AVAILABLE'
+    ? context.playerInjuries.value.find((player) => player.playerId === result.playerId)
+    : undefined;
+  const teamMembership = context?.player?.teamMembership;
+  const sourceRejectionReasons: string[] = [];
+  if (playerStatus?.explicitlyInjured === true) sourceRejectionReasons.push('MLB player explicitly injured');
+  if (!isPitcher && result.playerId != null && lineup?.status === 'AVAILABLE' && !inConfirmedLineup) {
+    sourceRejectionReasons.push('MLB player absent from confirmed batting order');
+  }
+  if (teamMembership?.status === 'AVAILABLE' && !teamMembership.value.matchesScheduledTeam) {
+    sourceRejectionReasons.push('MLB player team mismatch');
+  }
   return {
     candidateId: result.id,
     sport: result.sport ?? 'mlb',
@@ -508,17 +533,22 @@ export function finderResultToEliteCandidate(result: FinderResult): EliteCandida
     sampleSize: sampleSizes.length ? Math.max(...sampleSizes) : null,
     oddsAmerican: result.bestBook?.odds ?? null,
     marketFairProbability: null,
-    matchupAvailable: result.opponentName != null && result.opponentTeamId != null,
+    matchupAvailable: isMLB
+      ? 'matchupEvidenceAvailable' in result && result.matchupEvidenceAvailable === true
+      : result.opponentName != null && result.opponentTeamId != null,
     usageAvailable: false,
-    roleKnown: result.playerId != null,
+    roleKnown: isMLB ? isPitcher ? isProbableStarter : inConfirmedLineup : result.playerId != null,
     gameContextAvailable: result.gameTimeIso != null,
     opponentPersonnelAvailable: false,
     marketConfirmationAvailable: result.availableBooks >= 2,
-    statusKnown: result.playerId != null,
+    statusKnown: isMLB
+      ? playerStatus != null && (typeof playerStatus.explicitlyInjured === 'boolean' || !!playerStatus.code || !!playerStatus.description)
+      : result.playerId != null,
     lastUpdatedAt: result.marketUpdatedAt,
     requiredMarketSupported: true,
     marketSupport: 'SUPPORTED',
     unsupportedSignals: MLB_UNSUPPORTED_SIGNALS,
+    ...(isMLB ? { sourceRejectionReasons } : {}),
   };
 }
 

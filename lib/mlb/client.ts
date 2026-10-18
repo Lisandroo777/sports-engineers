@@ -1,3 +1,5 @@
+import { fetchWithReadRetry } from '../reliability/retry';
+
 const DEFAULT_BASE_URL = process.env.MLB_API_BASE_URL || 'https://statsapi.mlb.com/api/v1';
 
 export class MLBDataUnavailableError extends Error {
@@ -19,7 +21,7 @@ export async function mlbFetch<T>(path: string, options?: { revalidate?: number;
   const baseUrl = getMLBApiBaseUrl();
   const url = new URL(`${baseUrl}/${path.replace(/^\//, '')}`);
 
-  const response = await fetch(url.toString(), {
+  const response = await fetchWithReadRetry(url.toString(), {
     headers: {
       accept: 'application/json',
     },

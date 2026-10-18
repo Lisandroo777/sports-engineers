@@ -2,6 +2,7 @@ import { detectSport, type SupportedSport } from '../lib/ai/sportResearchAdapter
 import { resolveDateFromText } from '../lib/ai/dateResolver';
 import { parseNFLRequestScope, nflNameMatches } from '../lib/ai/agent/nflRequestScope';
 import type { ResearchCandidateRecord } from '../lib/ai/agent/session';
+import { getNFLUnsupportedFieldGoalConcept } from '../lib/nfl/oddsTypes';
 
 export interface BettingIntent {
   sport: SupportedSport | null;
@@ -37,6 +38,29 @@ export interface BettingConversation {
 const WORD_NUMBERS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
 const numberPattern = '(one|two|three|four|five|six|seven|eight|nine|ten|\\d{1,2})';
 const countValue = (text: string) => WORD_NUMBERS[text] ?? Number(text);
+export function isMLBGameMarketRequest(query: string): boolean {
+  return /\b(?:money\s*lines?|run[- ]?lines?|spreads?|(?:team|game) totals?|game lines?|f5|first[- ](?:5|five)(?:[- ]innings?)?|nrfi|yrfi|(?:no|yes) runs? (?:in (?:the )?)?first inning|totals?(?!\s+bases))\b/i.test(query);
+}
+
+export function requestedMLBTeams(query: string): string[] {
+  const teams = [
+    ['Arizona Diamondbacks', 'ARI', 'Dbacks'], ['Atlanta Braves', 'ATL'], ['Baltimore Orioles', 'BAL'],
+    ['Boston Red Sox', 'BOS'], ['Chicago Cubs', 'CHC'], ['Chicago White Sox', 'CWS', 'CHW'],
+    ['Cincinnati Reds', 'CIN'], ['Cleveland Guardians', 'CLE'], ['Colorado Rockies', 'COL'],
+    ['Detroit Tigers', 'DET'], ['Houston Astros', 'HOU'], ['Kansas City Royals', 'KC', 'KCR'],
+    ['Los Angeles Angels', 'LAA'], ['Los Angeles Dodgers', 'LAD'], ['Miami Marlins', 'MIA'],
+    ['Milwaukee Brewers', 'MIL'], ['Minnesota Twins', 'MIN'], ['New York Mets', 'NYM'],
+    ['New York Yankees', 'NYY'], ['Athletics', 'OAK', 'ATH', 'Oakland Athletics'], ['Philadelphia Phillies', 'PHI'],
+    ['Pittsburgh Pirates', 'PIT'], ['San Diego Padres', 'SD', 'SDP'], ['San Francisco Giants', 'SF', 'SFG'],
+    ['Seattle Mariners', 'SEA'], ['St. Louis Cardinals', 'STL'], ['Tampa Bay Rays', 'TB', 'TBR'],
+    ['Texas Rangers', 'TEX'], ['Toronto Blue Jays', 'TOR'], ['Washington Nationals', 'WSH', 'WAS'],
+  ];
+  return teams.filter(([name, ...aliases]) => {
+    const nickname = /(?:Red Sox|White Sox|Blue Jays)$/.exec(name)?.[0] ?? name.split(' ').at(-1)!;
+    return [name, nickname, ...aliases].some(alias => new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(query));
+  }).map(([name]) => name);
+}
+
 export function emptyIntent(): BettingIntent {
   return { sport: null, date: null, games: [], teams: [], players: [], markets: [], position: null, directions: [],
     researchMode: 'STANDARD', rankingIntent: 'BEST', requestedCount: 15, requestedTiers: [], oddsConstraints: { min: null, max: null },
@@ -78,6 +102,7 @@ export function interpretBettingIntent(query: string, candidates: ResearchCandid
   if (scope.teams.length) { set('teams', scope.teams); set('games', []); }
   else if (/\batlanta\b/.test(text) || /\bnew orleans\b/.test(text)) { set('teams', [ ...(/\batlanta\b/.test(text) ? ['Atlanta Falcons'] : []), ...(/\bnew orleans\b/.test(text) ? ['New Orleans Saints'] : []) ]); set('sport', 'nfl'); }
   const marketRules: Array<[RegExp, string[]]> = [
+    ...(intent.sport === 'nfl' ? [[/\b(?:fgs?|field[\s-]*goals?|kicking[\s-]*points?|kickers?)\b/, scope.marketKeys ?? []] as [RegExp, string[]]] : []),
     [/\breceptions?\b/, ['player_receptions']], [/\breceiving\s+(?:yards?|lines?)\b/, ['player_reception_yds']],
     [/\bpassing\s+(?:yards?|lines?)\b/, ['player_pass_yds']], [/\bcompletions?\b/, ['player_pass_completions']],
     [/\b(?:pass|passing)\s+attempts?\b/, ['player_pass_attempts']], [/\brushing\s+yards?\b/, ['player_rush_yds']],
@@ -89,6 +114,9 @@ export function interpretBettingIntent(query: string, candidates: ResearchCandid
   ];
   const market = marketRules.find(([pattern]) => pattern.test(text));
   if (market) set('markets', market[1]);
+  if (intent.sport === 'nfl' && scope.marketKeys?.some((key) => key === 'player_field_goals' || key === 'player_kicking_points')) {
+    if (!mentioned.length && playerPrefix) set('players', scope.playerQuery ? [scope.playerQuery] : []);
+  }
   if (/\blow receiving lines?\b/.test(text)) set('markets', ['player_reception_yds', 'player_receptions']);
   const position = /\b(?:qb|quarterback)\s+props?\b/.test(text) ? 'QB' : /\b(?:rb|running back)\s+props?\b/.test(text) ? 'RB' : /\b(?:wr|wide receiver)\s+props?\b/.test(text) ? 'WR' : /\bte\s+props?\b/.test(text) ? 'TE' : null;
   if (position) set('position', position);
@@ -146,7 +174,8 @@ export function interpretBettingIntent(query: string, candidates: ResearchCandid
   }
   if (intent.referenceIds.length && intent.researchMode === 'DEEP' && !intent.comparisonIntent && !intent.explanationIntent) set('requestedCount', 1);
   if (/\b(?:moneylines?|spreads?|(?:team|game) totals?|game lines?|first[- ]half|first[- ]quarter)\b/.test(text)) intent.unsupportedMarket = text.match(/\b(?:moneylines?|spreads?|(?:team|game) totals?|game lines?|first[- ]half|first[- ]quarter)\b/)![0];
-  const betting = /\b(?:picks?|plays?|props?|bets?|betting|odds|lines?|parlay|slip|juice|moneyline|spread|total|ev|edge|research|matchup|injury|weather|news|football|nfl|nba|mlb|probability|overs?|unders?|receptions?|passing|receiving|safest|favorite|value|nukes?|elite)\b/.test(text) || mentioned.length || scope.teams.length;
+  if (intent.sport === 'mlb' && isMLBGameMarketRequest(text)) intent.unsupportedMarket = null;
+  const betting = /\b(?:picks?|plays?|props?|bets?|betting|odds|lines?|parlay|slip|juice|moneyline|spread|total|ev|edge|research|matchup|injury|weather|news|football|nfl|nba|mlb|probability|overs?|unders?|receptions?|passing|receiving|safest|favorite|value|nukes?|elite)\b/.test(text) || mentioned.length || scope.teams.length || intent.sport === 'mlb' && isMLBGameMarketRequest(text);
   const conversational = /^(?:give me|make it|only|which|why|go deeper|compare|safest|most likely|what.*(?:risk|favorite|like|trust|on))/.test(text) || /[+-]\d{2,4}/.test(text);
   if (/\b(?:write.*(?:poem|code)|recipe|capital of|solve.*equation|politics|vacation|javascript|python)\b/.test(text) || !betting && !((previous || sportHint) && conversational)) intent.action = 'OUT_OF_SCOPE';
   if (/\b(?:what (?:is|does)|explain|how does)\b/.test(text) && /\b(?:ev|odds|vig|juice|parlay|moneyline|spread|kelly|probability|betting)\b/.test(text) && !intent.referenceIds.length) intent.action = 'EDUCATION';
@@ -157,5 +186,11 @@ export function interpretBettingIntent(query: string, candidates: ResearchCandid
   if (mentioned.length > 1 && !intent.comparisonIntent) { intent.action = 'CLARIFY'; intent.clarification = `Which player do you mean: ${mentioned.join(' or ')}?`; }
   if (intent.action === 'PICKS' && !intent.sport && !previous) { intent.action = 'CLARIFY'; intent.clarification = 'Which sport or game would you like picks for?'; }
   if (intent.action === 'PICKS' && intent.players.length && !mentioned.length && candidates.length && !candidates.some((row) => intent.players.some((name) => nflNameMatches(name, row.player)))) intent.referenceIds = [];
+  if (intent.sport === 'nfl' && scope.clarification) {
+    intent.unsupportedMarket = getNFLUnsupportedFieldGoalConcept(query);
+    set('markets', []);
+    intent.clarification = scope.clarification;
+    intent.action = 'CLARIFY';
+  }
   return intent;
 }

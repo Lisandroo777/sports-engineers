@@ -18,8 +18,13 @@ describe('NFL market family classification (Phase 6 audit)', () => {
     }
   });
   it('returns null (UNSUPPORTED) for markets with no real distribution mapping', () => {
-    expect(getMarketFamily('player_kicking_points')).toBeNull();
-    expect(getMarketFamily('player_field_goals')).toBeNull();
+    expect(getMarketFamily('player_field_goal_attempts')).toBeNull();
+    expect(getMarketFamily('player_longest_field_goal')).toBeNull();
+    expect(getMarketFamily('team_field_goals')).toBeNull();
+  });
+  it('uses the existing count model for verified FG made and kicking points', () => {
+    expect(getMarketFamily('player_kicking_points')).toBe('COUNT');
+    expect(getMarketFamily('player_field_goals')).toBe('COUNT');
   });
 });
 

@@ -74,9 +74,13 @@ describe('NFL market contract', () => {
     expect(getNFLMarketMetadata('player_rush_rec_yds')?.historicalSupport).toBe('partial');
   });
 
-  it('classifies unsupported kicking markets as unsupported', () => {
-    expect(getNFLMarketMetadata('player_field_goals')?.historicalSupport).toBe('unsupported');
-    expect(getNFLMarketHistoricalValue('player_field_goals', { fieldGoalsMade: 3 })).toBeNull();
+  it.each([
+    ['player_field_goals', 'fieldGoalsMade', 3],
+    ['player_kicking_points', 'kickingPoints', 11],
+  ] as const)('classifies %s as full with exact recorded history', (market, stat, value) => {
+    expect(getNFLMarketMetadata(market)).toMatchObject({ historicalSupport: 'full', gameLogStatKey: stat });
+    expect(getNFLMarketHistoricalValue(market, { [stat]: value })).toBe(value);
+    expect(getNFLMarketHistoricalValue(market, { extraPointsMade: 4 })).toBeNull();
   });
 
   it('never converts an unsupported or missing stat into fake zero history', () => {

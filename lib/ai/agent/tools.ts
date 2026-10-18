@@ -36,6 +36,8 @@ import { classifyPickTier, queryRequestsPasses, qualityFloorFromQuery, tierMeets
 import { matchesNFLLowThreshold, type NFLResearchMode } from '../../nfl/researchIntent';
 import { evaluateNFLSavedResearchMode } from '../../nfl/researchMode';
 import { isNFLInjuryContextFresh } from '../../nfl/injuries';
+import { requestedMLBTeams, isMLBGameMarketRequest } from '../../../communication/intent';
+import { isNFLGameResearchPublishable } from '../../nfl/partialCoverage';
 
 export const MAX_RESULTS_CEILING = 15;
 
@@ -292,6 +294,16 @@ async function getSlate(context: AgentContext, args: { sport?: string; date?: st
   }
 }
 
+export function hasNFLRequestedMarketCoverage(session: ResearchSession, requestedMarkets: readonly string[] = NFL_ELITE_MARKETS): boolean {
+  const ledger = session.toolMeta.nflLedger;
+  if (!ledger) return !requestedMarkets.some((market) => market === 'player_field_goals' || market === 'player_kicking_points');
+  return ledger.researchComplete
+    && requestedMarkets.every((market) => ledger.requestedMarkets.some((requested) => requested === market))
+    && ledger.games.filter((game) => game.eligibility === 'PREGAME').every((game) => requestedMarkets.every((market) =>
+      !game.failedMarkets.some((failed) => failed === market)
+      && (game.returnedMarkets.some((returned) => returned === market) || game.zeroMarkets.some((zero) => zero === market))));
+}
+
 async function getSportsbookCandidates(context: AgentContext, args: { sport?: string; date?: string }): Promise<ToolResult<unknown>> {
   const clarification = await prepareNFLRequestScope(context);
   if (clarification) return fail('NOT_FOUND', clarification, { sport: 'nfl' });
@@ -309,16 +321,59 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   // Reuse first: a stored session for this exact sport+date already holds the full researched pool,
   // so a reworded question never re-runs the slate or risks a paid refresh.
   const existing = context.researchSession;
+  let mlbSchedule: Awaited<ReturnType<typeof getMLBSchedule>> | null = null;
+  let mlbPregameIds: string[] | null = null;
+  if (sport === 'mlb') {
+    try {
+      mlbSchedule = (await getMLBSchedule(resolved.date)).filter(game => game.date === resolved.date);
+    } catch {
+      return fail('PROVIDER_ERROR', 'The MLB schedule could not be retrieved.', { sport, date: resolved.date, researchComplete: false });
+    }
+    if (!mlbSchedule.length) return fail('NO_GAMES', `No MLB games are scheduled on ${resolved.date}.`, { sport, date: resolved.date, gamesScheduled: 0, gamesFound: 0 });
+    const teams = requestedMLBTeams(context.pendingQueryIntent);
+    const explicitMatchup = /\b(?:vs\.?|versus)\b|@/i.test(context.pendingQueryIntent);
+    const matchupSides = context.pendingQueryIntent.split(/\bvs\.?(?=\s|$)|\bversus\b|@/i);
+    const selected = mlbSchedule.filter(game => teams.every(team => [game.homeTeam.name, game.awayTeam.name].includes(team)));
+    if ((explicitMatchup && (teams.length !== 2 || matchupSides.length !== 2 || matchupSides.some(side => requestedMLBTeams(side).length !== 1))) || !selected.length) {
+      return fail('NOT_FOUND', 'That MLB team or matchup has no game on the requested slate.', { sport, date: resolved.date, gamesScheduled: 0, gamesFound: 0, researchComplete: false });
+    }
+    mlbPregameIds = selected.filter(game => !COMPLETED_MLB_STATUS.test(game.status) && !hasMLBGameStarted(game)).map(game => game.id);
+    if (!mlbPregameIds.length) return fail('SLATE_COMPLETE', 'The requested MLB games have finished or already started; pregame props are closed.', { sport, date: resolved.date, gamesScheduled: 0, gamesFound: 0 });
+    if (isMLBGameMarketRequest(context.pendingQueryIntent)) return fail('SPORTSBOOK_DATA_REQUIRED', 'MLB game markets require the game-market quote workflow, not player-prop research.', { sport, date: resolved.date, gamesScheduled: mlbPregameIds.length, researchComplete: false });
+  }
+  const mlbSessionCurrent = sport !== 'mlb' || !existing || existing.candidates.every(candidate => {
+    const game = mlbSchedule?.find(entry => entry.id === candidate.gameId);
+    return game != null && !COMPLETED_MLB_STATUS.test(game.status) && !hasMLBGameStarted(game)
+      && candidate.priceCurrent && ['LIVE', 'FRESH'].includes(classifyStoredPrice(candidate));
+  });
+  const mlbSessionCovered = sport !== 'mlb' || existing != null && existing.toolMeta.partialCoverage !== true && existing.toolMeta.researchComplete !== false
+    && mlbPregameIds!.every(id => existing.toolMeta.mlbGameCoverage
+      ? existing.toolMeta.mlbGameCoverage.some(game => game.gameId === id && game.status === 'RESEARCHED')
+      : existing.scopeGameIds?.includes(id) || !existing.scopeGameIds?.length
+        && existing.toolMeta.gamesScheduled === mlbSchedule!.filter(game => !COMPLETED_MLB_STATUS.test(game.status) && !hasMLBGameStarted(game)).length);
   const sessionMatches = !deliberateRefresh && !approvedForRequest && existing != null && existing.sport === sport && existing.date === resolved.date && existing.candidates.length > 0
+    && mlbSessionCurrent
+    && mlbSessionCovered
     && (sport !== 'nfl' || existing.toolMeta.researchComplete !== false
+      && hasNFLRequestedMarketCoverage(existing, context.nflScope?.marketKeys ?? NFL_ELITE_MARKETS)
       && existing.candidates.every((candidate) => candidate.priceCurrent && ['LIVE', 'FRESH'].includes(classifyStoredPrice(candidate))
         && isNFLPlayerAvailabilityKnown(candidate.injuryContext as Parameters<typeof isNFLPlayerAvailabilityKnown>[0])
         && (context.nflScope?.researchMode !== 'DEEP' || candidate.nflResearchProfile?.researchMode !== 'STANDARD')));
-  const reuseSession = () => ok(
-    { loaded: true, reusedExistingSession: true, candidatesFound: existing!.candidates.length, nextStep: 'Call rank_candidates to filter and rank the already-researched pool.' },
-    { ...existing!.toolMeta, sport, date: resolved.date, reusedExistingSession: true },
-  );
-  if (sessionMatches && !existing.scopeGameIds?.length) return reuseSession();
+  const reuseSession = () => {
+    if (sport === 'mlb') {
+      const candidates = existing!.candidates.filter(candidate => mlbPregameIds!.includes(candidate.gameId ?? ''));
+      const coverage = existing!.toolMeta.mlbGameCoverage?.filter(game => mlbPregameIds!.includes(game.gameId));
+      context.researchSession = { ...existing!, candidates, scopeGameIds: mlbPregameIds!, toolMeta: {
+        ...existing!.toolMeta, gamesScheduled: mlbPregameIds!.length, candidatesFound: candidates.length,
+        ...(coverage ? { mlbGameCoverage: coverage } : {}),
+      } };
+    }
+    return ok(
+    { loaded: true, reusedExistingSession: true, candidatesFound: context.researchSession!.candidates.length, nextStep: 'Call rank_candidates to filter and rank the already-researched pool.' },
+    { ...context.researchSession!.toolMeta, sport, date: resolved.date, reusedExistingSession: true },
+    );
+  };
+  if (sessionMatches && (sport === 'mlb' || !existing.scopeGameIds?.length)) return reuseSession();
 
   let preflight: FinderRunSummary;
   try {
@@ -332,6 +387,10 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     return fail(sport === 'nfl' ? 'RESEARCH_INCOMPLETE' : 'PROVIDER_ERROR', sport === 'nfl' ? 'The requested NFL slate could not be fully researched.' : `The ${sport.toUpperCase()} schedule or sportsbook event list could not be retrieved.`, { sport, date: resolved.date, researchComplete: false });
   }
 
+  if (sport === 'mlb' && !preflight.validationPreflight && preflight.gameCoverage?.some(game => mlbPregameIds!.includes(game.gameId) && game.status === 'PROVIDER_ERROR')) {
+    return fail('PROVIDER_ERROR', 'The MLB sportsbook event list could not be retrieved.', { sport, date: resolved.date, gamesScheduled: mlbPregameIds!.length, researchComplete: false, partialCoverage: true,
+      mlbGameCoverage: preflight.gameCoverage.filter(game => mlbPregameIds!.includes(game.gameId)) });
+  }
   if (sport !== 'nfl' && preflight.gamesScheduled === 0) {
     return fail('NO_GAMES', `No ${sport.toUpperCase()} games are scheduled on ${resolved.date}.`, { sport, date: resolved.date, gamesScheduled: 0, gamesFound: 0 });
   }
@@ -340,20 +399,15 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
   }
 
   const preflightData = preflight.validationPreflight;
-  let mlbPregameIds: string[] | null = null;
-  if (sport === 'mlb') {
-    const unfinished = (await getMLBSchedule(resolved.date)).filter((game) => !COMPLETED_MLB_STATUS.test(game.status));
-    const pregame = unfinished.filter((game) => !hasMLBGameStarted(game));
-    if (unfinished.length > 0 && pregame.length === 0) {
-      return fail('SLATE_COMPLETE', `${unfinished.length === preflight.gamesScheduled ? 'Every MLB game' : 'Every remaining MLB game'} on ${resolved.date} has already started, so pregame player props are closed.`,
-        { sport, date: resolved.date, gamesScheduled: preflight.gamesScheduled, gamesFound: 0, gamesInProgress: unfinished.length });
-    }
-    if (pregame.length < unfinished.length) {
-      mlbPregameIds = pregame.map((game) => game.id);
-      if (preflightData) preflightData.games = preflightData.games.filter((game) => mlbPregameIds!.includes(game.gameId));
-      if (preflightData && preflightData.games.length === 0) preflightData.preflightState = 'EVENT_LIST_REQUIRED';
-    }
+  if (sport === 'mlb' && preflightData) {
+    preflightData.games = preflightData.games.filter(game => mlbPregameIds!.includes(game.gameId));
+    if (!preflightData.games.length) preflightData.preflightState = 'EVENT_LIST_REQUIRED';
   }
+  const mlbPreflightCoverage = sport === 'mlb' ? mlbSchedule!.filter(game => mlbPregameIds!.includes(game.id)).map(game =>
+    preflight.gameCoverage?.find(coverage => coverage.gameId === game.id)
+    ?? { gameId: game.id, slateDate: resolved.date, homeTeam: game.homeTeam.name, awayTeam: game.awayTeam.name,
+      gameTime: game.gameTime, eventId: null, eventTime: null,
+      status: preflightData?.games.some(plan => plan.gameId === game.id && plan.eventId) ? 'NOT_FETCHED' as const : 'NOT_LISTED' as const }) : null;
   if (sport === 'mlb' && preflightData && !deliberateRefresh) {
     for (const game of preflightData.games) {
       if (game.eventId && await getCachedMLBPrimaryMarkets(game.eventId)) game.marketsCacheState = 'CACHE_FRESH';
@@ -362,7 +416,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     preflightData.cacheMisses = preflightData.games.length - preflightData.cacheHits;
   }
   const scopedTeams = [...new Set([...(context.nflScope?.teams ?? []), ...(context.nflScope?.playerTeam ? [context.nflScope.playerTeam] : [])])];
-  const requestedGameIds = sport === 'nfl' && scopedTeams.length > 0
+  const requestedGameIds = sport === 'mlb' ? mlbPregameIds! : sport === 'nfl' && scopedTeams.length > 0
     ? (preflightData?.games ?? []).filter((game) => scopedTeams.every((team) => detectRequestedGames(team, [game]).length > 0)).map((game) => game.gameId)
     : detectRequestedGames(context.pendingQueryIntent, preflightData?.games ?? []);
   if (sport === 'nfl' && scopedTeams.length > 0 && requestedGameIds.length === 0) {
@@ -376,12 +430,14 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     .filter((game) => game.eventId != null && game.marketsCacheState === 'CACHE_FRESH')
     .map((game) => game.gameId);
   if (sport !== 'nfl' && preflightData?.preflightState === 'EVENT_LIST_REQUIRED') {
-    return fail('EVENT_LIST_REQUIRED', `Sportsbooks have not listed the ${mlbPregameIds?.length ?? preflight.gamesEligible} remaining pregame ${sport.toUpperCase()} game${(mlbPregameIds?.length ?? preflight.gamesEligible) === 1 ? '' : 's'} on ${resolved.date} yet, so no markets are posted.`, { sport, date: resolved.date, gamesScheduled: preflight.gamesScheduled, gamesFound: 0 });
+    return fail('EVENT_LIST_REQUIRED', `Sportsbooks have not listed the ${mlbPregameIds?.length ?? preflight.gamesEligible} remaining pregame ${sport.toUpperCase()} game${(mlbPregameIds?.length ?? preflight.gamesEligible) === 1 ? '' : 's'} on ${resolved.date} yet, so no markets are posted.`, { sport, date: resolved.date, gamesScheduled: mlbPregameIds?.length ?? preflight.gamesScheduled, gamesFound: 0, researchComplete: false,
+      ...(mlbPreflightCoverage ? { mlbGameCoverage: mlbPreflightCoverage, partialCoverage: true } : {}) });
   }
   // Without paid-refresh permission (local development default) only already-cached games can be researched.
   if (!autoRefresh && cachedGameIds.length === 0 && ((preflightData?.cacheMisses ?? 0) > 0 || requestedGameIds.length > 0)) {
     console.info('[deepside:odds] refresh needed but paid refresh disabled', { sport, date: resolved.date, cacheMisses: preflightData?.cacheMisses, estimatedCreditCostHigh: preflightData?.estimatedCreditCostHigh });
-    return fail('SPORTSBOOK_DATA_REQUIRED', 'Sportsbook data is temporarily unavailable.', { sport, date: resolved.date });
+    return fail('SPORTSBOOK_DATA_REQUIRED', 'Sportsbook data is temporarily unavailable.', { sport, date: resolved.date,
+      ...(mlbPreflightCoverage ? { gamesScheduled: mlbPregameIds!.length, mlbGameCoverage: mlbPreflightCoverage, partialCoverage: true, researchComplete: false } : {}) });
   }
 
   let summary: FinderRunSummary;
@@ -425,6 +481,10 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     sport === 'nfl'
       ? (summary as NFLFinderSummary).nflCandidates
         .filter((c) => c.playerMatch === 'MATCHED' && c.eliteAnalysis != null)
+        .filter((c) => (summary as NFLFinderSummary).nflLedger?.researchComplete === true
+          || isNFLGameResearchPublishable((summary as NFLFinderSummary).nflLedger, {
+            gameId: c.gameId, eventId: c.eventId, marketKey: c.market, retrievedAt: c.retrievedAt, sourceGameId: c.sourceGameId,
+          }))
         .map((c) => ({
           candidateId: c.id, playerId: c.playerId, teamId: c.teamId, player: c.playerName, team: c.team, opponent: c.opponent,
           marketLabel: c.marketLabel, marketKey: c.market, line: c.line, direction: c.side,
@@ -468,6 +528,7 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
           injuryContext: c.injuryContext,
           weatherContext: c.weatherContext,
           nflHistory: c.history,
+          nflKickingResearch: c.nflKickingResearch ?? undefined,
           gameId: c.gameId, eventId: c.eventId, retrievedAt: c.retrievedAt, sourceGameId: c.sourceGameId,
           bestAlternateLine: c.alternateLines?.recommended ? {
             line: c.alternateLines.recommended.line, side: c.alternateLines.recommended.side,
@@ -482,6 +543,16 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
           .map(nbaFinderCandidateToGeneric)
         : null;
 
+  if (sport === 'mlb') summary = { ...summary, results: summary.results.filter(result => mlbPregameIds!.includes(result.gameId ?? '')) };
+  const mlbGameCoverage = sport === 'mlb' ? mlbSchedule!.filter(game => mlbPregameIds!.includes(game.id)).map(game =>
+    summary.gameCoverage?.find(coverage => coverage.gameId === game.id)
+    ?? preflight.gameCoverage?.find(coverage => coverage.gameId === game.id)
+    ?? { gameId: game.id, slateDate: resolved.date, homeTeam: game.homeTeam.name, awayTeam: game.awayTeam.name,
+      gameTime: game.gameTime, eventId: null, eventTime: null,
+      status: summary.results.some(result => result.gameId === game.id) ? 'RESEARCHED' as const
+        : summary.budgetLimited ? 'BUDGET_BLOCKED' as const
+          : scopeGames.some(plan => plan.gameId === game.id && plan.eventId) ? 'NO_MARKETS' as const : 'NOT_LISTED' as const }) : null;
+  const mlbPartialCoverage = mlbGameCoverage?.some(game => game.status !== 'RESEARCHED') ?? false;
   const candidatesFound = genericCandidates != null ? genericCandidates.length : summary.results.length;
   const meta = {
     sport,
@@ -496,15 +567,28 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     budgetLimited: summary.budgetLimited,
     blockReason: summary.blockReason,
     oddsSpend: summary.oddsSpend,
+    ...(mlbGameCoverage ? {
+      mlbGameCoverage,
+      partialCoverage: mlbPartialCoverage,
+      researchComplete: !mlbPartialCoverage,
+    } : {}),
     ...(sport === 'nfl' ? { nflLedger: (summary as NFLFinderSummary).nflLedger,
       researchComplete: (summary as NFLFinderSummary).nflLedger?.researchComplete ?? false,
+      partialCoverage: (summary as NFLFinderSummary).nflLedger?.researchComplete !== true,
       gamesScheduled: (summary as NFLFinderSummary).nflLedger?.eligiblePregame ?? summary.gamesEligible } : {}),
+    ...(sport === 'nba' ? {
+      nbaGameCoverage: (summary as NBAFinderSummary).nbaGameCoverage,
+      partialCoverage: (summary as NBAFinderSummary).partialCoverage === true,
+      researchComplete: (summary as NBAFinderSummary).partialCoverage !== true
+        && ((summary as NBAFinderSummary).researchComplete ?? !summary.budgetLimited),
+    } : {}),
   };
 
-  if (sport === 'nfl' && !meta.researchComplete) {
+  if (sport === 'nfl' && !meta.researchComplete && candidatesFound === 0) {
     context.nflResearchIncomplete = true; context.researchSession = null; context.researchSessionId = null;
     return fail('RESEARCH_INCOMPLETE', 'The requested NFL slate could not be fully researched.', meta);
   }
+  if (sport === 'nfl') context.nflResearchIncomplete = false;
   if (summary.slateComplete) {
     return fail('SLATE_COMPLETE', `Every game on ${resolved.date} has already finished, so no props are offered.`, meta);
   }
@@ -516,10 +600,11 @@ async function getSportsbookCandidates(context: AgentContext, args: { sport?: st
     if (summary.blockReason === 'NOT_AUTHORIZED') {
       return fail('SPORTSBOOK_DATA_REQUIRED', 'Sportsbook data is temporarily unavailable.', meta);
     }
-    if ((summary.oddsSpend?.providerErrors ?? 0) > 0) {
+    if ((summary.oddsSpend?.providerErrors ?? 0) > 0 || (mlbGameCoverage ?? summary.gameCoverage)?.some(game => game.status === 'PROVIDER_ERROR')) {
       return fail('PROVIDER_ERROR', 'The sportsbook odds provider returned an error for this slate.', meta);
     }
-    return fail('NO_CACHED_SPORTSBOOK_DATA', `Sportsbooks have not posted ${sport.toUpperCase()} player props for the ${summary.gamesAnalyzed} pregame game${summary.gamesAnalyzed === 1 ? '' : 's'} on ${resolved.date} yet.`, meta);
+    const gameCount = summary.gameCoverage?.filter(game => game.status === 'NO_MARKETS').length ?? summary.gamesEligible;
+    return fail('NO_CACHED_SPORTSBOOK_DATA', `Sportsbooks have not posted ${sport.toUpperCase()} player props for the ${gameCount} pregame game${gameCount === 1 ? '' : 's'} on ${resolved.date} yet.`, meta);
   }
   if (sport !== 'nfl' && candidatesFound === 0) return fail('NO_CANDIDATES', 'Props were loaded but no researchable candidates were produced.', meta);
 
@@ -628,7 +713,7 @@ const MIN_OFFICIAL_ODDS = -900;
 const TARGET_ODDS_TOLERANCE = 50;
 
 function classifyStoredPrice(candidate: ResearchCandidateRecord) {
-  const timestamp = candidate.nflResearchProfile?.market.provenance[0]?.publishedAt;
+  const timestamp = candidate.nflResearchProfile?.market.provenance[0]?.publishedAt ?? candidate.retrievedAt;
   if (!timestamp) return 'UNKNOWN';
   const age = Date.now() - Date.parse(timestamp);
   return Number.isFinite(age) && age >= 0 && age <= 3600000 ? 'FRESH' : 'EXPIRED';

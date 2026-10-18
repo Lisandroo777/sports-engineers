@@ -53,6 +53,8 @@ const MARKET_FAMILY: Record<string, MarketFamily> = {
   player_pass_attempts: 'COUNT',
   player_pass_completions: 'COUNT',
   player_rush_attempts: 'COUNT',
+  player_field_goals: 'COUNT',
+  player_kicking_points: 'COUNT',
   player_tackles_assists: 'COUNT',
   player_solo_tackles: 'COUNT',
   player_pass_tds: 'RARE_COUNT',

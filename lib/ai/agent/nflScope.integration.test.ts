@@ -226,7 +226,8 @@ describe('Stage 3 clean NFL request outcomes', () => {
     const result = toClientResult(await runAgentTurn([{ role: 'user', content: 'Best NFL props 2026-10-11' }]), false);
     expect(result.meta?.researchComplete).toBe(false); expect(result.results).toEqual([]);
     expect(result.reply).toBe('Required NFL sportsbook market data is currently unavailable.');
-    expect(JSON.stringify(result)).not.toMatch(/AUTHENTICATION|oddsSpend|credits|function|provider/);
+    expect((result.meta?.nflLedger as { games: Array<{ failure: string }> }).games[0].failure).toBe('AUTHENTICATION');
+    expect(JSON.stringify(result)).not.toMatch(/oddsSpend|credits|function|apiKey|token|password/);
     expect(fetch).not.toHaveBeenCalled();
   });
 

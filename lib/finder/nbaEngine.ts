@@ -95,7 +95,16 @@ export interface NBACandidate {
   eliteAnalysis: EliteResearchAnalysis | null;
 }
 
+export interface NBAGameCoverage {
+  gameId: string;
+  eventId: string | null;
+  state: 'RESEARCHED' | 'NO_MARKETS' | 'PROVIDER_ERROR' | 'BUDGET_BLOCKED' | 'NOT_FETCHED';
+}
+
 export interface NBAFinderSummary extends FinderRunSummary {
+  nbaGameCoverage?: NBAGameCoverage[];
+  partialCoverage?: boolean;
+  researchComplete?: boolean;
   gameCandidates?: import('../nba/prediction/gameLines/recommendations').GameRecommendation[];
   modeledGames?: import('../nba/prediction/gameLines/recommendations').ModeledGameResearch[];
   nbaCandidates: NBACandidate[];
@@ -178,7 +187,8 @@ export async function runNBAFinderDeepSearch(
   const contextProvider = createNBAContextProvider({ maxRequests: 100, maxGamesPerTeam: 8 });
   const contextSnapshotCache = new Map<string, Promise<NBAContextSnapshot>>();
   const contextBundleCache = new Map<string, Promise<{ context: import('../nba/context/types').NBAResearchContext; intelligence: NBAIntelligenceSnapshot } | null>>();
-  const scheduled = await getNBASchedule(slateDate).catch(() => []);
+  let scheduleFailed = false;
+  const scheduled = await getNBASchedule(slateDate).catch(() => { scheduleFailed = true; return []; });
   const bettable = scheduled.filter((game) => !game.completed
     && (options.validationGameIds == null || options.validationGameIds.includes(game.id)));
   const oddsSportKeys = [...new Set(bettable.map(game => game.phase === 'PRESEASON' ? 'basketball_nba_preseason' : NBA_ODDS_SPORT_KEY))];
@@ -289,8 +299,14 @@ export async function runNBAFinderDeepSearch(
   let gamesSkippedByCreditCap = 0;
   let estimatedNextGameCostReported: number | undefined;
   let creditsRemainingInValidationBudgetReported: number | undefined;
+  const nbaGameCoverage: NBAGameCoverage[] = bettable.map((game) => ({
+    gameId: game.id,
+    eventId: selectable.find((entry) => entry.game.id === game.id)?.event.id ?? null,
+    state: budgetLimited ? 'BUDGET_BLOCKED' : 'NOT_FETCHED',
+  }));
 
   for (const { game, event } of games) {
+    const coverage = nbaGameCoverage.find((entry) => entry.gameId === game.id)!;
     // TRUE hard ceiling, computed BEFORE any paid work starts for this game.
     if (options.validationMaxCredits != null) {
       const spent = getActiveOddsSpendTracker()?.creditsSpent ?? 0;
@@ -301,6 +317,7 @@ export async function runNBAFinderDeepSearch(
         estimatedNextGameCostReported = estimatedNextGameCost;
         creditsRemainingInValidationBudgetReported = options.validationMaxCredits - spent;
         gamesSkippedByCreditCap += 1;
+        coverage.state = 'BUDGET_BLOCKED';
         continue;
       }
     }
@@ -313,12 +330,14 @@ export async function runNBAFinderDeepSearch(
     } catch (error) {
       if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
       else if (error instanceof OddsRefreshNotAuthorizedError) { budgetLimited = true; blockReason ??= 'NOT_AUTHORIZED'; }
-      else throw error;
+      coverage.state = error instanceof OddsBudgetGuardError || error instanceof OddsRefreshNotAuthorizedError
+        ? 'BUDGET_BLOCKED' : 'PROVIDER_ERROR';
       continue;
     }
     eventsMatched += 1;
     rawPropsTotal += props.length;
 
+    const previousPropsAnalyzed = propsAnalyzed;
     const seen = new Set<string>();
     for (const prop of props) {
       const meta = getNBAMarketMetadata(prop.marketKey);
@@ -517,8 +536,10 @@ export async function runNBAFinderDeepSearch(
         });
       }
     }
+    coverage.state = propsAnalyzed > previousPropsAnalyzed ? 'RESEARCHED' : 'NO_MARKETS';
   }
 
+  const researchComplete = !scheduleFailed && nbaGameCoverage.every((entry) => entry.state === 'RESEARCHED');
   return {
     // Elite-ranked FinderResults (the rich MLB-parity scorecard) stay empty until NBA has its own
     // signal modules (marketMovement/outlierDependency/etc.); researched NBA candidates carry a
@@ -537,7 +558,10 @@ export async function runNBAFinderDeepSearch(
       partial: candidates.filter((c) => c.historicalSupport === 'partial').length,
       unsupported: 0,
     },
-    gamesAnalyzed: games.length,
+    gamesAnalyzed: nbaGameCoverage.filter((entry) => entry.state === 'RESEARCHED').length,
+    nbaGameCoverage,
+    partialCoverage: !researchComplete,
+    researchComplete,
     gamesEligible: bettable.length,
     gamesScheduled: scheduled.length,
     slateComplete,

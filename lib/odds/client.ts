@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { fetchWithReadRetry } from '../reliability/retry';
 import type { NormalizedProp, OddsEvent, SupportedOddsMarketKey } from './types';
 import { getMarketMetadata, HITTER_MARKETS, PITCHER_MARKETS, ALTERNATE_HITTER_MARKETS, ALTERNATE_PITCHER_MARKETS } from './types';
 import { getNFLMarketMetadata } from '../nfl/oddsTypes';
@@ -182,6 +183,7 @@ export interface OddsSpendTracker {
   cacheMisses: number;
   /** Provider requests that failed (HTTP error or network), distinct from an empty market list. */
   providerErrors?: number;
+  cacheErrors?: number;
 }
 
 function createSpendTracker(): OddsSpendTracker {
@@ -197,10 +199,21 @@ export function beginOddsSpendTracking(): OddsSpendTracker {
 }
 
 export async function beginOddsSpendTrackingAsync(): Promise<OddsSpendTracker> {
-  const status = await readCreditStatus();
+  const tracker = beginOddsSpendTracking();
+  const status = await readOptionalCreditStatus();
   const remaining = status?.remaining != null ? Number(status.remaining) : null;
-  activeSpendTracker = { creditsBefore: remaining, creditsAfter: remaining, creditsSpent: 0, paidRequestsMade: 0, cacheHits: 0, staleCacheHits: 0, cacheMisses: 0 };
-  return activeSpendTracker;
+  tracker.creditsBefore = remaining;
+  tracker.creditsAfter = remaining;
+  return tracker;
+}
+
+async function readOptionalCreditStatus(): Promise<Awaited<ReturnType<typeof readCreditStatus>>> {
+  try {
+    return await readCreditStatus();
+  } catch {
+    if (activeSpendTracker) activeSpendTracker.cacheErrors = (activeSpendTracker.cacheErrors ?? 0) + 1;
+    return null;
+  }
 }
 
 export function getActiveOddsSpendTracker(): OddsSpendTracker | null {
@@ -242,7 +255,7 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
 
   const memoryHit = cache.get(cacheKey);
   if (!forcePaidRefresh && memoryHit && memoryHit.expires > Date.now()) {
-    const status = await readCreditStatus();
+    const status = await readOptionalCreditStatus();
     lastCreditInfo = { lastCost: '0', used: status?.used ?? null, remaining: status?.remaining ?? null, path, cached: true, source: 'memory', cacheState: 'CACHE_FRESH', cacheAgeMs: 0 };
     recordSpend(lastCreditInfo);
     return memoryHit.data as T;
@@ -252,7 +265,7 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
   if (!forcePaidRefresh && diskHit) {
     // Backfill the in-memory cache so subsequent calls in this process skip the disk read too.
     cache.set(cacheKey, { expires: diskHit.expiresAt, data: diskHit.data });
-    const status = await readCreditStatus();
+    const status = await readOptionalCreditStatus();
     lastCreditInfo = { lastCost: '0', used: status?.used ?? null, remaining: status?.remaining ?? null, path, cached: true, source: 'disk', cacheState: 'CACHE_FRESH', cacheAgeMs: Date.now() - diskHit.cachedAt };
     recordSpend(lastCreditInfo);
     return diskHit.data;
@@ -310,7 +323,9 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
   async function fetchAndStore(): Promise<T> {
     let response: Response;
     try {
-      response = await fetch(url.toString(), { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+      response = isFreePath(path)
+        ? await fetchWithReadRetry(url.toString(), { headers: { accept: 'application/json' }, redirect: 'error' })
+        : await fetch(url.toString(), { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
     } catch (error) {
       if (activeSpendTracker) activeSpendTracker.providerErrors = (activeSpendTracker.providerErrors ?? 0) + 1;
       throw error;
@@ -324,17 +339,26 @@ async function oddsFetch<T>(path: string, params: Record<string, string>, cacheT
     lastCreditInfo = { lastCost: last, used, remaining, path, cached: false, source: 'network', cacheState: isFreePath(path) ? 'FREE' : 'PAID', cacheAgeMs: null };
     recordSpend(lastCreditInfo);
     console.log(`[odds] path=${path} lastCost=${last ?? '0'} used=${used ?? '?'} remaining=${remaining ?? '?'}`);
-    await writeCreditStatus({ lastCost: last, used, remaining, path, updatedAt: Date.now() });
+    if (last != null || used != null || remaining != null) {
+      try { await writeCreditStatus({ lastCost: last, used, remaining, path, updatedAt: Date.now() }); }
+      catch { if (activeSpendTracker) activeSpendTracker.cacheErrors = (activeSpendTracker.cacheErrors ?? 0) + 1; }
+    }
 
     if (!response.ok) {
       if (activeSpendTracker) activeSpendTracker.providerErrors = (activeSpendTracker.providerErrors ?? 0) + 1;
       throw new OddsApiUnavailableError(`Odds API request failed (${response.status})`);
     }
 
-    const data = (await response.json()) as T;
+    let data: T;
+    try { data = (await response.json()) as T; }
+    catch {
+      if (activeSpendTracker) activeSpendTracker.providerErrors = (activeSpendTracker.providerErrors ?? 0) + 1;
+      throw new OddsApiUnavailableError('Odds API returned invalid JSON.');
+    }
     const expires = Date.now() + cacheTtlMs;
-    await writePersistentCache(cacheKey, data, expires);
     cache.set(cacheKey, { expires, data });
+    try { await writePersistentCache(cacheKey, data, expires); }
+    catch { if (activeSpendTracker) activeSpendTracker.cacheErrors = (activeSpendTracker.cacheErrors ?? 0) + 1; }
     cachedSuccessfully = true;
     return data;
   }
@@ -487,6 +511,26 @@ export async function getEventPlayerProps(eventId: string, markets: SupportedOdd
     oddsFormat: 'american',
   }, cacheTtlMs);
   return normalizeEventOdds(data, sport);
+}
+
+export const MLB_GAME_MARKET_KEYS = [
+  'h2h', 'h2h_3_way', 'spreads', 'totals', 'team_totals',
+  'h2h_1st_5_innings', 'h2h_3_way_1st_5_innings',
+  'spreads_1st_5_innings', 'totals_1st_5_innings', 'totals_1st_1_innings',
+  'alternate_spreads', 'alternate_totals', 'alternate_team_totals',
+  'alternate_spreads_1st_5_innings', 'alternate_totals_1st_5_innings',
+] as const;
+
+export async function getMLBGameMarketOdds(eventId: string, markets: readonly string[], cacheTtlMs?: number): Promise<unknown> {
+  if (!eventId || !/^[a-zA-Z0-9_-]+$/.test(eventId)) throw new Error('An exact MLB provider event ID is required.');
+  if (markets.some((market) => !MLB_GAME_MARKET_KEYS.some((allowed) => allowed === market))) {
+    throw new Error('Unsupported MLB game market.');
+  }
+  const requested = MLB_GAME_MARKET_KEYS.filter((market) => markets.includes(market));
+  if (requested.length === 0) return { id: eventId, bookmakers: [] };
+  return oddsFetch<unknown>(`/sports/${SPORT}/events/${eventId}/odds`, {
+    regions: 'us', markets: requested.join(','), oddsFormat: 'american',
+  }, cacheTtlMs);
 }
 
 /**

@@ -21,6 +21,7 @@ const NAV_MAP: Record<string, NavItem['icon']> = {
   Picks: 'picks',
   Performance: 'performance',
   Settings: 'settings',
+  'System Health': 'performance',
 };
 
 function NavItemIcon({ icon, isActive }: { icon: NavItem['icon']; isActive: boolean }) {
@@ -123,6 +124,7 @@ export function AppSidebar({ currentPath, footer }: AppSidebarProps) {
     { label: 'AI Favorites', href: '/picks' },
     { label: 'Best +EV Plays', href: '/ai?query=Best+%2BEV+Plays' },
     { label: 'Settings', href: '/settings' },
+    { label: 'System Health', href: '/system-health' },
   ];
 
   return (

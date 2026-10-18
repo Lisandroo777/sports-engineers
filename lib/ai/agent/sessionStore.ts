@@ -19,6 +19,9 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 /** Hard ceiling regardless of TTL, so disk usage never grows unbounded even under heavy use. */
 const MAX_SESSIONS = 100;
 const SESSION_KEY_PREFIX = 'ai-session:';
+const MAX_RECOVERY_SESSIONS = 20;
+const MAX_RECOVERY_BYTES = 5 * 1024 * 1024;
+const recoverySessions = new Map<string, { stored: StoredSession; bytes: number }>();
 
 interface StoredSession {
   id: string;
@@ -41,6 +44,29 @@ function sessionFromStored(stored: StoredSession): ResearchSession | null {
     return isWellFormed(session) ? session : null;
   } catch {
     return null;
+  }
+}
+
+function pruneRecoverySessions() {
+  for (const [id, entry] of recoverySessions) {
+    if (entry.stored.expiresAt <= Date.now()) recoverySessions.delete(id);
+  }
+}
+
+function rememberDurableSession(id: string, stored: StoredSession, session: ResearchSession) {
+  pruneRecoverySessions();
+  recoverySessions.delete(id);
+  const expiresAt = Math.min(stored.expiresAt, stored.savedAt + TTL_MS, Date.now() + TTL_MS);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
+  const snapshot: StoredSession = { id, savedAt: stored.savedAt, expiresAt, ...compressedKVSession(session) };
+  const bytes = Buffer.byteLength(JSON.stringify(snapshot));
+  if (bytes > MAX_RECOVERY_BYTES) return;
+  recoverySessions.set(id, { stored: snapshot, bytes });
+  let totalBytes = Array.from(recoverySessions.values()).reduce((total, entry) => total + entry.bytes, 0);
+  for (const [oldestId, entry] of recoverySessions) {
+    if (recoverySessions.size <= MAX_RECOVERY_SESSIONS && totalBytes <= MAX_RECOVERY_BYTES) break;
+    recoverySessions.delete(oldestId);
+    totalBytes -= entry.bytes;
   }
 }
 
@@ -89,17 +115,21 @@ export async function saveResearchSession(session: ResearchSession): Promise<str
   const id = randomUUID();
   const savedAt = Date.now();
   const expiresAt = savedAt + TTL_MS;
-  if (hasDurableKV()) {
-    await kvSetJson(`${SESSION_KEY_PREFIX}${id}`, { id, savedAt, expiresAt, ...compressedKVSession(session) }, TTL_MS);
-    return id;
-  }
-  if (!allowLocalPersistenceFallback()) return id;
   try {
+    if (hasDurableKV()) {
+      const stored = { id, savedAt, expiresAt, ...compressedKVSession(session) };
+      await kvSetJson(`${SESSION_KEY_PREFIX}${id}`, stored, TTL_MS);
+      rememberDurableSession(id, stored, session);
+      return id;
+    }
+    if (process.env.NODE_ENV === 'production' || !allowLocalPersistenceFallback()) {
+      throw new Error('Research session could not be persisted.');
+    }
     const { existsSync, mkdirSync, writeFileSync } = await fsApi();
     if (!existsSync(STORE_DIR)) mkdirSync(STORE_DIR, { recursive: true });
     writeFileSync(filePathFor(id), JSON.stringify({ id, savedAt, expiresAt, session }), 'utf-8');
   } catch {
-    // best-effort; if the disk write fails the session simply won't survive a restart
+    throw new Error('Research session could not be persisted.');
   }
   await sweep();
   return id;
@@ -116,9 +146,23 @@ function isWellFormed(session: unknown): session is ResearchSession {
 export async function getResearchSession(id: string | null | undefined): Promise<ResearchSession | null> {
   if (!id) return null;
   if (hasDurableKV()) {
-    const stored = await kvGetJson<StoredSession>(`${SESSION_KEY_PREFIX}${id}`);
-    if (!stored || stored.expiresAt <= Date.now()) return null;
-    return sessionFromStored(stored);
+    let stored: StoredSession | null;
+    try {
+      stored = await kvGetJson<StoredSession>(`${SESSION_KEY_PREFIX}${id}`);
+    } catch {
+      pruneRecoverySessions();
+      const recovered = recoverySessions.get(id);
+      if (recovered) return sessionFromStored(recovered.stored);
+      throw new Error('Research session is temporarily unavailable.');
+    }
+    if (!stored || stored.expiresAt <= Date.now()) {
+      recoverySessions.delete(id);
+      return null;
+    }
+    const session = sessionFromStored(stored);
+    if (session) rememberDurableSession(id, stored, session);
+    else recoverySessions.delete(id);
+    return session;
   }
   if (!allowLocalPersistenceFallback()) return null;
   const file = filePathFor(id);
@@ -141,6 +185,7 @@ export async function getResearchSession(id: string | null | undefined): Promise
 
 export async function deleteResearchSession(id: string | null | undefined): Promise<void> {
   if (!id) return;
+  recoverySessions.delete(id);
   if (hasDurableKV()) {
     await kvDel(`${SESSION_KEY_PREFIX}${id}`);
     return;

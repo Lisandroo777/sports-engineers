@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { runNBAFinderDeepSearch } from '@/lib/finder/nbaEngine';
+import { runNBAFinderDeepSearch, type NBAFinderSummary } from '@/lib/finder/nbaEngine';
 import { resolveSlateDate } from '@/lib/dateModel';
-import type { FinderRunSummary } from '@/lib/finder/engine';
 
 export const revalidate = 0;
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
-const cacheByDate = new Map<string, { expires: number; data: FinderRunSummary }>();
+const cacheByDate = new Map<string, { expires: number; data: NBAFinderSummary }>();
+const inFlightByDate = new Map<string, Promise<NBAFinderSummary>>();
 
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
@@ -34,8 +34,17 @@ export async function GET(request: Request) {
     if (cached && cached.expires > Date.now()) {
       return NextResponse.json({ data: cached.data, cached: true });
     }
-    const data = await runNBAFinderDeepSearch(slateDate);
-    cacheByDate.set(slateDate, { expires: Date.now() + CACHE_TTL_MS, data });
+    let pending = inFlightByDate.get(slateDate);
+    if (!pending) {
+      pending = runNBAFinderDeepSearch(slateDate)
+        .then((data) => {
+          cacheByDate.set(slateDate, { expires: Date.now() + CACHE_TTL_MS, data });
+          return data;
+        })
+        .finally(() => { inFlightByDate.delete(slateDate); });
+      inFlightByDate.set(slateDate, pending);
+    }
+    const data = await pending;
     return NextResponse.json({ data, cached: false });
   } catch {
     return NextResponse.json({ error: 'Data unavailable.' }, { status: 502 });
