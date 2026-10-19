@@ -27,6 +27,6 @@ export function selectNBAMixedRecommendations(session: ResearchSession, query: s
     const quality = second.researchScore - first.researchScore;
     return (valueFirst ? ev || quality || probability : likelyFirst ? probability || quality || ev : quality || probability || ev)
       || first.trapRisk - second.trapRisk || first.candidateId.localeCompare(second.candidateId);
-  }).slice(0, Math.min(15, Number(query.match(/\b(?:top|best|show(?:\s+me)?|find|give(?:\s+me)?)\s+(\d+)\b/i)?.[1] ?? 15)))
+  }).slice(0, Math.max(1, Number(query.match(/\b(?:top|best|show(?:\s+me)?|find|give(?:\s+me)?)\s+(\d+)\b/i)?.[1] ?? records.length)))
     .map((record, index) => ({ ...record, rank: index + 1 }));
 }

@@ -76,8 +76,10 @@ export function executeBettingIntent(session: ResearchSession, intent: BettingIn
     const decision = classifyPickTier(row, session.sport);
     return !intent.requestedTiers.length || intent.requestedTiers.includes(decision.pickTier);
   });
-  const count = intent.comparisonIntent ? 2 : intent.requestedCount;
-  const ranked = selectRankedCandidates(pool, rankingQuery(intent), { sport: session.sport, maxResults: 15 });
+  const uncappedSport = session.sport === 'nfl' || session.sport === 'nba';
+  const count = intent.comparisonIntent ? 2 : uncappedSport && !intent.countRequested && !intent.combinationIntent && !intent.referenceIds.length
+    ? pool.length : intent.requestedCount;
+  const ranked = selectRankedCandidates(pool, rankingQuery(intent), { sport: session.sport, maxResults: uncappedSport ? pool.length : 15 });
   let results = ranked.selected;
   if (intent.comparisonIntent && intent.players.length >= 2) {
     const seenPlayers = new Set<string>();
@@ -116,7 +118,7 @@ export function executeBettingIntent(session: ResearchSession, intent: BettingIn
   } else {
     reply = `${intent.combinationIntent ? `${results.length}-LEG SLIP` : intent.rankingIntent === 'MOST_LIKELY' ? `MOST LIKELY ${session.sport.toUpperCase()} PLAYS` : intent.rankingIntent === 'BEST_VALUE' ? `BEST VALUE ${session.sport.toUpperCase()} PLAYS` : `BEST ${session.sport.toUpperCase()} PLAYS`}${results.length < count ? `\nOnly ${results.length} met your criteria${intent.combinationIntent ? ' without reusing a player' : ''}.` : ''}`;
     if (intent.combinationIntent) reply += '\nEach leg qualifies individually. Same-game legs may be correlated; no combined probability or payout is claimed.';
-    if (intent.requestedCount === 15 && results.length === 15) reply += '\nShowing up to 15 qualifying plays.';
+    if (!uncappedSport && intent.requestedCount === 15 && results.length === 15) reply += '\nShowing up to 15 qualifying plays.';
   }
   return { intent, beforeFilters: session.candidates.length, afterFilters: pool.length, results, reply, conversation, constraintsSatisfied, eliminatedBy };
 }

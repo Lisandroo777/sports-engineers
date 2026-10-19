@@ -6,7 +6,7 @@ import { getNBAPlayer, searchNBAPlayers } from '../../players';
 import { getNBASchedule } from '../../schedule';
 import { getNBAPlayerGameLogs } from '../../stats';
 import { getNBATeamStats } from '../../teamStats';
-import { getDiscoveredEventPlayerProps, getOddsEventsForSport } from '../../../odds/client';
+import { getAuthorizedNBAActivationOdds, getDiscoveredEventPlayerProps, getOddsEventsForSport, isPaidRefreshAllowed } from '../../../odds/client';
 import type { NormalizedProp } from '../../../odds/types';
 import { adaptNBAAgent2Context, NBA_AGENT2_ADAPTER_VERSION } from '../contextAdapter';
 import { availabilityEvent, availabilityFixture, availabilityGame, availabilityTime } from './availability.fixtures';
@@ -29,6 +29,8 @@ vi.mock('../../../odds/client', async importOriginal => ({
   getLastOddsCreditInfo: vi.fn(() => null),
   getOddsEventsForSport: vi.fn(),
   getDiscoveredEventPlayerProps: vi.fn(),
+  getAuthorizedNBAActivationOdds: vi.fn().mockResolvedValue({}),
+  isPaidRefreshAllowed: vi.fn(() => false),
 }));
 vi.mock('./intelligenceArchive', () => ({ loadNBAGameIntelligence: vi.fn() }));
 
@@ -37,6 +39,7 @@ let blockedFetch: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(isPaidRefreshAllowed).mockReturnValue(false);
   vi.mocked(loadNBAGameIntelligence).mockReset();
   vi.useFakeTimers();
   vi.setSystemTime(new Date(availabilityTime));
@@ -63,7 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
   try { expect(blockedFetch).not.toHaveBeenCalled(); }
-  finally { vi.unstubAllGlobals(); vi.useRealTimers(); }
+  finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); }
 });
 
 async function runFixtureFinder() {
@@ -93,6 +96,17 @@ async function runFixtureFinder() {
 }
 
 describe('real NBA prop Finder reviewed intelligence archive integration', () => {
+  it('loads missing regular-season all-market quotes cache-first using the requested slate', async () => {
+    vi.stubEnv('ODDS_AUTO_REFRESH', 'true');
+    vi.mocked(isPaidRefreshAllowed).mockReturnValue(true);
+    vi.mocked(loadNBAGameIntelligence).mockResolvedValue(null);
+    const game = availabilityGame();
+    vi.mocked(getNBASchedule).mockResolvedValue([{ ...game, phase: 'REGULAR' }]);
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json([], { headers: { 'x-requests-remaining': '20000' } })));
+    await runNBAFinderDeepSearch('2026-01-21', { gameLines: true });
+    expect(getNBASchedule).toHaveBeenCalledWith('2026-01-21');
+    expect(getAuthorizedNBAActivationOdds).toHaveBeenCalledWith(availabilityEvent());
+  });
   it('retains verified Agent #2 archive identity and evidence through the versioned adapter and real prediction', async () => {
     vi.mocked(loadNBAGameIntelligence).mockResolvedValue(fixture.intelligence);
     expect(fixture.intelligence.claims).toEqual(expect.arrayContaining([expect.objectContaining({

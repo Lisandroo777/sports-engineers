@@ -22,6 +22,20 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe('Actual chat-turn intent execution, saved archived quotes with market coverage isolated', () => {
+  it('returns more than fifteen independently qualified NFL cards without weakening evidence checks', async () => {
+    const seed = snapshotSession();
+    const valid = toClientResult({ reply: '', results: seed.candidates, closestMisses: [], toolTrace: [], meta: { sport: 'nfl' }, researchSessionId: 'seed' }).results as ResearchCandidateRecord[];
+    expect(valid.length).toBeGreaterThan(0);
+    seed.candidates = Array.from({ length: 24 }, (_, index) => ({ ...structuredClone(valid[index % valid.length]),
+      candidateId: `uncapped-${index}`, underlyingPlayId: `uncapped-${index}`, playerId: 90000 + index,
+      player: `Qualified Fixture ${index}`, line: valid[index % valid.length].line! + index / 2,
+    }));
+    store.set('seed', seed);
+    const result = await runAgentTurn([{ role: 'user', content: 'Best NFL picks today' }], 'seed');
+    expect(result.results).toHaveLength(24);
+    expect(result.results.every(row => (row as ResearchCandidateRecord).pickTier !== 'PASS')).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it.each([['Give me the best 5 NFL plays', 5], ['Give me the safest 3', 3], ['Give me the best value 3', 3],
     ['Give me a 2 man', 2], ['Give me the best 3 Unders', 0], ['Anything for Chris Olave?', 2], ['Give me your favorite', 1]])('returns requested cards for %s', async (query, count) => {
     const result = await runAgentTurn([{ role: 'user', content: query }], 'seed');

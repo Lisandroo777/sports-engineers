@@ -70,7 +70,8 @@ export async function runCrossSportSearch(query: string, date: string, sports: C
   const metric = /\b(?:best value|highest ev|higher value)\b/i.test(query) ? 'evPercent'
     : /\b(?:most likely|safest|highest probability)\b/i.test(query) ? 'trueProbability' : 'researchScore';
   const count = query.match(/\b(?:best|top|give me)\s+(\d{1,2})\b/i)?.[1];
-  const limit = Math.min(15, Math.max(1, count ? Number(count) : 15));
+  const limit = sports.some(sport => sport === 'nfl' || sport === 'nba')
+    ? count ? Math.max(1, Number(count)) : rows.length : Math.min(15, Math.max(1, count ? Number(count) : 15));
   const results = rows.sort((first, second) => numeric(second, metric) - numeric(first, metric)).slice(0, limit)
     .map((row, index) => ({ ...row, rank: index + 1 }));
   const closestMisses = responses.flatMap(({ sport, result }) => result.closestMisses.map(row => ({ ...(row as Record<string, unknown>), sport }))).slice(0, 5);

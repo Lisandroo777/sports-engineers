@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync as readActualFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { auditDataset, auditRow, planChronologicalSplit, settle } from './integrity.mjs';
@@ -15,6 +15,9 @@ import { assertApprovedNFLPartialCoverageSources, isReviewedNFLPartialCoverageSo
 import { assertApprovedReliabilitySources, isReviewedReliabilitySource, RELIABILITY_BASELINE, RELIABILITY_SOURCE_APPROVED_HASHES, RELIABILITY_VERSION } from './freeze.mjs';
 import { assertApprovedNFLRequestRecoverySources, isReviewedNFLRequestRecoverySource, NFL_REQUEST_RECOVERY_BASELINE, NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES, NFL_REQUEST_RECOVERY_VERSION } from './freeze.mjs';
 import { assertApprovedNFLRefreshBootstrapSources, isReviewedNFLRefreshBootstrapSource, NFL_REFRESH_BOOTSTRAP_BASELINE, NFL_REFRESH_BOOTSTRAP_SOURCE_APPROVED_HASHES, NFL_REFRESH_BOOTSTRAP_VERSION } from './freeze.mjs';
+import { readInheritedProtectionSource, reviewedExecutionParentSources, NFL_NBA_EXECUTION_HASHES, NFL_NBA_EXECUTION_BASELINE } from './freeze.mjs';
+
+const readFileSync = (path, encoding) => readInheritedProtectionSource(path, readActualFileSync(path, encoding));
 
 const manifest = { modelVersion: 'SYNTHETIC_MODEL', snapshotHash: 'synthetic-test-only' };
 const asOf = '2025-10-01T00:00:00Z';
@@ -91,6 +94,27 @@ function fixture(update = {}) {
       adjudication: 'NORMAL', bookRuleSource: 'Synthetic rule', settlementSource: 'Synthetic settlement', earlyInjury: 'UNKNOWN' }, ...update };
 }
 describe('Validation infrastructure, synthetic fixtures are NOT model performance evidence', () => {
+  it('requires the exact NFL/NBA execution child, immutable archive and full committed parent before inherited checks', () => {
+    const archive = JSON.parse(readActualFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
+    const current = Object.fromEntries(Object.keys(NFL_NBA_EXECUTION_HASHES).map(path => [path, readActualFileSync(resolve(ROOT, path), 'utf8')]));
+    const inherited = reviewedExecutionParentSources(current, archive);
+    for (const [path, approval] of Object.entries(NFL_NBA_EXECUTION_HASHES)) {
+      expect(digest(current[path])).toBe(approval.integrated);
+      expect(digest(inherited[path])).toBe(approval.baseline);
+      expect(inherited[path]).toBe(historicalSource(NFL_NBA_EXECUTION_BASELINE, path));
+      for (const mutation of [`${current[path]}\n`, '', undefined]) {
+        expect(() => reviewedExecutionParentSources({ ...current, [path]: mutation }, archive)).toThrow(path);
+      }
+      const omitted = { ...current }; delete omitted[path];
+      expect(() => reviewedExecutionParentSources(omitted, archive)).toThrow(path);
+      expect(() => reviewedExecutionParentSources(current, { ...archive, [path]: 'changed parent' })).toThrow(path);
+    }
+    expect(() => reviewedExecutionParentSources(current, archive, 'HEAD')).toThrow('parent or version');
+    expect(() => reviewedExecutionParentSources(current, archive, NFL_NBA_EXECUTION_BASELINE, 'unreviewed')).toThrow('parent or version');
+    const model = 'lib/ai/probabilityModel.ts';
+    expect(reviewedExecutionParentSources({ ...current, [model]: 'unapproved model mutation' }, archive)[model]).toBe('unapproved model mutation');
+    expect(readInheritedProtectionSource(resolve(ROOT, model), 'unapproved model mutation')).toBe('unapproved model mutation');
+  });
   it('requires exact NFL_REFRESH_BOOTSTRAP_V1 sportsbook bytes, immutable parent and full a45b605 baseline', () => {
     const archive = JSON.parse(readFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
     const path = 'lib/nfl/sportsbook.ts';

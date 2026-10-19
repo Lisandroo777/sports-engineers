@@ -863,7 +863,11 @@ export function selectRankedCandidates(candidates: ResearchCandidateRecord[], qu
           || (b.evPercent ?? -Infinity) - (a.evPercent ?? -Infinity)
           || (b.priceEdgePercent ?? -Infinity) - (a.priceEdgePercent ?? -Infinity)
           || a.trapRisk - b.trapRisk || b.researchScore - a.researchScore);
-  const selected = ordered.slice(0, Math.min(constraints.maxResults, args.maxResults ?? MAX_RESULTS_CEILING));
+  const requestedCount = query.match(/\b(?:top|best|show(?:\s+me)?|find|give(?:\s+me)?)\s+(\d+)\b/i)?.[1];
+  const limit = args.sport === 'nfl' || args.sport === 'nba'
+    ? requestedCount ? Math.max(1, Number(requestedCount)) : args.maxResults ?? ordered.length
+    : Math.min(constraints.maxResults, args.maxResults ?? MAX_RESULTS_CEILING);
+  const selected = ordered.slice(0, limit);
   return { constraints, pool, selected: nfl ? assignNFLDisplayRanks(selected) : selected };
 }
 

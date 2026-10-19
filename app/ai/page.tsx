@@ -1464,11 +1464,13 @@ function AiFinderPageContent() {
 
     if ((payload.results ?? []).length > 0) {
       const orderedProps = sport === 'MLB' ? withResponseDisplayRanks(responseProps) : responseProps;
-      const structuredResults = orderedProps.filter((record) => (record.pickTier != null || record.eliteQualified) && record.odds != null && record.odds >= -900).slice(0, 15).map((record) => recordToUiResult(record, sport));
+      const qualifiedProps = orderedProps.filter((record) => (record.pickTier != null || record.eliteQualified) && record.odds != null && record.odds >= -900);
+      const structuredResults = (sport === 'MLB' ? qualifiedProps.slice(0, 15) : qualifiedProps).map((record) => recordToUiResult(record, sport));
       lastVerifiedResearch.current = captureResearchEvidence(responseScope, structuredResults.map(result => result.sourceRecord));
       setLedgerReceipt(structuredResults.length > 0 ? payload.ledgerReceipt ?? null : null);
       setTotalMatched(structuredResults.length + responseGames.length);
       setResults(structuredResults);
+      if (sport !== 'MLB') setShowCount(structuredResults.length);
       setClosestMisses([]);
       setFinderStatus(structuredResults.length + responseGames.length > 0 ? 'RESULTS' : 'NO_ELITE_RESULTS');
       setIsSearching(false);

@@ -65,4 +65,12 @@ describe('master integration request boundaries', () => {
     expect(result.researchSessionId).toBeNull();
     expect((result.meta?.coverage as Array<{ status: string }>)[2].status).toBe('PROVIDER_ERROR');
   });
+
+  it('returns every independently qualified result unless the user explicitly requests a count', async () => {
+    const search = async (): Promise<AgentTurnResult> => ({ reply: '', results: Array.from({ length: 24 }, (_, index) => ({
+      candidateId: `qualified-${index}`, pickTier: 'EDGE', evPercent: 24 - index,
+    })), closestMisses: [], toolTrace: [], researchSessionId: null, meta: { researchComplete: true } });
+    expect((await runCrossSportSearch('Best value NBA and MLB picks tomorrow', '2026-10-20', ['nba'], search)).results).toHaveLength(24);
+    expect((await runCrossSportSearch('Best 20 NBA and MLB picks tomorrow', '2026-10-20', ['nba'], search)).results).toHaveLength(20);
+  });
 });

@@ -9,8 +9,10 @@ import {
   getOddsEventsForSport, getDiscoveredEventPlayerProps, getLastOddsCreditInfo,
   OddsBudgetGuardError, OddsRefreshNotAuthorizedError,
   beginOddsSpendTrackingAsync, getActiveOddsSpendTracker,
-  inspectEventPlayerPropsCacheState, isPaidRefreshAllowed,
+  inspectEventPlayerPropsCacheState, isPaidRefreshAllowed, getAuthorizedNBAActivationOdds,
 } from '../odds/client';
+import { isAutomaticOddsRefreshEnabled, recordProviderRemaining } from '../odds/autoRefreshLedger';
+import { fetchWithReadRetry } from '../reliability/retry';
 import { classifyPriceFreshness, analyzePickCandidate, type PriceFreshness, type EliteResearchAnalysis } from '../ai/eliteResearchFilter';
 import { buildNBAEliteCandidate, type NBAResearchCandidate } from '../nba/research';
 import { estimateExpectedMinutes } from '../nba/projection';
@@ -98,6 +100,7 @@ export interface NBACandidate {
 export interface NBAGameCoverage {
   gameId: string;
   eventId: string | null;
+  reason?: string;
   state: 'RESEARCHED' | 'NO_MARKETS' | 'PROVIDER_ERROR' | 'BUDGET_BLOCKED' | 'NOT_FETCHED';
 }
 
@@ -193,6 +196,7 @@ export async function runNBAFinderDeepSearch(
     && (options.validationGameIds == null || options.validationGameIds.includes(game.id)));
   const oddsSportKeys = [...new Set(bettable.map(game => game.phase === 'PRESEASON' ? 'basketball_nba_preseason' : NBA_ODDS_SPORT_KEY))];
   const eventSportKeys = new Map<string, string>();
+  const refreshFailures = new Map<string, string>();
   const slateComplete = scheduled.length > 0 && bettable.length === 0;
 
   const oddsEvents: Awaited<ReturnType<typeof getOddsEventsForSport>> = [];
@@ -256,6 +260,32 @@ export async function runNBAFinderDeepSearch(
     };
   }
 
+  if ((options.gameLines || options.gameLinesOnly) && isAutomaticOddsRefreshEnabled() && isPaidRefreshAllowed()) {
+    if (games.some(({ game }) => game.phase === 'REGULAR')) {
+      try {
+        const url = new URL('https://api.the-odds-api.com/v4/sports');
+        url.searchParams.set('apiKey', process.env.THE_ODDS_API_KEY?.trim() ?? '');
+        const response = await fetchWithReadRetry(url, { headers: { accept: 'application/json' }, redirect: 'error' }, { attempts: 2 });
+        const remaining = response.headers.get('x-requests-remaining');
+        await response.body?.cancel();
+        if (response.ok) await recordProviderRemaining(remaining);
+      } catch {
+        // Cached verified quotes remain usable; paid reservations still fail closed on unknown quota.
+      }
+    }
+    for (const { game, event } of games) {
+      if (game.phase !== 'REGULAR' || eventSportKeys.get(event.id) !== NBA_ODDS_SPORT_KEY) continue;
+      try {
+        await getAuthorizedNBAActivationOdds(event);
+      } catch (error) {
+        const cause = error instanceof Error ? error.cause : null;
+        refreshFailures.set(game.id, cause && typeof cause === 'object' && 'reason' in cause
+          ? String(cause.reason) : error instanceof Error ? error.message : 'Provider refresh failed.');
+        if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
+        else if (error instanceof OddsRefreshNotAuthorizedError) { budgetLimited = true; blockReason ??= 'NOT_AUTHORIZED'; }
+      }
+    }
+  }
   const gameResearch = options.gameLines || options.gameLinesOnly ? await researchNBAGameLines(bettable, oddsEvents) : null;
   if (options.gameLinesOnly) return {
     results: [], nbaCandidates: [], gameCandidates: gameResearch?.recommendations ?? [], modeledGames: gameResearch?.modeledGames ?? [],
@@ -324,7 +354,7 @@ export async function runNBAFinderDeepSearch(
     let props;
     try {
       const sportKey = eventSportKeys.get(event.id) ?? NBA_ODDS_SPORT_KEY;
-      props = options.gameLines && sportKey === NBA_ODDS_SPORT_KEY ? await loadCachedNBAPlayerProps(event.id)
+      props = options.gameLines && sportKey === NBA_ODDS_SPORT_KEY ? await loadCachedNBAPlayerProps(event.id, game.gameTime)
         : options.gameLines ? [] : await getDiscoveredEventPlayerProps(event.id, undefined, sportKey, NBA_FALLBACK_MARKETS);
       if (getLastOddsCreditInfo()?.source === 'network') sawNetworkCall = true;
     } catch (error) {
@@ -539,6 +569,13 @@ export async function runNBAFinderDeepSearch(
     coverage.state = propsAnalyzed > previousPropsAnalyzed ? 'RESEARCHED' : 'NO_MARKETS';
   }
 
+  for (const entry of nbaGameCoverage) {
+    const reason = refreshFailures.get(entry.gameId);
+    if (reason && entry.state !== 'RESEARCHED') {
+      entry.reason = reason;
+      entry.state = /DAILY_CAP|RESERVE|RATE_LIMIT|ceiling|authorization|Paid refresh/i.test(reason) ? 'BUDGET_BLOCKED' : 'PROVIDER_ERROR';
+    }
+  }
   const researchComplete = !scheduleFailed && nbaGameCoverage.every((entry) => entry.state === 'RESEARCHED');
   return {
     // Elite-ranked FinderResults (the rich MLB-parity scorecard) stay empty until NBA has its own

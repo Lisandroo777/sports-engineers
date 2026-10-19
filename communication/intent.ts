@@ -16,6 +16,7 @@ export interface BettingIntent {
   researchMode: 'STANDARD' | 'DEEP';
   rankingIntent: 'BEST' | 'MOST_LIKELY' | 'BEST_VALUE';
   requestedCount: number;
+  countRequested?: boolean;
   requestedTiers: string[];
   oddsConstraints: { min: number | null; max: number | null };
   linePreference: 'LOW_THRESHOLD' | null;
@@ -130,9 +131,12 @@ export function interpretBettingIntent(query: string, candidates: ResearchCandid
   if (/\b(?:low[- ]threshold|low(?:er)?\s+(?:\w+\s+)?lines?|easy lines?|small number|low yardage|low receptions|low passing line)\b/.test(text)) set('linePreference', 'LOW_THRESHOLD');
   const count = text.match(new RegExp(`\\b(?:give me(?: your| the)?(?: (?:best(?: value)?|safest|favorite))?|make it|top|best(?: value)?|safest|most likely|highest probability|build me(?: a)?|which)\\s+${numberPattern}\\b`))
     ?? text.match(new RegExp(`\\b${numberPattern}\\s*(?:picks?|plays?|props?|legs?|man)\\b`));
-  if (count) set('requestedCount', Math.min(15, Math.max(1, countValue(count[1]))));
-  else if (/\b(?:best play|best pick|favorite(?: pick| play)?|top pick|best one|which one|safest pick|trust.*most)\b/.test(text)) set('requestedCount', 1);
-  if (/\beverything you like\b/.test(text)) set('requestedCount', 15);
+  if (count) {
+    set('requestedCount', intent.sport === 'nfl' || intent.sport === 'nba' ? Math.max(1, countValue(count[1])) : Math.min(15, Math.max(1, countValue(count[1]))));
+    intent.countRequested = true;
+  }
+  else if (/\b(?:best play|best pick|favorite(?: pick| play)?|top pick|best one|which one|safest pick|trust.*most)\b/.test(text)) { set('requestedCount', 1); intent.countRequested = true; }
+  if (/\beverything you like\b/.test(text)) { set('requestedCount', 15); intent.countRequested = false; }
   if (/\b(?:nukes?|elite|sharp|edge|lean)\b/.test(text) && !intent.explanationIntent && !valueRequest) {
     const tier = text.match(/\b(nukes?|elite|sharp|edge|lean)\b/)![1].replace(/s$/, '').toUpperCase();
     const order = ['NUKE', 'ELITE', 'SHARP', 'EDGE', 'LEAN'];

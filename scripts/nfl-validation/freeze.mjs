@@ -35,6 +35,40 @@ export const NBA_INTEGRATION_ALLOWED_DELTAS = [
 ];
 const INHERITED_COMMUNICATION_DELTAS = ['lib/ai/agent/runner.ts', 'lib/ai/agent/session.ts'];
 const hash = (content) => createHash('sha256').update(content).digest('hex');
+export const NFL_NBA_EXECUTION_VERSION = 'NFL_NBA_EXECUTION_V1';
+export const NFL_NBA_EXECUTION_BASELINE = 'c2303cf2310c56f32b691e0aaa3e9483c66d1ca6';
+export const NFL_NBA_EXECUTION_HASHES = Object.freeze(Object.fromEntries(Object.entries({
+  'lib/ai/agent/runner.ts': { baseline: '68f2122f9a008f61af62521775bf336e2e5ea90c742e0d55bef9781d04d2633d', integrated: 'd346562ead55c27013ed3e97473775871a12f25abbb2c0e83e8c745654627e19', archived: '4eb6d4b010496e43111d7de1727b37fd30fd1f9ca76ab4764623e6ebea0514f4' },
+  'lib/ai/agent/tools.ts': { baseline: '022de54a121558e10537fe9874fc34f7ab21bddd2f2a7df0c593d2fc3355a671', integrated: 'da388c58b2491a34baca568c9b67e3da68a000cc2059d280a252f0d4fb724349', archived: 'da40bb39eef1502a1401d779de5547be8a3fe25b25f2a563d1050402c1f46c30' },
+  'lib/finder/nbaEngine.ts': { baseline: 'bdfd916af24de411dd8f2ee5ceb5d17c051149df4199b6de609465b42981194e', integrated: '49b8982cc64445b63308a8ed8580a0cd00ce06e4fd76583fae4fa5b3720cba44', archived: '4419c53835d6690cb7940220f8b152df28d6cc904089bdb0a36fe360f71fabf5' },
+  'lib/nba/prediction/gameLines/selection.ts': { baseline: 'b474d39d7ccafaab3a0f42ab262f86cd05d9845f8dcfbb6d37edbc1af292ff1a', integrated: '372fa6fdfb58821591311739d00b722503dd765d701e5d656bedf82c2cb4fb68', archived: null },
+  'communication/intent.ts': { baseline: 'd550cd3c5c6b6b434ff994c4a22f49079f9c40ac7ea45423532eb56b8e5e8691', integrated: 'c56664fe70c89f3a8274e5ed9f687a1f0c2d51f67145a99d8617c5df401a3569', archived: '09f7cf2749a45533477325069da0f8a0a7d2062bf234e2de1cf916d988e6258f' },
+  'communication/execute.ts': { baseline: 'c1f12828f2477fb7d5f63abbf83d7b11d9aeadc4be934132eea4020ba72b270d', integrated: '39f8d2293c82d94c91ea7633206eee046937b9ebc89b3138ad60bca9521b0f79', archived: 'c1f12828f2477fb7d5f63abbf83d7b11d9aeadc4be934132eea4020ba72b270d' },
+}).map(([path, approval]) => [path, Object.freeze(approval)])));
+
+export function reviewedExecutionParentSources(current, archive, baselineHEAD = NFL_NBA_EXECUTION_BASELINE, version = NFL_NBA_EXECUTION_VERSION) {
+  if (baselineHEAD !== NFL_NBA_EXECUTION_BASELINE || version !== NFL_NBA_EXECUTION_VERSION) throw new Error('NFL/NBA execution parent or version mismatch');
+  const inherited = { ...current };
+  for (const [path, approval] of Object.entries(NFL_NBA_EXECUTION_HASHES)) {
+    if (!Object.hasOwn(current, path) || typeof current[path] !== 'string' || hash(current[path]) !== approval.integrated
+      || (approval.archived === null ? Object.hasOwn(archive, path) : typeof archive[path] !== 'string' || hash(archive[path]) !== approval.archived)) {
+      throw new Error(`Reviewed NFL/NBA execution source mismatch: ${path}`);
+    }
+    const parent = execFileSync('git', ['-C', ROOT, 'show', `${baselineHEAD}:${path}`], { encoding: 'utf8' });
+    if (hash(parent) !== approval.baseline) throw new Error(`Reviewed NFL/NBA execution baseline mismatch: ${path}`);
+    inherited[path] = parent;
+  }
+  return inherited;
+}
+
+export function readInheritedProtectionSource(path, content) {
+  const key = relative(ROOT, resolve(path)).replaceAll('\\', '/');
+  if (!Object.hasOwn(NFL_NBA_EXECUTION_HASHES, key)) return content;
+  const archive = JSON.parse(readFileSync(resolve(HARDENED_SNAPSHOT_DIR, 'sources.json'), 'utf8'));
+  const current = Object.fromEntries(Object.keys(NFL_NBA_EXECUTION_HASHES).map(source => [source,
+    source === key ? content : readFileSync(resolve(ROOT, source), 'utf8')]));
+  return reviewedExecutionParentSources(current, archive)[key];
+}
 const REVIEWED_MLB_CACHE_TRANSPORT = Object.freeze({
   archived: '96f9626804fac34f2764aa76694ceac6fa3132828ff2e2a416679047c6fab8d6',
   integrated: '9cca4f1059a203114f7c38c3fee39e35c3a481722e430d9e05c992f84abc78b3',
@@ -378,7 +412,7 @@ export function verifyHardenedFreeze() {
   const archive = JSON.parse(readFileSync(resolve(HARDENED_SNAPSHOT_DIR, 'sources.json'), 'utf8'));
   if (manifest.modelVersion !== HARDENED_MODEL_VERSION || manifest.parentModelVersion !== MODEL_VERSION
     || manifest.parentSnapshotHash !== baseManifest.snapshotHash || hash(JSON.stringify(archive)) !== manifest.snapshotHash) throw new Error('Hardened archive identity/integrity failed');
-  const current = captureHardenedSources();
+  const current = reviewedExecutionParentSources(captureHardenedSources(), archive);
   const baselinePaths = new Set(execFileSync('git', ['-C', ROOT, 'ls-tree', '-r', '--name-only', RELIABILITY_BASELINE], { encoding: 'utf8' }).trim().split('\n'));
   const baseline = Object.fromEntries(Object.keys(RELIABILITY_SOURCE_APPROVED_HASHES).filter(path => baselinePaths.has(path))
     .map(path => [path, execFileSync('git', ['-C', ROOT, 'show', `${RELIABILITY_BASELINE}:${path}`], { encoding: 'utf8' })]));
