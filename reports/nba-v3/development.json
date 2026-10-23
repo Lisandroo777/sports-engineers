@@ -1,0 +1,195 @@
+{
+  "modelVersion": "NBA_MODEL_V3_DEV",
+  "generatedAt": "2026-10-23T22:29:52.462Z",
+  "publishable": false,
+  "holdout2025_26Used": false,
+  "training": {
+    "season": "2023-24 full regular season (ESPN logs, priors 2022-23)",
+    "rows": {
+      "points": 14658,
+      "rebounds": 14658,
+      "assists": 14658
+    }
+  },
+  "test": {
+    "season": "2024-25 early-season sportsbook candidates",
+    "chronologicalCut": "2024-11-02",
+    "candidates": 38917
+  },
+  "features": [
+    "V2 baseline",
+    "projected minutes (prior, recent, last game, rest, freed teammate minutes, home)",
+    "opponent allowance factor",
+    "pace factor",
+    "usage shift",
+    "freed teammate minutes x rate",
+    "home",
+    "back-to-back"
+  ],
+  "accuracy": {
+    "points": {
+      "playerGames": 1925,
+      "maeV2": 5.257,
+      "maeV3": 5.16
+    },
+    "rebounds": {
+      "playerGames": 1925,
+      "maeV2": 2.054,
+      "maeV3": 2.043
+    },
+    "assists": {
+      "playerGames": 1925,
+      "maeV2": 1.549,
+      "maeV3": 1.524
+    }
+  },
+  "increments": {
+    "points": {
+      "v2": {
+        "testRows": 8965,
+        "logLossMarket": 0.68151,
+        "logLossWithModel": 0.68163,
+        "improvement": -0.00012,
+        "improvement95": [
+          -0.00235,
+          0.00261
+        ],
+        "modelWeight": -0.176
+      },
+      "v3": {
+        "testRows": 8965,
+        "logLossMarket": 0.68151,
+        "logLossWithModel": 0.68187,
+        "improvement": -0.00037,
+        "improvement95": [
+          -0.00166,
+          0.00122
+        ],
+        "modelWeight": -0.124
+      }
+    },
+    "rebounds": {
+      "v2": {
+        "testRows": 5613,
+        "logLossMarket": 0.68906,
+        "logLossWithModel": 0.69191,
+        "improvement": -0.00285,
+        "improvement95": [
+          -0.00782,
+          0.00202
+        ],
+        "modelWeight": 0.318
+      },
+      "v3": {
+        "testRows": 5613,
+        "logLossMarket": 0.68906,
+        "logLossWithModel": 0.69414,
+        "improvement": -0.00508,
+        "improvement95": [
+          -0.01062,
+          -0.00006
+        ],
+        "modelWeight": 0.421
+      }
+    },
+    "assists": {
+      "v2": {
+        "testRows": 4182,
+        "logLossMarket": 0.68618,
+        "logLossWithModel": 0.68626,
+        "improvement": -0.00009,
+        "improvement95": [
+          -0.00024,
+          0.00004
+        ],
+        "modelWeight": 0.008
+      },
+      "v3": {
+        "testRows": 4182,
+        "logLossMarket": 0.68618,
+        "logLossWithModel": 0.68849,
+        "improvement": -0.00232,
+        "improvement95": [
+          -0.00767,
+          0.00333
+        ],
+        "modelWeight": 0.386
+      }
+    }
+  },
+  "coefficients": {
+    "points": {
+      "minutes": [
+        0.3725,
+        0.0115,
+        0.4825,
+        0.1048,
+        0.3642,
+        0.3923,
+        0.0148,
+        -0.1627,
+        0.0433
+      ],
+      "stat": [
+        0.2303,
+        0.1072,
+        0.8563,
+        0.6473,
+        0.3788,
+        0.1747,
+        0.0075,
+        0.3407,
+        -0.0111
+      ]
+    },
+    "rebounds": {
+      "minutes": [
+        0.3725,
+        0.0115,
+        0.4825,
+        0.1048,
+        0.3642,
+        0.3923,
+        0.0148,
+        -0.1627,
+        0.0433
+      ],
+      "stat": [
+        -0.0325,
+        0.1754,
+        0.8096,
+        0.7735,
+        0.9629,
+        0.0417,
+        0.0028,
+        0.099,
+        -0.0184
+      ]
+    },
+    "assists": {
+      "minutes": [
+        0.3725,
+        0.0115,
+        0.4825,
+        0.1048,
+        0.3642,
+        0.3923,
+        0.0148,
+        -0.1627,
+        0.0433
+      ],
+      "stat": [
+        0.0502,
+        -0.0964,
+        1.0615,
+        0.6677,
+        0.3045,
+        0.1563,
+        0.0016,
+        0.1382,
+        -0.0231
+      ]
+    }
+  },
+  "inputsHash": "85993aae6aef8e762540c27990715e396b763aa93da65b8c8e8a07893f04d8aa"
+}

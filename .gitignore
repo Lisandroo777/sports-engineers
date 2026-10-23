@@ -51,3 +51,4 @@ next-env.d.ts
 
 # Licensed historical odds snapshots (not redistributed)
 data/nba-v2/
+data/nba-v3/
