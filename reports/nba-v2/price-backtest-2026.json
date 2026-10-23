@@ -1,0 +1,213 @@
+{
+  "modelVersion": "NBA_MODEL_V2_EARLY_SEASON",
+  "season": "2025-26",
+  "role": "HOLDOUT",
+  "criteriaHash": "6a988e05e2ae5b9c856cc4eab00d4296ef31b7f023ffbf05f4be9cd741fb7801",
+  "evaluatedAt": "2026-10-23T22:17:47.339Z",
+  "dataDir": "data/nba-v2/historical/2026",
+  "metrics": {
+    "candidates": 57689,
+    "settledCandidates": 57689,
+    "bets": 5890,
+    "roi": 0.06160352562375351,
+    "roi95": [
+      0.018082104455088236,
+      0.09885267850886546
+    ],
+    "expectedCalibrationError": 0.04415257742362343,
+    "brier": 0.24460090078654748,
+    "noVigMarketBrier": 0.24360256608947786,
+    "leakageViolations": 2,
+    "voided": 269,
+    "unmatched": 575,
+    "roiByMarket": {
+      "points": {
+        "bets": 2126,
+        "roi": 0.08333554394396832
+      },
+      "rebounds": {
+        "bets": 1924,
+        "roi": 0.07962512883913009
+      },
+      "assists": {
+        "bets": 1840,
+        "roi": 0.01764926718072998
+      }
+    },
+    "roiByHalf": [
+      0.05402803843280903,
+      0.06917901281469778
+    ],
+    "maxPlayerShare": 0.005602716468590832,
+    "roiWithoutTop10Players": 0.04014950259672839,
+    "roiByBook": {
+      "betmgm": {
+        "bets": 892,
+        "roi": 0.05880302033553936
+      },
+      "draftkings": {
+        "bets": 619,
+        "roi": 0.09476168656587891
+      },
+      "williamhill_us": {
+        "bets": 92,
+        "roi": -0.09736677257427459
+      },
+      "betonlineag": {
+        "bets": 302,
+        "roi": 0.19318490962827733
+      },
+      "bovada": {
+        "bets": 2453,
+        "roi": 0.05486627026930446
+      },
+      "fanduel": {
+        "bets": 592,
+        "roi": 0.06660118642480997
+      },
+      "betrivers": {
+        "bets": 392,
+        "roi": 0.022599959370026405
+      },
+      "fanatics": {
+        "bets": 548,
+        "roi": 0.03554168022313553
+      }
+    },
+    "playersByBets": [
+      {
+        "player": "Evan Mobley",
+        "bets": 33,
+        "profitUnits": -9.286781891247912
+      },
+      {
+        "player": "Isaiah Hartenstein",
+        "bets": 33,
+        "profitUnits": 13.2942316769903
+      },
+      {
+        "player": "Jalen Duren",
+        "bets": 33,
+        "profitUnits": 4.118887679488061
+      },
+      {
+        "player": "Jaden McDaniels",
+        "bets": 33,
+        "profitUnits": 4.317949810475737
+      },
+      {
+        "player": "Onyeka Okongwu",
+        "bets": 33,
+        "profitUnits": 4.696533307728379
+      },
+      {
+        "player": "Deni Avdija",
+        "bets": 33,
+        "profitUnits": -8.12935140047922
+      },
+      {
+        "player": "Desmond Bane",
+        "bets": 33,
+        "profitUnits": -0.9657772165943701
+      },
+      {
+        "player": "Payton Pritchard",
+        "bets": 32,
+        "profitUnits": -7.23211037688102
+      },
+      {
+        "player": "Immanuel Quickley",
+        "bets": 32,
+        "profitUnits": -11.662982451717644
+      },
+      {
+        "player": "Scottie Barnes",
+        "bets": 32,
+        "profitUnits": 0.6896243871572327
+      },
+      {
+        "player": "R.J. Barrett",
+        "bets": 32,
+        "profitUnits": 0.9867074587678979
+      },
+      {
+        "player": "Jaren Jackson Jr",
+        "bets": 32,
+        "profitUnits": 9.15118116311273
+      },
+      {
+        "player": "Devin Booker",
+        "bets": 32,
+        "profitUnits": -1.9759716221412702
+      },
+      {
+        "player": "Collin Gillespie",
+        "bets": 32,
+        "profitUnits": 0.24153846153846137
+      },
+      {
+        "player": "Herb Jones",
+        "bets": 32,
+        "profitUnits": 11.679669144198302
+      }
+    ],
+    "meanSelectedEvPercent": 24.473137690950036,
+    "unmatchedPlayers": 15,
+    "topUnmatched": [
+      [
+        "Carlton Carrington",
+        248
+      ],
+      [
+        "De'Andre Hunter",
+        70
+      ],
+      [
+        "Caris LeVert",
+        43
+      ],
+      [
+        "Giannis Antetokounmpo",
+        42
+      ],
+      [
+        "Ausar Thompson",
+        36
+      ],
+      [
+        "Jamal Murray",
+        34
+      ],
+      [
+        "Aaron Gordon",
+        32
+      ],
+      [
+        "Tobias Harris",
+        31
+      ],
+      [
+        "Al Horford",
+        20
+      ],
+      [
+        "Xavier Tillman, Sr.",
+        4
+      ]
+    ]
+  },
+  "checks": {
+    "minimumQualifyingBets": true,
+    "roiLowerBound": true,
+    "calibration": false,
+    "brierVersusMarket": true,
+    "marketStability": true,
+    "halfStability": true,
+    "playerConcentration": true,
+    "withoutTopPlayers": true,
+    "leakage": false
+  },
+  "allPassed": false,
+  "publishable": false,
+  "note": "publishable stays false; a passing holdout only permits proposing publication for approval."
+}
