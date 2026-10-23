@@ -1,0 +1,647 @@
+{
+  "modelVersion": "NBA_MODEL_V2_1_EARLY_SEASON_CALIBRATED",
+  "season": "2024-25",
+  "role": "DEVELOPMENT_ONLY",
+  "holdout2025_26Used": false,
+  "generatedAt": "2026-10-23T22:24:15.588Z",
+  "selectionRule": {
+    "minEvPercent": 3,
+    "probabilityBounds": [
+      0.1,
+      0.9
+    ]
+  },
+  "audits": {
+    "files": 157,
+    "unmatchedGames": 0,
+    "timingExcluded": 0,
+    "staleMarketExcluded": 0,
+    "unmatchedPlayers": [
+      [
+        "Carlton Carrington",
+        91
+      ],
+      [
+        "Bradley Beal",
+        56
+      ],
+      [
+        "Ja Morant",
+        27
+      ],
+      [
+        "Dean Wade",
+        15
+      ],
+      [
+        "Josh Green",
+        11
+      ],
+      [
+        "De'Andre Hunter",
+        8
+      ]
+    ],
+    "didNotPlay": 132,
+    "insufficientPrior": 1676,
+    "candidates": 38917,
+    "integerLinePushRate": 0,
+    "lowMinuteSettled": 50,
+    "linesPerPlayerMarketGame": 6.88
+  },
+  "splits": [
+    {
+      "split": "time-ordered: train < 2024-11-02, test >= 2024-11-02",
+      "trainRows": 20157,
+      "testRows": 18760,
+      "coefficients": {
+        "points": {
+          "intercept": 0.021122672331280633,
+          "v2Weight": -0.17600526931245744,
+          "marketWeight": 1.0015715093656252,
+          "trainingRows": 9554
+        },
+        "rebounds": {
+          "intercept": 0.01967070200424729,
+          "v2Weight": 0.3179995753179469,
+          "marketWeight": 0.44326694937635125,
+          "trainingRows": 6153
+        },
+        "assists": {
+          "intercept": -0.18937901758609896,
+          "v2Weight": 0.008338145871914822,
+          "marketWeight": 1.2985930746023815,
+          "trainingRows": 4450
+        }
+      },
+      "calibrationV2": {
+        "ece": 0.07891955951463007,
+        "bins": [
+          {
+            "range": "0-10%",
+            "count": 29,
+            "predicted": 0.07,
+            "observed": 0.379
+          },
+          {
+            "range": "10-20%",
+            "count": 276,
+            "predicted": 0.154,
+            "observed": 0.525
+          },
+          {
+            "range": "20-30%",
+            "count": 985,
+            "predicted": 0.249,
+            "observed": 0.414
+          },
+          {
+            "range": "30-40%",
+            "count": 3592,
+            "predicted": 0.35,
+            "observed": 0.458
+          },
+          {
+            "range": "40-50%",
+            "count": 4737,
+            "predicted": 0.441,
+            "observed": 0.45
+          },
+          {
+            "range": "50-60%",
+            "count": 6244,
+            "predicted": 0.541,
+            "observed": 0.485
+          },
+          {
+            "range": "60-70%",
+            "count": 2304,
+            "predicted": 0.65,
+            "observed": 0.534
+          },
+          {
+            "range": "70-80%",
+            "count": 492,
+            "predicted": 0.752,
+            "observed": 0.516
+          },
+          {
+            "range": "80-90%",
+            "count": 99,
+            "predicted": 0.834,
+            "observed": 0.444
+          },
+          {
+            "range": "90-100%",
+            "count": 2,
+            "predicted": 0.915,
+            "observed": 0
+          }
+        ]
+      },
+      "calibrationV21": {
+        "ece": 0.020924475062709436,
+        "bins": [
+          {
+            "range": "20-30%",
+            "count": 176,
+            "predicted": 0.276,
+            "observed": 0.318
+          },
+          {
+            "range": "30-40%",
+            "count": 2331,
+            "predicted": 0.364,
+            "observed": 0.381
+          },
+          {
+            "range": "40-50%",
+            "count": 7359,
+            "predicted": 0.461,
+            "observed": 0.455
+          },
+          {
+            "range": "50-60%",
+            "count": 7472,
+            "predicted": 0.535,
+            "observed": 0.5
+          },
+          {
+            "range": "60-70%",
+            "count": 1404,
+            "predicted": 0.638,
+            "observed": 0.611
+          },
+          {
+            "range": "70-80%",
+            "count": 18,
+            "predicted": 0.714,
+            "observed": 0.722
+          }
+        ]
+      },
+      "brier": {
+        "v2": 0.2596,
+        "v21": 0.2463,
+        "market": 0.2453
+      },
+      "byMarket": {
+        "points": {
+          "rows": 8965,
+          "eceV2": 0.0732,
+          "eceV21": 0.0364,
+          "brierV2": 0.2583,
+          "brierV21": 0.2443,
+          "brierMarket": 0.244,
+          "roiV21": {
+            "bets": 253,
+            "pushes": 0,
+            "roi": -0.2185,
+            "roi95": [
+              -0.3609,
+              -0.0805
+            ],
+            "meanClaimedEv": 7.06
+          }
+        },
+        "rebounds": {
+          "rows": 5613,
+          "eceV2": 0.0781,
+          "eceV21": 0.0279,
+          "brierV2": 0.26,
+          "brierV21": 0.2493,
+          "brierMarket": 0.2479,
+          "roiV21": {
+            "bets": 539,
+            "pushes": 0,
+            "roi": -0.0427,
+            "roi95": [
+              -0.1342,
+              0.0476
+            ],
+            "meanClaimedEv": 9.54
+          }
+        },
+        "assists": {
+          "rows": 4182,
+          "eceV2": 0.0993,
+          "eceV21": 0.0388,
+          "brierV2": 0.2617,
+          "brierV21": 0.2466,
+          "brierMarket": 0.2447,
+          "roiV21": {
+            "bets": 642,
+            "pushes": 0,
+            "roi": -0.0484,
+            "roi95": [
+              -0.1073,
+              0.0143
+            ],
+            "meanClaimedEv": 4.93
+          }
+        }
+      },
+      "roi": {
+        "v2BestPrice": {
+          "bets": 2340,
+          "pushes": 0,
+          "roi": -0.0447,
+          "roi95": [
+            -0.0891,
+            -0.0098
+          ],
+          "meanClaimedEv": 22.74
+        },
+        "v21BestPrice": {
+          "bets": 1434,
+          "pushes": 0,
+          "roi": -0.0763,
+          "roi95": [
+            -0.1345,
+            -0.0265
+          ],
+          "meanClaimedEv": 7.04
+        },
+        "v21SingleBook": {
+          "draftkings": {
+            "bets": 388,
+            "pushes": 0,
+            "roi": 0.0015,
+            "roi95": [
+              -0.092,
+              0.0881
+            ],
+            "meanClaimedEv": 5.77
+          },
+          "fanduel": {
+            "bets": 552,
+            "pushes": 0,
+            "roi": -0.0322,
+            "roi95": [
+              -0.117,
+              0.0366
+            ],
+            "meanClaimedEv": 6.12
+          },
+          "betmgm": {
+            "bets": 512,
+            "pushes": 0,
+            "roi": -0.0379,
+            "roi95": [
+              -0.1065,
+              0.0373
+            ],
+            "meanClaimedEv": 5.25
+          },
+          "bovada": {
+            "bets": 254,
+            "pushes": 0,
+            "roi": -0.0037,
+            "roi95": [
+              -0.114,
+              0.0835
+            ],
+            "meanClaimedEv": 5.42
+          },
+          "betrivers": {
+            "bets": 926,
+            "pushes": 0,
+            "roi": -0.0883,
+            "roi95": [
+              -0.1629,
+              -0.027
+            ],
+            "meanClaimedEv": 7.37
+          },
+          "williamhill_us": {
+            "bets": 399,
+            "pushes": 0,
+            "roi": -0.0167,
+            "roi95": [
+              -0.1096,
+              0.0816
+            ],
+            "meanClaimedEv": 5.09
+          },
+          "betonlineag": {
+            "bets": 473,
+            "pushes": 0,
+            "roi": -0.0259,
+            "roi95": [
+              -0.1004,
+              0.0343
+            ],
+            "meanClaimedEv": 5.64
+          }
+        }
+      }
+    },
+    {
+      "split": "player-separated: train even ESPN IDs, test odd",
+      "trainRows": 20172,
+      "testRows": 18745,
+      "coefficients": {
+        "points": {
+          "intercept": -0.018793959865394578,
+          "v2Weight": -0.10993141617777594,
+          "marketWeight": 1.0584950563566122,
+          "trainingRows": 9583
+        },
+        "rebounds": {
+          "intercept": 0.041600302165974115,
+          "v2Weight": 0.20503310283651915,
+          "marketWeight": 0.471547644966054,
+          "trainingRows": 6050
+        },
+        "assists": {
+          "intercept": -0.17156045027086161,
+          "v2Weight": -0.15794268393154465,
+          "marketWeight": 1.486924570527368,
+          "trainingRows": 4539
+        }
+      },
+      "calibrationV2": {
+        "ece": 0.07935301978212822,
+        "bins": [
+          {
+            "range": "0-10%",
+            "count": 38,
+            "predicted": 0.073,
+            "observed": 0.447
+          },
+          {
+            "range": "10-20%",
+            "count": 219,
+            "predicted": 0.157,
+            "observed": 0.47
+          },
+          {
+            "range": "20-30%",
+            "count": 774,
+            "predicted": 0.249,
+            "observed": 0.407
+          },
+          {
+            "range": "30-40%",
+            "count": 3230,
+            "predicted": 0.349,
+            "observed": 0.441
+          },
+          {
+            "range": "40-50%",
+            "count": 4789,
+            "predicted": 0.439,
+            "observed": 0.471
+          },
+          {
+            "range": "50-60%",
+            "count": 6461,
+            "predicted": 0.539,
+            "observed": 0.492
+          },
+          {
+            "range": "60-70%",
+            "count": 2599,
+            "predicted": 0.651,
+            "observed": 0.506
+          },
+          {
+            "range": "70-80%",
+            "count": 558,
+            "predicted": 0.753,
+            "observed": 0.523
+          },
+          {
+            "range": "80-90%",
+            "count": 75,
+            "predicted": 0.829,
+            "observed": 0.52
+          },
+          {
+            "range": "90-100%",
+            "count": 2,
+            "predicted": 0.915,
+            "observed": 1
+          }
+        ]
+      },
+      "calibrationV21": {
+        "ece": 0.018690106338176173,
+        "bins": [
+          {
+            "range": "20-30%",
+            "count": 208,
+            "predicted": 0.276,
+            "observed": 0.361
+          },
+          {
+            "range": "30-40%",
+            "count": 2332,
+            "predicted": 0.357,
+            "observed": 0.377
+          },
+          {
+            "range": "40-50%",
+            "count": 7628,
+            "predicted": 0.464,
+            "observed": 0.451
+          },
+          {
+            "range": "50-60%",
+            "count": 7184,
+            "predicted": 0.535,
+            "observed": 0.518
+          },
+          {
+            "range": "60-70%",
+            "count": 1373,
+            "predicted": 0.641,
+            "observed": 0.594
+          },
+          {
+            "range": "70-80%",
+            "count": 20,
+            "predicted": 0.709,
+            "observed": 0.65
+          }
+        ]
+      },
+      "brier": {
+        "v2": 0.258,
+        "v21": 0.2462,
+        "market": 0.2459
+      },
+      "byMarket": {
+        "points": {
+          "rows": 8936,
+          "eceV2": 0.075,
+          "eceV21": 0.015,
+          "brierV2": 0.2595,
+          "brierV21": 0.245,
+          "brierMarket": 0.2455,
+          "roiV21": {
+            "bets": 15,
+            "pushes": 0,
+            "roi": 0.4163,
+            "roi95": [
+              -0.192,
+              1.0162
+            ],
+            "meanClaimedEv": 5.76
+          }
+        },
+        "rebounds": {
+          "rows": 5716,
+          "eceV2": 0.0845,
+          "eceV21": 0.038,
+          "brierV2": 0.2568,
+          "brierV21": 0.2478,
+          "brierMarket": 0.2471,
+          "roiV21": {
+            "bets": 582,
+            "pushes": 0,
+            "roi": -0.0414,
+            "roi95": [
+              -0.1301,
+              0.043
+            ],
+            "meanClaimedEv": 8.64
+          }
+        },
+        "assists": {
+          "rows": 4093,
+          "eceV2": 0.0817,
+          "eceV21": 0.041,
+          "brierV2": 0.2562,
+          "brierV21": 0.2469,
+          "brierMarket": 0.2448,
+          "roiV21": {
+            "bets": 517,
+            "pushes": 0,
+            "roi": -0.0575,
+            "roi95": [
+              -0.1083,
+              0.0247
+            ],
+            "meanClaimedEv": 6.08
+          }
+        }
+      },
+      "roi": {
+        "v2BestPrice": {
+          "bets": 2343,
+          "pushes": 0,
+          "roi": -0.023,
+          "roi95": [
+            -0.0671,
+            0.0125
+          ],
+          "meanClaimedEv": 22.27
+        },
+        "v21BestPrice": {
+          "bets": 1114,
+          "pushes": 0,
+          "roi": -0.0427,
+          "roi95": [
+            -0.0889,
+            0.029
+          ],
+          "meanClaimedEv": 7.41
+        },
+        "v21SingleBook": {
+          "draftkings": {
+            "bets": 307,
+            "pushes": 0,
+            "roi": -0.0649,
+            "roi95": [
+              -0.1702,
+              0.0524
+            ],
+            "meanClaimedEv": 5.81
+          },
+          "fanduel": {
+            "bets": 368,
+            "pushes": 0,
+            "roi": -0.022,
+            "roi95": [
+              -0.1024,
+              0.0714
+            ],
+            "meanClaimedEv": 6.43
+          },
+          "betmgm": {
+            "bets": 387,
+            "pushes": 0,
+            "roi": -0.0755,
+            "roi95": [
+              -0.1596,
+              0.0146
+            ],
+            "meanClaimedEv": 5.57
+          },
+          "bovada": {
+            "bets": 211,
+            "pushes": 0,
+            "roi": 0.0268,
+            "roi95": [
+              -0.1397,
+              0.1517
+            ],
+            "meanClaimedEv": 5.86
+          },
+          "betrivers": {
+            "bets": 729,
+            "pushes": 0,
+            "roi": -0.0491,
+            "roi95": [
+              -0.1274,
+              0.0375
+            ],
+            "meanClaimedEv": 7.68
+          },
+          "williamhill_us": {
+            "bets": 286,
+            "pushes": 0,
+            "roi": -0.1114,
+            "roi95": [
+              -0.2248,
+              -0.0126
+            ],
+            "meanClaimedEv": 5.42
+          },
+          "betonlineag": {
+            "bets": 335,
+            "pushes": 0,
+            "roi": 0.0082,
+            "roi95": [
+              -0.0874,
+              0.1081
+            ],
+            "meanClaimedEv": 5.81
+          }
+        }
+      }
+    }
+  ],
+  "finalCoefficients": {
+    "points": {
+      "intercept": -0.04975507856191129,
+      "v2Weight": -0.1411305526168811,
+      "marketWeight": 1.0135523086970568,
+      "trainingRows": 18519
+    },
+    "rebounds": {
+      "intercept": -0.035240021327538916,
+      "v2Weight": 0.14053070926427744,
+      "marketWeight": 0.5992319073759691,
+      "trainingRows": 11766
+    },
+    "assists": {
+      "intercept": -0.11174554876522574,
+      "v2Weight": -0.055638470312285145,
+      "marketWeight": 1.2309795802941563,
+      "trainingRows": 8632
+    }
+  },
+  "publishable": false
+}

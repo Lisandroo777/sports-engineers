@@ -1,0 +1,45 @@
+{
+  "subject": "Audit of the frozen NBA V2 price backtest (reports/nba-v2/price-backtest-2025.json and price-backtest-2026.json)",
+  "auditedAt": "2026-10-23",
+  "originalReportsModified": false,
+  "findings": [
+    {
+      "id": "TARGET_GAME_OUTCOME_LEAKAGE",
+      "severity": "CRITICAL",
+      "detail": "scripts/nba-v2/priceBacktest.mjs passed the sportsbook commence_time (typically 10 minutes after ESPN's scheduled tipoff) as V2's targetTipoff. ESPN game logs are dated at ESPN tipoff, so the target game's own box score was treated as a prior current-season observation.",
+      "evidence": "44 of 60 sampled 2024-25 player-games (73%) included their own outcome as a pre-tipoff observation.",
+      "impact": "Frozen V2 ROI (+11.3% development, +6.2% holdout) is not valid evidence of an edge. With ESPN tipoff as the cutoff, V2 on the same development candidates returns -3.6% ROI (4,876 bets).",
+      "fixInV2_1": "scripts/nba-v2_1/data.mjs uses ESPN tipoff for model inputs; sportsbook commence_time is used only for snapshot timing."
+    },
+    {
+      "id": "PREGAME_SNAPSHOT_TIMING",
+      "severity": "LOW",
+      "detail": "Two 2025-26 holdout snapshots were 55 minutes before the provider commence_time because the downloader targeted ESPN tipoff minus 60 minutes; both were still pregame and excluded.",
+      "fixInV2_1": "Timing rule: snapshot at or before provider commence_time minus 60 minutes; the next downloader requests that time from the matched event."
+    },
+    {
+      "id": "MARKET_LAST_UPDATE_ROUNDING",
+      "severity": "MEDIUM",
+      "detail": "32% of development markets carry last_update up to 1 minute after the snapshot timestamp (provider rounding). Strict exclusion drops valid quotes.",
+      "fixInV2_1": "Allow last_update up to snapshot + 2 minutes, never later than commence_time - 55 minutes."
+    },
+    {
+      "id": "VOID_SETTLEMENT",
+      "severity": "MEDIUM",
+      "detail": "Frozen backtest voided players with under 5 minutes; sportsbooks settle any appearance and void only did-not-play.",
+      "fixInV2_1": "Void only did-not-play; 50 low-minute development appearances are now settled."
+    },
+    {
+      "id": "BEST_PRICE_SELECTION",
+      "severity": "INFO",
+      "detail": "Best-EV selection across 7 books and about 6.9 lines per player-market-game is line shopping; V2.1 reports single-sportsbook ROI alongside best price.",
+      "fixInV2_1": "Single-book results reported per split."
+    },
+    {
+      "id": "PUSHES_AND_MISSING_DATA",
+      "severity": "INFO",
+      "detail": "All development lines were half-points (0 pushes). Unmatched sportsbook names are mostly inactive players (Beal, Morant) plus one nickname (Carlton/Bub Carrington); they are excluded, not settled."
+    }
+  ],
+  "conclusion": "The original V2 holdout result stands as FAILED and is additionally invalid as positive-ROI evidence. No NBA model version currently demonstrates a price edge."
+}
