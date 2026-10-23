@@ -1,0 +1,12 @@
+{
+  "frozenAt": "2026-10-23T22:13:22.187Z",
+  "stage": "BEFORE_HOLDOUT_ACCESS",
+  "holdoutAccessed": false,
+  "files": {
+    "lib/nba/prediction/v2/earlySeason.ts": "7ef116fc0238897c9637b811f43103d71bb28cb1b4c6b4c4cdc3397da7d701f7",
+    "scripts/nba-v2/priceBacktest.mjs": "e008240b3931a406e772effc66204faf0cb3e6b08c3cfbd96a3a3d7ede527dfa",
+    "scripts/nba-v2/espnWindow.mjs": "2a2f5ea8a9fd2211176414d3faf9e6def29cfbc39e746595fd9ec63cf24a7d0a",
+    "scripts/nba-v2/downloadHistorical.mjs": "078bf048a2052f5e67cab1fbbeaff9e0dd1786fdb2d44af3d67f71894b11a7c9",
+    "reports/nba-v2/publication-criteria.json": "6a988e05e2ae5b9c856cc4eab00d4296ef31b7f023ffbf05f4be9cd741fb7801"
+  }
+}

@@ -1,0 +1,193 @@
+{
+  "modelVersion": "NBA_MODEL_V2_EARLY_SEASON",
+  "season": "2024-25",
+  "role": "DEVELOPMENT",
+  "criteriaHash": "6a988e05e2ae5b9c856cc4eab00d4296ef31b7f023ffbf05f4be9cd741fb7801",
+  "evaluatedAt": "2026-10-23T22:13:06.064Z",
+  "dataDir": "data/nba-v2/historical/2025",
+  "metrics": {
+    "candidates": 38867,
+    "settledCandidates": 38867,
+    "bets": 4857,
+    "roi": 0.1127225879031457,
+    "roi95": [
+      0.07887691444158891,
+      0.14145662998777106
+    ],
+    "expectedCalibrationError": 0.02254204819185266,
+    "brier": 0.24056779371830475,
+    "noVigMarketBrier": 0.24524555338425547,
+    "leakageViolations": 0,
+    "voided": 188,
+    "unmatched": 208,
+    "roiByMarket": {
+      "points": {
+        "bets": 1731,
+        "roi": 0.11734318886209358
+      },
+      "rebounds": {
+        "bets": 1609,
+        "roi": 0.15945045944675787
+      },
+      "assists": {
+        "bets": 1517,
+        "roi": 0.05788843788758012
+      }
+    },
+    "roiByHalf": [
+      0.157432492408791,
+      0.06803109010993524
+    ],
+    "maxPlayerShare": 0.0067943174799258805,
+    "roiWithoutTop10Players": 0.08941845325679357,
+    "roiByBook": {
+      "fanduel": {
+        "bets": 716,
+        "roi": 0.030686701655449636
+      },
+      "betrivers": {
+        "bets": 1864,
+        "roi": 0.1430779639787459
+      },
+      "betmgm": {
+        "bets": 818,
+        "roi": 0.10635830928135896
+      },
+      "betonlineag": {
+        "bets": 357,
+        "roi": 0.11763312284994286
+      },
+      "draftkings": {
+        "bets": 528,
+        "roi": 0.14512536586617703
+      },
+      "bovada": {
+        "bets": 173,
+        "roi": 0.11918233070532647
+      },
+      "williamhill_us": {
+        "bets": 401,
+        "roi": 0.08125622933901913
+      }
+    },
+    "playersByBets": [
+      {
+        "player": "Franz Wagner",
+        "bets": 33,
+        "profitUnits": -3.5655500821018062
+      },
+      {
+        "player": "Jarrett Allen",
+        "bets": 33,
+        "profitUnits": -6.337452587028138
+      },
+      {
+        "player": "Darius Garland",
+        "bets": 33,
+        "profitUnits": 13.305550432003333
+      },
+      {
+        "player": "Jalen Green",
+        "bets": 33,
+        "profitUnits": 10.787937915742793
+      },
+      {
+        "player": "Chris Paul",
+        "bets": 33,
+        "profitUnits": 10.200093036390356
+      },
+      {
+        "player": "Victor Wembanyama",
+        "bets": 33,
+        "profitUnits": 16.711421591259178
+      },
+      {
+        "player": "Daniel Gafford",
+        "bets": 32,
+        "profitUnits": 6.471055110837532
+      },
+      {
+        "player": "Gradey Dick",
+        "bets": 32,
+        "profitUnits": -4.311224890217695
+      },
+      {
+        "player": "Brandon Ingram",
+        "bets": 32,
+        "profitUnits": -0.11027192488501725
+      },
+      {
+        "player": "De'Aaron Fox",
+        "bets": 32,
+        "profitUnits": 5.4505260801697
+      },
+      {
+        "player": "DeMar DeRozan",
+        "bets": 32,
+        "profitUnits": 3.3929391872970998
+      },
+      {
+        "player": "Keegan Murray",
+        "bets": 32,
+        "profitUnits": 8.39081989247312
+      },
+      {
+        "player": "Domantas Sabonis",
+        "bets": 32,
+        "profitUnits": -3.0918667675890674
+      },
+      {
+        "player": "Devin Booker",
+        "bets": 31,
+        "profitUnits": 11.0316530751301
+      },
+      {
+        "player": "Draymond Green",
+        "bets": 31,
+        "profitUnits": -3.6813229850693916
+      }
+    ],
+    "meanSelectedEvPercent": 21.79823083687367,
+    "unmatchedPlayers": 6,
+    "topUnmatched": [
+      [
+        "Carlton Carrington",
+        91
+      ],
+      [
+        "Bradley Beal",
+        56
+      ],
+      [
+        "Ja Morant",
+        27
+      ],
+      [
+        "Dean Wade",
+        15
+      ],
+      [
+        "Josh Green",
+        11
+      ],
+      [
+        "De'Andre Hunter",
+        8
+      ]
+    ]
+  },
+  "checks": {
+    "minimumQualifyingBets": true,
+    "roiLowerBound": true,
+    "calibration": true,
+    "brierVersusMarket": true,
+    "marketStability": true,
+    "halfStability": true,
+    "playerConcentration": true,
+    "withoutTopPlayers": true,
+    "leakage": true
+  },
+  "allPassed": false,
+  "publishable": false,
+  "note": "Development season: checks are diagnostic only and cannot qualify V2 for publication."
+}

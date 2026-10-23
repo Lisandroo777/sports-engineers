@@ -1,0 +1,44 @@
+{
+  "modelVersion": "NBA_MODEL_V2_EARLY_SEASON",
+  "registeredAt": "2026-10-23",
+  "registeredBeforeHoldoutAccess": true,
+  "status": "PRE_REGISTERED_NOT_EVALUATED",
+  "data": {
+    "provider": "The Odds API historical event odds (paid plans; player props available after 2023-05-03T05:30:00Z, 5-minute snapshots)",
+    "markets": ["player_points", "player_rebounds", "player_assists"],
+    "regions": ["us"],
+    "oddsFormat": "american",
+    "snapshot": "Latest snapshot at or before tipoff minus 60 minutes; snapshot timestamp and market last_update must both be strictly before tipoff.",
+    "holdout": "2025-26 regular season, games where both teams have played at most 10 regular-season games before tipoff.",
+    "development": "Optional 2024-25 equivalent window; any threshold tuning happens only on development data."
+  },
+  "leakageRules": [
+    "V2 inputs use ESPN regular-season game logs dated strictly before tipoff (prior season plus current-season games already played).",
+    "Outcomes come only from the target game's final box score; they are never available to the model or the selection rule.",
+    "Players with under 5 minutes in the target game are void (props void on DNP), counted and reported separately.",
+    "Thresholds and selection rule are fixed in this file; the holdout is evaluated once per registered version."
+  ],
+  "selectionRule": {
+    "minimumHypotheticalEvPercent": 3,
+    "probabilityBounds": [0.1, 0.9],
+    "requireTwoSidedQuoteSameBook": true,
+    "onePerPlayerMarketGame": "Highest-EV side/book per player, market and game; never both sides.",
+    "stake": "Flat 1 unit"
+  },
+  "publicationCriteria": {
+    "minimumQualifyingBets": 1000,
+    "roi95LowerBoundAbove": 0,
+    "roiUncertainty": "Game-clustered bootstrap, 10,000 resamples, 95% interval on flat-stake ROI.",
+    "maximumExpectedCalibrationError": 0.03,
+    "calibrationSample": "All two-sided priced candidates at real lines (not only selected bets).",
+    "brierNotWorseThanNoVigMarketBy": 0.005,
+    "stability": {
+      "roiPointEstimatePositiveEachMarketWithAtLeastBets": 200,
+      "roiPointEstimatePositiveInEachChronologicalHalf": true,
+      "maximumShareOfBetsFromOnePlayer": 0.05,
+      "roiPositiveAfterRemovingTop10PlayersByProfit": true
+    },
+    "leakageViolationsAllowed": 0
+  },
+  "outcome": "V2 publishable may only be proposed if every criterion passes; failure keeps publishable=false."
+}

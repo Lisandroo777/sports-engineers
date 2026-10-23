@@ -48,3 +48,6 @@ next-env.d.ts
 
 # verification build output (keeps dev server .next intact)
 /.next-verify
+
+# Licensed historical odds snapshots (not redistributed)
+data/nba-v2/
