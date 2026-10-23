@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildNBAV2Diagnostics, hypotheticalEvPercent, NBA_V2_DIAGNOSTIC_LABEL } from './diagnostics';
+import { nbaFinderCandidateToGeneric } from '../../../ai/agent/tools';
+import type { NBACandidate } from '../../../finder/nbaEngine';
 
 const log = (index: number, start: string, points: number) => ({ gameId: `${start}-${index}`,
   date: new Date(Date.parse(start) + index * 86400000).toISOString(), stat: { minutes: 30, points: points + (index % 3) - 1, totalRebounds: 6, assists: 4 } });
@@ -16,6 +18,20 @@ describe('NBA V2 research-only diagnostics', () => {
     expect(row.hypotheticalEvPercent).toBeCloseTo(hypotheticalEvPercent(row.probability!, -110));
     expect(row).not.toHaveProperty('pickTier');
     expect(row.reasons.join(' ')).toMatch(/EV is not validated/);
+  });
+
+  it('keeps the schedule game ID through finder-to-shared conversion so V2 can resolve tipoff and evaluate', async () => {
+    const finder = { id: 'odds|Fixture Guard|points|19.5|over|book', gameId: '401909095', eventId: 'odds', playerId: 7, playerName: 'Fixture Guard',
+      team: 'New York Knicks', opponent: 'Boston Celtics', market: 'points', marketLabel: 'Points', line: 19.5, side: 'over', book: 'Fixture Book',
+      oddsAmerican: -110, marketMovement: { available: false }, eliteAnalysis: {} } as unknown as NBACandidate;
+    const shared = nbaFinderCandidateToGeneric(finder);
+    expect(shared.gameId).toBe('401909095');
+    const schedule = new Map([['401909095', '2026-10-23T23:00:00Z']]);
+    const loader = async (_: number, season: number) => season === 2026 ? Array.from({ length: 40 }, (_, i) => log(i, '2025-11-01', 22)) : [];
+    const [row] = await buildNBAV2Diagnostics([{ candidateId: shared.candidateId, playerId: shared.playerId ?? null, player: shared.player,
+      marketKey: String(shared.marketKey), line: shared.line!, direction: shared.direction, odds: shared.odds ?? null, book: shared.book ?? null,
+      tipoff: schedule.get(shared.gameId ?? '') ?? null }], loader);
+    expect(row).toMatchObject({ status: 'EVALUATED', publishable: false, priorSeasonGames: 40, currentSeasonGames: 0 });
   });
 
   it('reports unsupported markets, missing prior seasons, missing prices and history failures explicitly', async () => {

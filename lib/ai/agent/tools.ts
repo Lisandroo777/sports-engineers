@@ -45,6 +45,7 @@ export const MAX_RESULTS_CEILING = 15;
 export function nbaFinderCandidateToGeneric(candidate: NBACandidate): GenericResearchCandidate {
   return {
     candidateId: candidate.id, playerId: candidate.playerId, teamId: candidate.teamId ?? null, player: candidate.playerName, team: candidate.team, opponent: candidate.opponent,
+    gameId: candidate.gameId,
     marketLabel: candidate.marketLabel, marketKey: candidate.market, line: candidate.line, direction: candidate.side,
     book: candidate.book, odds: candidate.oddsAmerican, projection: candidate.nbaPrediction?.expectedStat ?? null,
     projectionUncertainty: candidate.nbaPrediction?.statUncertainty ?? null,
