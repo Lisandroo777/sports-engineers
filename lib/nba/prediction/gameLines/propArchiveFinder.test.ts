@@ -96,6 +96,13 @@ async function runFixtureFinder() {
 }
 
 describe('real NBA prop Finder reviewed intelligence archive integration', () => {
+  it('evaluates cached props whose marketKey is canonical and sourceMarketKey is the provider key', async () => {
+    vi.mocked(loadNBAGameIntelligence).mockResolvedValue(fixture.intelligence);
+    const [prop] = await getDiscoveredEventPlayerProps('odds-1');
+    vi.mocked(getDiscoveredEventPlayerProps).mockClear();
+    vi.mocked(getDiscoveredEventPlayerProps).mockResolvedValue([{ ...prop, marketKey: 'points' as NormalizedProp['marketKey'] }]);
+    await runFixtureFinder();
+  });
   it('loads missing regular-season all-market quotes cache-first using the requested slate', async () => {
     vi.stubEnv('ODDS_AUTO_REFRESH', 'true');
     vi.mocked(isPaidRefreshAllowed).mockReturnValue(true);

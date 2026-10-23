@@ -37,7 +37,7 @@ const INHERITED_COMMUNICATION_DELTAS = ['lib/ai/agent/runner.ts', 'lib/ai/agent/
 const hash = (content) => createHash('sha256').update(content).digest('hex');
 export const NFL_NBA_EVIDENCE_BASELINE = '0aa685fcae371a827b1287ea8e1be42d40f03e2c';
 export const NFL_NBA_EVIDENCE_HASHES = Object.freeze(Object.fromEntries(Object.entries({
-  'lib/finder/nbaEngine.ts': { baseline: '49b8982cc64445b63308a8ed8580a0cd00ce06e4fd76583fae4fa5b3720cba44', integrated: '97638a742b31dbf2b22a4aa8da1a2239b5c0ec9075eeaeb79441c4cc104f4c94', archived: '4419c53835d6690cb7940220f8b152df28d6cc904089bdb0a36fe360f71fabf5' },
+  'lib/finder/nbaEngine.ts': { baseline: '49b8982cc64445b63308a8ed8580a0cd00ce06e4fd76583fae4fa5b3720cba44', integrated: 'b2afd17e7896b9830d083da915a4010d36a4e06beccd306f332849336acca3a3', archived: '4419c53835d6690cb7940220f8b152df28d6cc904089bdb0a36fe360f71fabf5' },
   'lib/ai/agent/runner.ts': { baseline: 'd346562ead55c27013ed3e97473775871a12f25abbb2c0e83e8c745654627e19', integrated: 'fa64989e86cafb8c1bfec06d3c22b688bf68afce5215080c5a3eed49f902f05d', archived: '4eb6d4b010496e43111d7de1727b37fd30fd1f9ca76ab4764623e6ebea0514f4' },
   'lib/nfl/participation.ts': { baseline: '94cfc8a60b17b0f99a76e981641d32cbc4e07be8350d46e78fe74765625b29c8', integrated: '85f0c79ff9853f991ebb180970399b5375a4feafafd8545832b5225047837cbd', archived: '94cfc8a60b17b0f99a76e981641d32cbc4e07be8350d46e78fe74765625b29c8' },
   'lib/nfl/officialParticipation.ts': { baseline: null, integrated: 'b5813154cf2df61627f5b3c48828cf7d9321418ae3e5a6129501810633fb200b', archived: null },

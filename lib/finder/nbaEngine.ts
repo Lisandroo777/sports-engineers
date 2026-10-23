@@ -371,7 +371,7 @@ export async function runNBAFinderDeepSearch(
     const previousPropsAnalyzed = propsAnalyzed;
     const seen = new Set<string>();
     for (const prop of props) {
-      const meta = getNBAMarketMetadata(prop.marketKey);
+      const meta = getNBAMarketMetadata(prop.sourceMarketKey ?? prop.marketKey);
       // Unsupported markets fail closed — never turned into fake zero-history candidates.
       if (!meta || meta.historicalSupport === 'unsupported') continue;
 
