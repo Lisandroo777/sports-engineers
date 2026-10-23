@@ -33,7 +33,7 @@ import { predictNBAMarket } from '../nba/prediction/engine';
 import type { NBAInjuryEvidence, NBAProjectionResult, NBAObservedGame } from '../nba/prediction/types';
 import { selectNBAAsOfHistory } from '../nba/prediction/history';
 import { researchNBAGameLines } from '../nba/prediction/gameLines/pipeline';
-import { loadCachedNBAPlayerProps } from '../nba/prediction/cachedProps';
+import { hasCachedNBAEventOdds, loadCachedNBAPlayerProps } from '../nba/prediction/cachedProps';
 import { loadNBAGameIntelligence } from '../nba/prediction/gameLines/intelligenceArchive';
 import { buildNBAResearchEvidence, type NBAResearchEvidence } from '../nba/researchEvidence';
 import { todaySlateDate } from '../dateModel';
@@ -367,6 +367,10 @@ export async function runNBAFinderDeepSearch(
     }
     eventsMatched += 1;
     rawPropsTotal += props.length;
+    if (!props.length && options.gameLines && !(await hasCachedNBAEventOdds(event.id).catch(() => false))) {
+      coverage.reason = 'No sportsbook quotes have been retrieved for this game; refresh was not performed.';
+      continue;
+    }
 
     const previousPropsAnalyzed = propsAnalyzed;
     const seen = new Set<string>();

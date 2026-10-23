@@ -11,6 +11,10 @@ interface CachedEventOdds {
   }> }>;
 }
 
+export async function hasCachedNBAEventOdds(eventId: string): Promise<boolean> {
+  return /^[a-f0-9]{32}$/.test(eventId) && await readStalePersistentCache(nbaActivationCacheKey(eventId)) != null;
+}
+
 export async function loadCachedNBAPlayerProps(eventId: string, expectedTipoff?: string): Promise<NormalizedProp[]> {
   const base = `https://api.the-odds-api.com/v4/sports/basketball_nba/events/${encodeURIComponent(eventId)}`;
   const discovery = await readPersistentCache<{ bookmakers?: Array<{ markets?: Array<{ key: string }> }> }>(`${base}/markets?regions=us`);

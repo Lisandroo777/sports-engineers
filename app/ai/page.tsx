@@ -893,7 +893,7 @@ function TabbedPlayResearch({
           <p className="text-xs text-slate-500">No reload · no new research</p>
         </div>
         <div className="scrollbar-hidden mt-3 flex gap-2 overflow-x-auto pb-1">
-          {results.slice(0, 15).map((result, index) => (
+          {results.filter((result, index) => result.prop.sport === 'NBA' || index < 15).map((result, index) => (
             <button key={result.prop.id} onClick={() => onSelect(index)} className={`flex shrink-0 items-center gap-2 rounded-2xl px-3 py-2 text-left transition ${index === selectedIndex ? 'bg-emerald-400/15 ring-1 ring-emerald-400/50' : 'bg-white/[0.03] hover:bg-white/[0.06]'}`}>
               <PlayerHeadshot sport={result.prop.sport} playerId={result.prop.playerId} playerName={result.prop.player} teamId={result.prop.teamId} teamName={result.prop.team} size={30} />
               <div className="min-w-0">

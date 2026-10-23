@@ -26,6 +26,7 @@ import { nbaFinderCandidateToGeneric } from './tools';
 import { buildResearchSessionFromCandidates } from './session';
 import { classifyGameRecommendation, isGameRecommendation } from '../../nba/prediction/gameLines/recommendations';
 import { selectNBAMixedRecommendations } from '../../nba/prediction/gameLines/selection';
+import { NBA_V2_VALIDATION } from '../../nba/prediction/v2/validation';
 import { detectSport } from '../sportResearchAdapters';
 import { buildNBAResearchPresentation, unclassifiedNBAPropResearch } from '../../nba/prediction/gameLines/presentationBridge';
 import { loadCachedNBAEventResearch } from '../../nba/prediction/gameLines/cachedEventResearch';
@@ -477,6 +478,10 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
           : gameIds.has(record.subject.gameId)) };
     }
     const results = selectNBAMixedRecommendations(nbaSession, query);
+    const earlySeasonBlocked = results.length === 0 && nbaSession.candidates.length > 0
+      && nbaSession.candidates.every(candidate => (candidate.sampleSize ?? 0) < 8);
+    const earlySeasonNote = earlySeasonBlocked ? ` ${[`NBA V1 requires 8 current-season games per player market; all ${nbaSession.candidates.length} evaluated props have fewer.`,
+      ...NBA_V2_VALIDATION.reasons].join(' ')}` : '';
     const candidatesEvaluated = nbaSession.candidates.length + (nbaSession.gameCandidates?.length ?? 0);
     const verifiedQuotesAvailable = nbaSession.modeledGames?.some(game => game.status === 'QUOTE_AVAILABLE' && (game.quotes?.length ?? 0) > 0) === true;
     const marketDataAvailable = candidatesEvaluated > 0 || verifiedQuotesAvailable;
@@ -486,7 +491,7 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
       || nbaSession.toolMeta.nbaGameCoverage?.some(game => game.state === 'PROVIDER_ERROR');
     const incomplete = nbaSession.toolMeta.budgetLimited || nbaSession.toolMeta.blockReason != null
       || nbaSession.toolMeta.nbaGameCoverage?.some(game => game.state === 'BUDGET_BLOCKED' || game.state === 'NOT_FETCHED');
-    const status = candidatesEvaluated > 0 ? 'SUCCESS'
+    const status = candidatesEvaluated > 0 ? (earlySeasonBlocked ? 'RESEARCH_INCOMPLETE' : 'SUCCESS')
       : verifiedQuotesAvailable ? 'RESEARCH_INCOMPLETE'
       : providerError ? 'PROVIDER_ERROR'
         : incomplete ? 'RESEARCH_INCOMPLETE'
@@ -507,7 +512,7 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
     const unsupported = nbaMarkets.gameLineMarkets.filter(market => market === 'FIRST_HALF' || market === 'FIRST_QUARTER');
     return { reply: (results.length ? `Found ${results.length} qualified NBA recommendation${results.length === 1 ? '' : 's'}.`
       : !marketDataAvailable ? emptyReply
-        : `No NBA selections passed the existing publication requirements.${verifiedQuotesAvailable ? ` Verified sportsbook quotes are available. ${(nbaSession.modeledGames ?? []).filter(game => game.status === 'QUOTE_AVAILABLE').map(game => `${game.gameId}: ${game.reason}`).join(' ')}` : ' Modeled team research is shown separately and is not a betting recommendation.'}`) + partialNote,
+        : `No NBA selections passed the existing publication requirements.${verifiedQuotesAvailable ? ` Verified sportsbook quotes are available. ${(nbaSession.modeledGames ?? []).filter(game => game.status === 'QUOTE_AVAILABLE').map(game => `${game.gameId}: ${game.reason}`).join(' ')}` : ' Modeled team research is shown separately and is not a betting recommendation.'}`) + earlySeasonNote + partialNote,
       toolTrace: [], results, closestMisses: [], researchSessionId, modeledGames: nbaSession.modeledGames,
       nbaPresentation: buildNBAResearchPresentation(nbaSession, query, results.map(record => record.candidateId)),
       meta: { sport: 'nba', date: requestedDate, modelVersion: 'NBA_GAME_LINES_V1', validationStatus: 'UNVALIDATED',

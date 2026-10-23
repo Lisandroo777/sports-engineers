@@ -1,0 +1,135 @@
+{
+  "modelVersion": "NBA_MODEL_V2_EARLY_SEASON",
+  "generatedAt": "2026-10-23T21:16:59.930Z",
+  "parameters": {
+    "minimumPriorGames": 20,
+    "priorWindow": 40,
+    "rateShrinkageGames": 10,
+    "minutesShrinkageGames": 3,
+    "unstableRoleShift": 0.2,
+    "minimumMinutes": 5
+  },
+  "gate": {
+    "minimumPredictions": 1500,
+    "maximumCalibrationError": 0.03
+  },
+  "sample": "First 10 2025-26 regular-season games per current roster player; 2024-25 regular season as prior baseline.",
+  "referenceLine": "floor(prior-season mean of last 40 qualifying games) + 0.5; historical sportsbook lines/prices unavailable.",
+  "metrics": {
+    "predictions": 4509,
+    "players": 517,
+    "leakageViolations": 0,
+    "brier": 0.23637410226037026,
+    "baselineBrier": 0.24703872175806757,
+    "logLoss": 0.665263499906177,
+    "baselineLogLoss": 0.6872679867174646,
+    "expectedCalibrationError": 0.022545349859741118,
+    "meanAbsoluteError": 2.758114305400593,
+    "byMarket": {
+      "points": {
+        "count": 1503,
+        "brier": 0.23572020865265123
+      },
+      "rebounds": {
+        "count": 1503,
+        "brier": 0.23757408399603666
+      },
+      "assists": {
+        "count": 1503,
+        "brier": 0.2358280141324174
+      }
+    }
+  },
+  "calibrationBins": [
+    {
+      "bin": "0-10%",
+      "count": 16,
+      "predicted": 0.08202392120075049,
+      "observed": 0.125
+    },
+    {
+      "bin": "10-20%",
+      "count": 78,
+      "predicted": 0.1620937623660113,
+      "observed": 0.19230769230769232
+    },
+    {
+      "bin": "20-30%",
+      "count": 307,
+      "predicted": 0.25414312148989293,
+      "observed": 0.2931596091205212
+    },
+    {
+      "bin": "30-40%",
+      "count": 1137,
+      "predicted": 0.34576891111042635,
+      "observed": 0.3280562884784521
+    },
+    {
+      "bin": "40-50%",
+      "count": 1648,
+      "predicted": 0.4425390474773329,
+      "observed": 0.4672330097087379
+    },
+    {
+      "bin": "50-60%",
+      "count": 1044,
+      "predicted": 0.5341502778325244,
+      "observed": 0.5229885057471264
+    },
+    {
+      "bin": "60-70%",
+      "count": 266,
+      "predicted": 0.6371281712945412,
+      "observed": 0.6015037593984962
+    },
+    {
+      "bin": "70-80%",
+      "count": 13,
+      "predicted": 0.7439024390243903,
+      "observed": 0.38461538461538464
+    },
+    {
+      "bin": "80-90%",
+      "count": 0,
+      "predicted": null,
+      "observed": null
+    },
+    {
+      "bin": "90-100%",
+      "count": 0,
+      "predicted": null,
+      "observed": null
+    }
+  ],
+  "calibrationPassed": true,
+  "gateSample": "Held-out players (odd ESPN IDs); development players reported separately.",
+  "development": {
+    "predictions": 4551,
+    "players": 517,
+    "leakageViolations": 0,
+    "brier": 0.23129127692266435,
+    "baselineBrier": 0.2446081793747237,
+    "logLoss": 0.6541542828327759,
+    "baselineLogLoss": 0.6822421724100963,
+    "expectedCalibrationError": 0.021484209618998766,
+    "meanAbsoluteError": 2.734889989725894,
+    "byMarket": {
+      "points": {
+        "count": 1517,
+        "brier": 0.23142368856538836
+      },
+      "rebounds": {
+        "count": 1517,
+        "brier": 0.23152187783615757
+      },
+      "assists": {
+        "count": 1517,
+        "brier": 0.2309282643664438
+      }
+    }
+  },
+  "evValidated": false,
+  "evReason": "No historical sportsbook prices are available, so EV against real prices cannot be validated.",
+  "publishable": false
+}
