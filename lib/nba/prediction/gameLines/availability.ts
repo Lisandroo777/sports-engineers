@@ -38,6 +38,7 @@ export interface GameAvailabilityAssessment extends GameEvidenceReadiness {
   evidence: string[];
   impactReviewResolved: boolean;
   numericAdjustmentsApplied: false;
+  futureLineupVerified: boolean;
 }
 
 const hour = 3600000;
@@ -62,7 +63,7 @@ export function assessNBAGameAvailability(snapshot: NBAContextSnapshot, intellig
   const start = Date.parse(target.startsAt);
   const result: GameAvailabilityAssessment = { assessedAt: predictionAt, expiresAt: null, intelligenceSnapshotId: null,
     injuriesVerified: false, startingLineupsVerified: false, conflictsResolved: false, impactReviewResolved: false,
-    numericAdjustmentsApplied: false, teams: [], blockers: [], evidence: [],
+    numericAdjustmentsApplied: false, futureLineupVerified: false, teams: [], blockers: [], evidence: [],
     phase: { seasonId: target.seasonId, phase: target.phase, sourceId: target.source.id,
       adapterVersion: NBA_AGENT2_ADAPTER_VERSION, season: seasonNumberFromAgent2(target.seasonId),
       modelPhase: seasonPhaseForAgent2(target.phase, target.round), round: target.round, sourceObservedAt: target.source.fetchedAt,
@@ -136,12 +137,15 @@ export function assessNBAGameAvailability(snapshot: NBAContextSnapshot, intellig
     result.teams.push({ teamId, report, lineup: starters.length ? 'OFFICIALLY_CONFIRMED' : projected.length ? 'PROJECTED' : reported.length ? 'REPORTED' : 'UNKNOWN',
       confirmedStarterIds: starters, projectedStarterIds: [...new Set(projected.flatMap(record => record.claim.playerIds))], players });
     if (report !== 'VERIFIED') result.blockers.push(`Team ${teamId}: official target-game injury report ${report.toLowerCase()}; missing reports do not imply availability.`);
-    if (!starters.length) result.blockers.push(`Team ${teamId}: no fresh officially confirmed starting five. Projected/reported starters are not confirmed.`);
+    const stableFutureParticipation = start - at > 90 * 60000 && report === 'VERIFIED' && players.length >= 5
+      && players.every(player => player.status === 'AVAILABLE' && player.observedGames >= 5 && player.recentMinutes != null
+        && player.restrictions.every(value => ['NO_RESTRICTION', 'STABLE', 'UNCHANGED', 'NORMAL_ROTATION'].includes(value)));
+    if (!starters.length && !stableFutureParticipation) result.blockers.push(`Team ${teamId}: no fresh officially confirmed starting five or complete stable future-game participation evidence. Projected/reported starters are not confirmed.`);
     if (conflicts || lineupConflicts) result.blockers.push(`Team ${teamId}: unresolved injury/lineup conflict.`);
     for (const player of players) {
-      const material = player.starter === 'CONFIRMED' || player.recentMinutes != null && player.recentMinutes >= 15;
-      if (player.secondaryStatus != null && player.secondaryStatus !== player.status) result.blockers.push(`Team ${teamId}, player ${player.playerId}: fresh secondary ${player.secondaryStatus} conflicts with ${player.status}; review required.`);
-      if (player.secondaryStatus && ['OUT', 'DOUBTFUL', 'QUESTIONABLE', 'UNKNOWN'].includes(player.secondaryStatus)) {
+      const material = player.starter === 'CONFIRMED' || player.starter === 'PROJECTED' || player.recentMinutes == null || player.observedGames < 5 || player.recentMinutes >= 15;
+      if (material && player.secondaryStatus != null && player.secondaryStatus !== player.status) result.blockers.push(`Team ${teamId}, player ${player.playerId}: fresh secondary ${player.secondaryStatus} conflicts with ${player.status}; review required.`);
+      if (material && player.secondaryStatus && ['OUT', 'DOUBTFUL', 'QUESTIONABLE', 'UNKNOWN'].includes(player.secondaryStatus)) {
         result.blockers.push(`Team ${teamId}, player ${player.playerId}: secondary ${player.secondaryStatus} evidence cannot establish acceptable participation.`);
       }
       if (material && player.status === 'NOT_REPORTED') result.blockers.push(`Team ${teamId}, player ${player.playerId}: key rotation availability is not explicitly verified. Report omission is not AVAILABLE.`);
@@ -164,8 +168,13 @@ export function assessNBAGameAvailability(snapshot: NBAContextSnapshot, intellig
   }
   result.injuriesVerified = result.teams.every(team => team.report === 'VERIFIED');
   result.startingLineupsVerified = result.teams.every(team => team.confirmedStarterIds.length === 5);
+  result.futureLineupVerified = !result.startingLineupsVerified && start - at > 90 * 60000 && result.teams.length === 2
+    && result.teams.every(team => team.report === 'VERIFIED' && team.players.length >= 5
+      && team.players.every(player => player.status === 'AVAILABLE' && player.observedGames >= 5 && player.recentMinutes != null))
+    && result.blockers.length === 0;
   result.conflictsResolved = !result.blockers.some(reason => /conflict/i.test(reason));
   result.impactReviewResolved = result.blockers.length === 0;
+  if (result.futureLineupVerified) deadlines.push(start - 90 * 60000);
   result.expiresAt = deadlines.length ? new Date(Math.min(...deadlines)).toISOString() : null;
   return result;
 }

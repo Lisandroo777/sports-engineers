@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateNFLParticipation, nflParticipationTtlMs, parseNFLDepthEvidence, parseNFLRosterEvidence, type NFLParticipationSnapshot } from './participation';
+import { evaluateNFLParticipation, nflParticipationTtlMs, parseNFLDepthEvidence, parseNFLRosterEvidence, parseNFLGameRoster, type NFLParticipationSnapshot } from './participation';
 import { parseNFLInjuryReports, type NFLInjurySnapshot } from './injuries';
 
 const now = new Date('2026-10-05T12:00:00Z');
@@ -18,6 +18,22 @@ function evaluate(data = snapshot(), injury: NFLInjurySnapshot | null = injuries
 }
 
 describe('game-aware NFL participation evidence', () => {
+  it('requires explicit exact-game active evidence inside the game-day window', () => {
+    const data = snapshot(); data.kickoff = '2026-10-05T13:00:00Z';
+    data.gameRosters = [{ teamId: 1, complete: true, activePlayerIds: [10], inactivePlayerIds: [11] }];
+    expect(evaluate(data).designation).toBe('CONFIRMED_AVAILABLE');
+    expect(evaluate(data, injuries('Out')).designation).toBe('OUT');
+    data.gameRosters[0].activePlayerIds = [11]; data.gameRosters[0].inactivePlayerIds = [10];
+    expect(evaluate(data).designation).toBe('INACTIVE');
+  });
+  it('does not promote all-false unpublished rosters or mismatched identities into evidence', () => {
+    const raw = { competition: { $ref: 'https://sports.core.api.espn.com/v2/events/game/competitions/game' },
+      team: { $ref: 'https://sports.core.api.espn.com/v2/teams/1' }, entries: [{ playerId: 10, valid: true, active: false }] };
+    expect(parseNFLGameRoster(raw, 'game', 1).complete).toBe(false);
+    raw.entries[0].active = true;
+    expect(parseNFLGameRoster(raw, 'game', 1).activePlayerIds).toEqual([10]);
+    expect(parseNFLGameRoster(raw, 'other', 1).complete).toBe(false);
+  });
   it('establishes expected availability without an individual injury entry', () => {
     const verdict = evaluate(); expect(verdict.designation).toBe('EXPECTED_AVAILABLE'); expect(verdict.confidence).toBe('MEDIUM');
     expect(verdict.evidence.map((entry) => entry.source)).toEqual(expect.arrayContaining(['TEAM_ROSTER', 'DEPTH_CHART', 'GAME_PREVIEW']));

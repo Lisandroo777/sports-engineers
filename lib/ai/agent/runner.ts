@@ -478,14 +478,16 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
     }
     const results = selectNBAMixedRecommendations(nbaSession, query);
     const candidatesEvaluated = nbaSession.candidates.length + (nbaSession.gameCandidates?.length ?? 0);
-    const marketDataAvailable = candidatesEvaluated > 0;
+    const verifiedQuotesAvailable = nbaSession.modeledGames?.some(game => game.status === 'QUOTE_AVAILABLE' && (game.quotes?.length ?? 0) > 0) === true;
+    const marketDataAvailable = candidatesEvaluated > 0 || verifiedQuotesAvailable;
     const partialCoverage = nbaSession.toolMeta.partialCoverage === true;
     const researchComplete = !partialCoverage && (nbaSession.toolMeta.researchComplete ?? marketDataAvailable);
     const providerError = (nbaSession.toolMeta.oddsSpend?.providerErrors ?? 0) > 0
       || nbaSession.toolMeta.nbaGameCoverage?.some(game => game.state === 'PROVIDER_ERROR');
     const incomplete = nbaSession.toolMeta.budgetLimited || nbaSession.toolMeta.blockReason != null
       || nbaSession.toolMeta.nbaGameCoverage?.some(game => game.state === 'BUDGET_BLOCKED' || game.state === 'NOT_FETCHED');
-    const status = marketDataAvailable ? 'SUCCESS'
+    const status = candidatesEvaluated > 0 ? 'SUCCESS'
+      : verifiedQuotesAvailable ? 'RESEARCH_INCOMPLETE'
       : providerError ? 'PROVIDER_ERROR'
         : incomplete ? 'RESEARCH_INCOMPLETE'
           : nbaSession.toolMeta.gamesScheduled === 0 && researchComplete ? 'NO_GAMES'
@@ -495,17 +497,22 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
     const emptyReply = status === 'NO_GAMES' ? `No NBA games are scheduled on ${requestedDate}.`
       : status === 'SLATE_COMPLETE' ? `The NBA slate on ${requestedDate} is complete; no pregame markets remain.`
         : status === 'PROVIDER_ERROR' ? 'NBA research is unavailable because a provider failed.'
-          : status === 'RESEARCH_INCOMPLETE' ? 'NBA research could not be completed for the requested slate.'
+          : status === 'RESEARCH_INCOMPLETE' ? `NBA research could not be completed for the requested slate. ${[...new Map((nbaSession.toolMeta.nbaGameCoverage ?? [])
+            .filter(game => game.state !== 'RESEARCHED').map(game => [game.state, 0] as const)).keys()]
+            .map(state => `${(nbaSession.toolMeta.nbaGameCoverage ?? []).filter(game => game.state === state).length} game(s) ${state === 'NOT_FETCHED' ? 'have no cached sportsbook quotes (refresh not performed)' : state.toLowerCase().replaceAll('_', ' ')}`)
+            .concat([...new Set((nbaSession.modeledGames ?? []).filter(game => game.status === 'RESEARCH_UNAVAILABLE').map(game => game.reason))])
+            .join('. ')}`.trim()
             : 'No current sportsbook NBA candidates were available for evaluation. Unpriced or modeled research is shown separately and is not a betting recommendation; it is not an evaluated rejection.';
     const partialNote = partialCoverage && marketDataAvailable ? ' NBA research has partial coverage; available selections were evaluated independently.' : '';
     const unsupported = nbaMarkets.gameLineMarkets.filter(market => market === 'FIRST_HALF' || market === 'FIRST_QUARTER');
     return { reply: (results.length ? `Found ${results.length} qualified NBA recommendation${results.length === 1 ? '' : 's'}.`
       : !marketDataAvailable ? emptyReply
-        : 'No NBA selections passed the existing publication requirements. Modeled team research is shown separately and is not a betting recommendation.') + partialNote,
+        : `No NBA selections passed the existing publication requirements.${verifiedQuotesAvailable ? ` Verified sportsbook quotes are available. ${(nbaSession.modeledGames ?? []).filter(game => game.status === 'QUOTE_AVAILABLE').map(game => `${game.gameId}: ${game.reason}`).join(' ')}` : ' Modeled team research is shown separately and is not a betting recommendation.'}`) + partialNote,
       toolTrace: [], results, closestMisses: [], researchSessionId, modeledGames: nbaSession.modeledGames,
       nbaPresentation: buildNBAResearchPresentation(nbaSession, query, results.map(record => record.candidateId)),
       meta: { sport: 'nba', date: requestedDate, modelVersion: 'NBA_GAME_LINES_V1', validationStatus: 'UNVALIDATED',
         ...nbaSession.toolMeta,
+        gamesFound: Math.max(nbaSession.toolMeta.gamesFound ?? 0, (nbaSession.modeledGames ?? []).filter(game => (game.quotes?.length ?? 0) > 0).length),
         candidatesFound: candidatesEvaluated, marketsEvaluated: marketDataAvailable ? null : 0,
         partialCoverage, researchComplete, status,
         budgetLimited: nbaSession.toolMeta.budgetLimited === true, ...(unsupported.length ? { unsupportedMarketNotice: unsupportedNBAGameLineNotice(unsupported) } : {}) } };

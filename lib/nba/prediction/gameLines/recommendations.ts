@@ -96,7 +96,7 @@ export function classifyGameRecommendation(record: GameRecommendation, now = new
 export function buildGameRecommendation(model: GameProjection, quote: GameQuote, binding: QuoteBinding, readiness: GameEvidenceReadiness,
   now = new Date()): GameRecommendation {
   const assessment = assessGameMarket(model, quote, binding);
-  const availabilityVerified = readiness.injuriesVerified && readiness.startingLineupsVerified && readiness.conflictsResolved
+  const availabilityVerified = readiness.injuriesVerified && (readiness.startingLineupsVerified || readiness.assessment?.futureLineupVerified === true) && readiness.conflictsResolved
     && (readiness.assessment == null || readiness.assessment.impactReviewResolved && readiness.assessment.phase.verified);
   const sampleSize = model.profiles ? Math.min(model.profiles.home.sampleSize, model.profiles.away.sampleSize) : 0;
   const record: GameRecommendation = {

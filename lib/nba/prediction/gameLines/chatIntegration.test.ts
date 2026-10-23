@@ -102,6 +102,17 @@ beforeEach(() => {
   vi.mocked(runNBAFinderDeepSearch).mockResolvedValue(finderResult([]));
 });
 
+it('reports verified quotes and missing research evidence rather than no sportsbook data', async () => {
+  const game = { ...modeledGame(), quotes: [quote()], reason: 'Exact-game official injury evidence is unavailable.' };
+  vi.mocked(runNBAFinderDeepSearch).mockResolvedValue({ ...finderResult([], [game]), gamesAnalyzed: 0,
+    partialCoverage: true, researchComplete: false, nbaGameCoverage: [{ gameId: game.gameId, eventId: 'odds', state: 'NO_MARKETS' }] });
+  const result = await chat('Best NBA picks');
+  expect(result.meta).toMatchObject({ gamesFound: 1, candidatesFound: 0, status: 'RESEARCH_INCOMPLETE', researchComplete: false });
+  expect(result.results).toEqual([]);
+  expect(result.reply).toContain('Verified sportsbook quotes are available');
+  expect(result.reply).toContain('official injury evidence is unavailable');
+});
+
 afterEach(() => {
   try {
     expect(fetch).not.toHaveBeenCalled();

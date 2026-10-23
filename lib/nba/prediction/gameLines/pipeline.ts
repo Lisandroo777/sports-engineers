@@ -23,8 +23,9 @@ export async function researchNBAGameLines(games: NBAGame[], events: OddsEvent[]
   loadQuotes: typeof loadCachedNBAGameQuotes;
   loadIntelligence?: (snapshot: NBAContextSnapshot) => Promise<NBAIntelligenceSnapshot | null>;
 }) {
-  const provider = dependencies ? null : createNBAContextProvider({ maxRequests: 100, maxGamesPerTeam: 20 });
-  const loadSnapshot = dependencies?.loadSnapshot ?? ((gameId, teamId) => provider!.loadSnapshot({ gameId, teamId }));
+  // Each game gets its own bounded free-data budget so one large slate cannot starve later games.
+  const loadSnapshot = dependencies?.loadSnapshot ?? ((gameId, teamId) =>
+    createNBAContextProvider({ maxRequests: 100, maxGamesPerTeam: 20 }).loadSnapshot({ gameId, teamId }));
   const loadQuotes = dependencies?.loadQuotes ?? loadCachedNBAGameQuotes;
   const loadIntelligence = dependencies?.loadIntelligence ?? loadNBAGameIntelligence;
   const recommendations: GameRecommendation[] = [];

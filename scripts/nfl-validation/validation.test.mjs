@@ -16,6 +16,7 @@ import { assertApprovedReliabilitySources, isReviewedReliabilitySource, RELIABIL
 import { assertApprovedNFLRequestRecoverySources, isReviewedNFLRequestRecoverySource, NFL_REQUEST_RECOVERY_BASELINE, NFL_REQUEST_RECOVERY_SOURCE_APPROVED_HASHES, NFL_REQUEST_RECOVERY_VERSION } from './freeze.mjs';
 import { assertApprovedNFLRefreshBootstrapSources, isReviewedNFLRefreshBootstrapSource, NFL_REFRESH_BOOTSTRAP_BASELINE, NFL_REFRESH_BOOTSTRAP_SOURCE_APPROVED_HASHES, NFL_REFRESH_BOOTSTRAP_VERSION } from './freeze.mjs';
 import { readInheritedProtectionSource, reviewedExecutionParentSources, NFL_NBA_EXECUTION_HASHES, NFL_NBA_EXECUTION_BASELINE } from './freeze.mjs';
+import { reviewedEvidenceParentSources, NFL_NBA_EVIDENCE_HASHES, NFL_NBA_EVIDENCE_BASELINE } from './freeze.mjs';
 
 const readFileSync = (path, encoding) => readInheritedProtectionSource(path, readActualFileSync(path, encoding));
 
@@ -94,9 +95,24 @@ function fixture(update = {}) {
       adjudication: 'NORMAL', bookRuleSource: 'Synthetic rule', settlementSource: 'Synthetic settlement', earlyInjury: 'UNKNOWN' }, ...update };
 }
 describe('Validation infrastructure, synthetic fixtures are NOT model performance evidence', () => {
+  it('rejects any unreviewed NFL/NBA evidence child, changed archive or different parent', () => {
+    const archive = JSON.parse(readActualFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
+    const current = Object.fromEntries(Object.keys(NFL_NBA_EVIDENCE_HASHES).map(path => [path, readActualFileSync(resolve(ROOT, path), 'utf8')]));
+    const inherited = reviewedEvidenceParentSources(current, archive);
+    for (const [path, approval] of Object.entries(NFL_NBA_EVIDENCE_HASHES)) {
+      expect(digest(current[path])).toBe(approval.integrated);
+      if (approval.baseline === null) expect(Object.hasOwn(inherited, path)).toBe(false);
+      else expect(digest(inherited[path])).toBe(approval.baseline);
+      for (const mutation of ['', undefined, `${current[path]}\n`]) expect(() => reviewedEvidenceParentSources({ ...current, [path]: mutation }, archive)).toThrow(path);
+      expect(() => reviewedEvidenceParentSources(current, { ...archive, [path]: 'changed archive' })).toThrow(path);
+    }
+    expect(() => reviewedEvidenceParentSources(current, archive, 'HEAD')).toThrow('parent or version');
+    expect(() => reviewedEvidenceParentSources(current, archive, NFL_NBA_EVIDENCE_BASELINE, 'unreviewed')).toThrow('parent or version');
+  });
   it('requires the exact NFL/NBA execution child, immutable archive and full committed parent before inherited checks', () => {
     const archive = JSON.parse(readActualFileSync(resolve(ROOT, 'reports/nfl-validation/NFL_MODEL_V1_1_HARDENED/sources.json'), 'utf8'));
-    const current = Object.fromEntries(Object.keys(NFL_NBA_EXECUTION_HASHES).map(path => [path, readActualFileSync(resolve(ROOT, path), 'utf8')]));
+    const current = reviewedEvidenceParentSources(Object.fromEntries([...new Set([...Object.keys(NFL_NBA_EXECUTION_HASHES), ...Object.keys(NFL_NBA_EVIDENCE_HASHES)])]
+      .map(path => [path, readActualFileSync(resolve(ROOT, path), 'utf8')])), archive);
     const inherited = reviewedExecutionParentSources(current, archive);
     for (const [path, approval] of Object.entries(NFL_NBA_EXECUTION_HASHES)) {
       expect(digest(current[path])).toBe(approval.integrated);

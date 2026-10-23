@@ -2,9 +2,11 @@ import { espnSiteFetch } from './client';
 import type { NFLGame } from './types';
 import type { NFLAvailabilityDesignation, NFLInjurySnapshot } from './injuries';
 import { normalizedNFLInput } from './researchSnapshot';
+import { fetchWithReadRetry } from '../reliability/retry';
+import { loadOfficialNFLParticipation, type NFLOfficialParticipation } from './officialParticipation';
 
 export interface NFLParticipationEvidence {
-  source: 'TEAM_ROSTER' | 'DEPTH_CHART' | 'GAME_PREVIEW' | 'INJURY_REPORT' | 'GAME_INJURY_REPORT';
+  source: 'TEAM_ROSTER' | 'DEPTH_CHART' | 'GAME_PREVIEW' | 'INJURY_REPORT' | 'GAME_INJURY_REPORT' | 'GAME_ROSTER' | 'OFFICIAL_TEAM_REPORT';
   fetchedAt: string;
   observedAt: string | null;
   status: 'CURRENT' | 'STALE' | 'FAILED';
@@ -35,6 +37,8 @@ export interface NFLParticipationSnapshot {
   rosters: NFLRosterEvidence[];
   depthCharts: NFLDepthEvidence[];
   gameInjuries: Array<{ teamId: number; complete: boolean; reports: RawInjury[] }>;
+  gameRosters?: Array<{ teamId: number; complete: boolean; activePlayerIds: number[]; inactivePlayerIds: number[] }>;
+  officialParticipation?: NFLOfficialParticipation[];
   failures: string[];
 }
 export interface NFLParticipationVerdict {
@@ -75,7 +79,7 @@ export async function getNFLParticipationSnapshot(game: NFLGame, now = new Date(
 async function loadNFLParticipationSnapshot(game: NFLGame, now: Date, ttl: number): Promise<NFLParticipationSnapshot> {
   const failures: string[] = [];
   const teams = [game.homeTeam.id, game.awayTeam.id];
-  const [summary, rosters, depthCharts] = await Promise.all([
+  const [summary, rosters, depthCharts, gameRosters] = await Promise.all([
     espnSiteFetch<{ header?: { id?: string; competitions?: Array<{ date?: string; competitors?: Array<{ team?: { id?: string } }> }> }; injuries?: Array<{ team?: { id?: string }; injuries?: RawInjury[] }> }>('summary', { event: game.id }, 0).catch(() => { failures.push('game preview'); return null; }),
     Promise.all(teams.map(async (teamId) => {
       try { return parseNFLRosterEvidence(await espnSiteFetch(`teams/${teamId}/roster`, {}, 0), teamId); }
@@ -85,14 +89,38 @@ async function loadNFLParticipationSnapshot(game: NFLGame, now: Date, ttl: numbe
       try { return parseNFLDepthEvidence(await espnSiteFetch(`teams/${teamId}/depthcharts`, {}, 0), teamId); }
       catch { failures.push(`team ${teamId} depth chart`); return { teamId, timestamp: null, complete: false, athletes: [] }; }
     })),
+    Promise.all(teams.map(async (teamId) => {
+      try {
+        const response = await fetchWithReadRetry(`https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/events/${encodeURIComponent(game.id)}/competitions/${encodeURIComponent(game.id)}/competitors/${teamId}/roster`,
+          { headers: { accept: 'application/json' }, cache: 'no-store' });
+        if (!response.ok) throw new Error('Game roster unavailable.');
+        return parseNFLGameRoster(await response.json(), game.id, teamId);
+      } catch { return { teamId, complete: false, activePlayerIds: [], inactivePlayerIds: [] }; }
+    })),
   ]);
   const competition = summary?.header?.competitions?.[0];
+  const officialParticipation = (await Promise.all(rosters.map(roster => loadOfficialNFLParticipation(game, roster, now)))).flat();
   const teamIds = (competition?.competitors ?? []).map((entry) => Number(entry.team?.id)).filter(Number.isFinite);
   const gameVerified = summary?.header?.id === game.id && teams.every((id) => teamIds.includes(id))
     && competition?.date != null && Math.abs(Date.parse(competition.date) - Date.parse(game.gameTime)) <= 15 * 60000;
   return { gameId: game.id, kickoff: game.gameTime, fetchedAt: now.toISOString(), expiresAt: now.getTime() + ttl,
-    gameVerified, teamIds, rosters, depthCharts,
+    gameVerified, teamIds, rosters, depthCharts, gameRosters, officialParticipation,
     gameInjuries: (summary?.injuries ?? []).map((entry) => ({ teamId: Number(entry.team?.id), complete: Array.isArray(entry.injuries), reports: entry.injuries ?? [] })), failures: failures.sort() };
+}
+
+export function parseNFLGameRoster(raw: { competition?: { $ref?: string }; team?: { $ref?: string };
+  entries?: Array<{ playerId?: number; valid?: boolean; active?: boolean }> }, gameId: string, teamId: number) {
+  const matches = (reference: string | undefined, suffix: string) => {
+    try { const url = new URL(reference ?? ''); return url.hostname === 'sports.core.api.espn.com' && url.pathname.endsWith(suffix); }
+    catch { return false; }
+  };
+  const entries = raw.entries ?? [];
+  const complete = matches(raw.competition?.$ref, `/events/${gameId}/competitions/${gameId}`)
+    && matches(raw.team?.$ref, `/teams/${teamId}`) && entries.length > 0
+    && entries.every(entry => entry.valid === true && Number.isInteger(entry.playerId) && typeof entry.active === 'boolean')
+    && entries.some(entry => entry.active === true);
+  return { teamId, complete, activePlayerIds: complete ? entries.filter(entry => entry.active).map(entry => entry.playerId!) : [],
+    inactivePlayerIds: complete ? entries.filter(entry => !entry.active).map(entry => entry.playerId!) : [] };
 }
 
 function negative(status: string | null | undefined): NFLAvailabilityDesignation | null {
@@ -153,16 +181,30 @@ export function evaluateNFLParticipation(params: { playerId: number; teamId: num
   if (rosterRestriction) currentNegatives.push(rosterRestriction);
   const ordered: NFLAvailabilityDesignation[] = ['INACTIVE', 'OUT', 'DOUBTFUL', 'QUESTIONABLE'];
   const restriction = ordered.find((designation) => currentNegatives.includes(designation));
+  const official = snapshot.officialParticipation?.find(entry => entry.playerId === playerId && entry.teamId === teamId
+    && gameCurrent && current(entry.publishedAt, 12 * 3600000));
+  if (official) add('OFFICIAL_TEAM_REPORT', official.publishedAt, true, `${official.detail} Source: ${official.url}`);
+  const officialClearsQuestionable = official?.designation === 'CONFIRMED_AVAILABLE' && restriction === 'QUESTIONABLE'
+    && !unresolvedOldNegative && evidence.filter(entry => /designation/.test(entry.detail) && entry.source !== 'TEAM_ROSTER')
+      .every(entry => entry.observedAt != null && Date.parse(entry.observedAt) <= Date.parse(official.publishedAt));
   const restrictionsChecked = injurySourceCurrent || (snapshotCurrent && gameReports?.complete === true);
+  const gameRoster = snapshot.gameRosters?.find(entry => entry.teamId === teamId && entry.complete);
+  const gameActive = gameCurrent && gameRoster?.activePlayerIds.includes(playerId) === true;
+  const gameInactive = gameCurrent && gameRoster?.inactivePlayerIds.includes(playerId) === true;
+  add('GAME_ROSTER', snapshot.fetchedAt, gameCurrent && gameRoster != null,
+    gameActive ? 'Explicit active entry on the exact-game roster.' : gameInactive ? 'Explicit inactive entry on the exact-game roster.' : 'No published exact-game active roster evidence.');
   const cleanEmbedded = Array.isArray(athlete?.injuries) && athlete.injuries.length === 0 && Array.isArray(depthEntry?.injuries) && depthEntry.injuries.length === 0;
   const rosterActive = /^(active|available)$/i.test(athlete?.status?.name ?? athlete?.status?.type ?? '');
   let designation: NFLAvailabilityDesignation;
-  if (restriction) designation = restriction;
+  if (gameInactive || official?.designation === 'INACTIVE') designation = 'INACTIVE';
+  else if (restriction && !officialClearsQuestionable) designation = restriction;
+  else if (official?.designation === 'CONFIRMED_AVAILABLE' && athlete && restrictionsChecked && !unresolvedOldNegative) designation = 'CONFIRMED_AVAILABLE';
+  else if (gameActive && rosterCurrent && athlete && rosterActive && restrictionsChecked && !unresolvedOldNegative) designation = 'CONFIRMED_AVAILABLE';
   else if (!snapshotCurrent || snapshot.failures.includes('game preview') || (!restrictionsChecked && snapshot.failures.length > 0)) designation = 'DATA_FAILURE';
   else if (gameCurrent && rosterCurrent && depthCurrent && athlete && depthEntry && rosterActive && cleanEmbedded && restrictionsChecked && !unresolvedOldNegative && stage !== 'GAME_DAY') designation = 'EXPECTED_AVAILABLE';
   else designation = 'UNKNOWN';
   if (designation === 'EXPECTED_AVAILABLE') evidence.push({ source: 'TEAM_ROSTER', fetchedAt: snapshot.fetchedAt, observedAt: row!.timestamp, status: 'CURRENT', detail: 'Expected participation based on current roster, depth chart, correct game, and no current restriction; not officially confirmed active.' });
-  return { designation, confidence: restriction ? 'HIGH' : designation === 'EXPECTED_AVAILABLE' ? 'MEDIUM' : 'NONE', stage, gameId: snapshot.gameId,
+  return { designation, confidence: restriction || designation === 'CONFIRMED_AVAILABLE' || designation === 'INACTIVE' ? 'HIGH' : designation === 'EXPECTED_AVAILABLE' ? 'MEDIUM' : 'NONE', stage, gameId: snapshot.gameId,
     checkedAt: now.toISOString(), expiresAt: Math.min(snapshot.expiresAt, now.getTime() + ttl,
       designation === 'EXPECTED_AVAILABLE' ? Date.parse(snapshot.kickoff) - 90 * 60000 : Infinity),
     depthOrder: depthEntry?.order ?? null, evidence, missingEvidence };

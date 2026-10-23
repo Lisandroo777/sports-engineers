@@ -7,6 +7,7 @@ import { INTELLIGENCE_SOURCES } from './sources';
 import { createReviewedClaim, type ReviewedClaimInput } from './claims';
 import type { AccessGrant, RefreshRequest } from './refresh';
 import type { IdentityEntry, TargetEvent, IntelligenceSource } from './types';
+import { publishNBAIntelligence } from './published';
 
 export async function runManualRefresh(configPath: string): Promise<unknown> {
   const text = await readFile(configPath, 'utf8');
@@ -52,5 +53,6 @@ export async function runManualRefresh(configPath: string): Promise<unknown> {
   const snapshot = buildNBAIntelligence({ target: config.target, asOf, documents: await store.listDocuments(), claims: await store.listClaims(), identities: config.identities,
     sources, previous: await store.latestSnapshot(config.target.gameId, asOf), missing: result.missing, refresh: result });
   await store.putSnapshot(snapshot);
+  await publishNBAIntelligence(snapshot);
   return { refresh: result, snapshot };
 }
