@@ -26,7 +26,7 @@ export function assessGameMarket(model: GameProjection, quote: GameQuote | null,
     || quote.market !== 'MONEYLINE' && (quote.line == null || !Number.isFinite(quote.line) || !Number.isInteger(quote.line * 2))
     || quote.market === 'TEAM_TOTAL' && !['HOME', 'AWAY'].includes(quote.team ?? '')) return { ...empty, status: 'UNSUPPORTED_QUOTE', reason: 'Unsupported market, period, side, line or price' };
   if (binding.sourceGameId !== model.gameId || binding.eventId !== quote.eventId || binding.homeTeam !== quote.homeTeam
-    || binding.awayTeam !== quote.awayTeam || Date.parse(quote.commenceTime) !== Date.parse(model.startsAt)) return { ...empty, status: 'IDENTITY_MISMATCH', reason: 'Game, event, side identity or scheduled tipoff mismatch' };
+    || binding.awayTeam !== quote.awayTeam || !(Math.abs(Date.parse(quote.commenceTime) - Date.parse(model.startsAt)) <= 15 * 60000)) return { ...empty, status: 'IDENTITY_MISMATCH', reason: 'Game, event, side identity or scheduled tipoff mismatch' };
   const predictionTime = Date.parse(model.predictionAt);
   const updateTime = Date.parse(quote.updatedAt);
   const observedTime = Date.parse(quote.observedAt);

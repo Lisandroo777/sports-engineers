@@ -218,7 +218,8 @@ export async function runNBAFinderDeepSearch(
     .map((game) => ({ game, event: findNBAOddsEvent(
       game.homeTeam.displayName.replace(/^LA /, 'Los Angeles '),
       game.awayTeam.displayName.replace(/^LA /, 'Los Angeles '),
-      oddsEvents.filter(event => Date.parse(event.commenceTime) === Date.parse(game.gameTime)),
+      // Sportsbooks list actual tipoff, typically minutes after the scheduled start.
+      oddsEvents.filter(event => Math.abs(Date.parse(event.commenceTime) - Date.parse(game.gameTime)) <= 15 * 60000),
     ) }))
     .filter((entry): entry is { game: (typeof bettable)[number]; event: NonNullable<ReturnType<typeof findNBAOddsEvent>> } => entry.event != null);
   const games = options.validationMaxGames != null && options.validationMaxGames > 0
@@ -354,7 +355,7 @@ export async function runNBAFinderDeepSearch(
     let props;
     try {
       const sportKey = eventSportKeys.get(event.id) ?? NBA_ODDS_SPORT_KEY;
-      props = options.gameLines && sportKey === NBA_ODDS_SPORT_KEY ? await loadCachedNBAPlayerProps(event.id, game.gameTime)
+      props = options.gameLines && sportKey === NBA_ODDS_SPORT_KEY ? await loadCachedNBAPlayerProps(event.id, event.commenceTime)
         : options.gameLines ? [] : await getDiscoveredEventPlayerProps(event.id, undefined, sportKey, NBA_FALLBACK_MARKETS);
       if (getLastOddsCreditInfo()?.source === 'network') sawNetworkCall = true;
     } catch (error) {

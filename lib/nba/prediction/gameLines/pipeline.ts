@@ -44,7 +44,7 @@ export async function researchNBAGameLines(games: NBAGame[], events: OddsEvent[]
       if (archiveIssue) availability.blockers.push(archiveIssue);
       const model = projectNBAGame({ snapshot, predictionAt, intelligence });
       const event = findNBAOddsEvent(home.name, away.name,
-        events.filter(entry => Date.parse(entry.commenceTime) === Date.parse(game.gameTime)), game.gameTime.slice(0, 10));
+        events.filter(entry => Math.abs(Date.parse(entry.commenceTime) - Date.parse(game.gameTime)) <= 15 * 60000));
       const quotes = new Map<string, import('./types').GameQuote>();
       const researchQuotes = new Map<string, import('./types').GameQuote>();
       if (event) {
@@ -55,7 +55,7 @@ export async function researchNBAGameLines(games: NBAGame[], events: OddsEvent[]
             const updated = Date.parse(quote.updatedAt);
             const observed = Date.parse(quote.observedAt);
             if (quote.eventId !== event.id || quote.homeTeam !== home.name || quote.awayTeam !== away.name
-              || Date.parse(quote.commenceTime) !== Date.parse(game.gameTime) || !Number.isFinite(updated) || !Number.isFinite(observed)
+              || Date.parse(quote.commenceTime) !== Date.parse(event.commenceTime) || !Number.isFinite(updated) || !Number.isFinite(observed)
               || updated > observed || observed > Date.parse(predictionAt) || Date.now() - updated > 3600000) continue;
             quotes.set(JSON.stringify(quote), quote);
             researchQuotes.set(JSON.stringify(quote), quote);

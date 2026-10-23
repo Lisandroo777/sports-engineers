@@ -41,6 +41,18 @@ afterEach(() => {
 });
 
 describe('NBA game-line pipeline with injected research and quote loaders', () => {
+  it('binds a sportsbook event listed at actual tipoff minutes after the schedule, but not a different start', async () => {
+    const shifted = '2026-01-21T23:10:00Z';
+    const near = dependencies([quote({ commenceTime: shifted })]);
+    const bound = await researchNBAGameLines([game()], [event({ commenceTime: shifted })], near);
+    expect(bound.modeledGames[0].status).toBe('QUOTE_AVAILABLE');
+    expect(near.loadQuotes).toHaveBeenCalled();
+    const far = dependencies([quote({ commenceTime: '2026-01-21T23:30:00Z' })]);
+    const unbound = await researchNBAGameLines([game()], [event({ commenceTime: '2026-01-21T23:30:00Z' })], far);
+    expect(unbound.modeledGames[0].status).toBe('MODELED_NOT_BETTABLE');
+    expect(far.loadQuotes).not.toHaveBeenCalled();
+  });
+
   it('returns modeled, not bettable research without a matching odds event or invented price', async () => {
     const loaders = dependencies();
 
