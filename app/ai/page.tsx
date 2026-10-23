@@ -200,6 +200,7 @@ interface AgentChatResponse {
   toolTrace?: AgentToolTrace[];
   results?: (AgentResultRecord | GameRecommendation)[];
   modeledGames?: ModeledGameResearch[];
+  nbaV2Diagnostics?: import('../../lib/nba/prediction/v2/diagnostics').NBAV2Diagnostic[];
   closestMisses?: AgentResultRecord[];
   meta?: Record<string, unknown> | null;
   /** Opaque ID for the server-side research session — never the full (possibly hundreds-of-candidates) object. */
@@ -1145,6 +1146,7 @@ function AiFinderPageContent() {
   const [gameResults, setGameResults] = useState<GameRecommendation[]>([]);
   const [modeledGames, setModeledGames] = useState<ModeledGameResearch[]>([]);
   const [nbaPresentation, setNbaPresentation] = useState<NBAClientPresentation | null>(null);
+  const [nbaV2Diagnostics, setNbaV2Diagnostics] = useState<NonNullable<AgentChatResponse['nbaV2Diagnostics']>>([]);
   const [mlbGameMarkets, setMlbGameMarkets] = useState<MLBGameMarketResearch | null>(null);
   const [ledgerReceipt, setLedgerReceipt] = useState<string | null>(null);
   const [ledgerCaptureIssue, setLedgerCaptureIssue] = useState<string | null>(null);
@@ -1445,6 +1447,7 @@ function AiFinderPageContent() {
       const recommendedIds = new Set(payload.nbaPresentation.recommendedCandidateIds ?? []);
       lastVerifiedResearch.current = captureResearchEvidence(responseScope, (payload.results ?? []).filter(record => 'candidateId' in record && recommendedIds.has(record.candidateId)));
       setNbaPresentation(payload.nbaPresentation);
+      setNbaV2Diagnostics(payload.nbaV2Diagnostics ?? []);
       setResults([]);
       setGameResults([]);
       setModeledGames([]);
@@ -2039,6 +2042,16 @@ function AiFinderPageContent() {
                   {mlbGameMarkets && <MLBMarketResearch research={mlbGameMarkets} coverage={agentMeta?.mlbGameCoverage} meta={agentMeta} />}
                   {!mlbGameMarkets && agentMeta?.mlbGameCoverage != null && <MLBGameCoverage coverage={agentMeta.mlbGameCoverage} />}
                   {finderSport === 'NBA' && nbaPresentation && <NBAPresentationCards presentation={nbaPresentation} />}
+                  {finderSport === 'NBA' && nbaPresentation && nbaV2Diagnostics.some(row => row.status === 'EVALUATED') && <section className="space-y-2 border-t border-amber-400/20 pt-4">
+                    <h2 className="text-xs font-bold uppercase text-amber-300">Early-season research · Unvalidated V2 estimates · Not picks</h2>
+                    <p className="text-[11px] text-slate-400">{nbaV2Diagnostics[0].label} Hypothetical EV uses the cached sportsbook price; V2 EV has not been validated against historical prices.</p>
+                    <div className="space-y-1">{nbaV2Diagnostics.filter(row => row.status === 'EVALUATED')
+                      .sort((first, second) => (second.hypotheticalEvPercent ?? -Infinity) - (first.hypotheticalEvPercent ?? -Infinity)).map(row => (
+                      <div key={row.candidateId} className="grid grid-cols-[1fr_auto] gap-2 rounded-lg bg-white/[0.03] px-3 py-2 text-xs text-slate-300">
+                        <span>{row.player} · {row.market} {row.side} {row.line} ({row.odds != null && row.odds > 0 ? `+${row.odds}` : row.odds}{row.book ? ` ${row.book}` : ''})</span>
+                        <span className="text-slate-400">V2 {((row.probability ?? 0) * 100).toFixed(1)}% · hyp. EV {row.hypotheticalEvPercent?.toFixed(1)}% · {row.priorSeasonGames} prior / {row.currentSeasonGames} current games</span>
+                      </div>))}</div>
+                  </section>}
                   {modeledGames.length > 0 && <section className="space-y-3 border-t border-white/10 pt-4">
                     <h2 className="text-xs font-bold uppercase text-slate-400">Team research · Not a recommendation</h2>
                     <div className="grid grid-cols-1 gap-x-6 xl:grid-cols-2">{modeledGames.filter(record => !gameResults.some(game => game.gameId === record.gameId)).map(record => <NBAModeledGameResearch key={record.gameId} record={record} />)}</div>

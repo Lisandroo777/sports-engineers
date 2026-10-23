@@ -21,6 +21,8 @@ vi.mock('../../../ai/agent/sessionStore', () => ({
   deleteResearchSession: vi.fn(async (id: string) => { sessions.delete(id); }),
 }));
 vi.mock('../../../finder/nbaEngine', () => ({ runNBAFinderDeepSearch: vi.fn() }));
+vi.mock('../v2/diagnostics', () => ({ buildNBAV2Diagnostics: vi.fn(async () => []) }));
+vi.mock('../../schedule', () => ({ getNBASchedule: vi.fn(async () => []) }));
 
 const date = '2026-01-21';
 let scenario: AvailabilityScenario;

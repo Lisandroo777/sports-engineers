@@ -27,6 +27,7 @@ import { buildResearchSessionFromCandidates } from './session';
 import { classifyGameRecommendation, isGameRecommendation } from '../../nba/prediction/gameLines/recommendations';
 import { selectNBAMixedRecommendations } from '../../nba/prediction/gameLines/selection';
 import { NBA_V2_VALIDATION } from '../../nba/prediction/v2/validation';
+import { buildNBAV2Diagnostics } from '../../nba/prediction/v2/diagnostics';
 import { detectSport } from '../sportResearchAdapters';
 import { buildNBAResearchPresentation, unclassifiedNBAPropResearch } from '../../nba/prediction/gameLines/presentationBridge';
 import { loadCachedNBAEventResearch } from '../../nba/prediction/gameLines/cachedEventResearch';
@@ -190,6 +191,7 @@ export interface AgentTurnResult {
   mlbGameMarkets?: Awaited<ReturnType<typeof researchMLBGameMarkets>>;
   nbaPresentation?: ReturnType<typeof buildNBAResearchPresentation>;
   modeledGames?: import('../../nba/prediction/gameLines/recommendations').ModeledGameResearch[];
+  nbaV2Diagnostics?: import('../../nba/prediction/v2/diagnostics').NBAV2Diagnostic[];
   reply: string;
   toolTrace: AgentToolTrace[];
   /** Ranked rows the UI can render as cards, taken verbatim from the last successful ranking. */
@@ -482,6 +484,13 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
       && nbaSession.candidates.every(candidate => (candidate.sampleSize ?? 0) < 8);
     const earlySeasonNote = earlySeasonBlocked ? ` ${[`NBA V1 requires 8 current-season games per player market; all ${nbaSession.candidates.length} evaluated props have fewer.`,
       ...NBA_V2_VALIDATION.reasons].join(' ')}` : '';
+    const v1Unsampled = nbaSession.candidates.filter(candidate => (candidate.sampleSize ?? 0) < 8 && candidate.line != null);
+    const tipoffs = v1Unsampled.length ? new Map((await Promise.race([getNBASchedule(requestedDate).catch(() => []),
+      new Promise<[]>(resolve => setTimeout(() => resolve([]), 3000))])).map(game => [game.id, game.gameTime])) : new Map<string, string>();
+    const nbaV2Diagnostics = v1Unsampled.length ? await buildNBAV2Diagnostics(v1Unsampled.map(candidate => ({ candidateId: candidate.candidateId,
+      playerId: candidate.playerId ?? null, player: candidate.player, marketKey: String(candidate.marketKey), line: candidate.line!,
+      direction: candidate.direction, odds: candidate.odds ?? null, book: candidate.book ?? null, tipoff: tipoffs.get(candidate.gameId ?? '') ?? null })))
+      .catch(() => []) : [];
     const candidatesEvaluated = nbaSession.candidates.length + (nbaSession.gameCandidates?.length ?? 0);
     const verifiedQuotesAvailable = nbaSession.modeledGames?.some(game => game.status === 'QUOTE_AVAILABLE' && (game.quotes?.length ?? 0) > 0) === true;
     const marketDataAvailable = candidatesEvaluated > 0 || verifiedQuotesAvailable;
@@ -515,6 +524,7 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
         : `No NBA selections passed the existing publication requirements.${verifiedQuotesAvailable ? ` Verified sportsbook quotes are available. ${(nbaSession.modeledGames ?? []).filter(game => game.status === 'QUOTE_AVAILABLE').map(game => `${game.gameId}: ${game.reason}`).join(' ')}` : ' Modeled team research is shown separately and is not a betting recommendation.'}`) + earlySeasonNote + partialNote,
       toolTrace: [], results, closestMisses: [], researchSessionId, modeledGames: nbaSession.modeledGames,
       nbaPresentation: buildNBAResearchPresentation(nbaSession, query, results.map(record => record.candidateId)),
+      nbaV2Diagnostics,
       meta: { sport: 'nba', date: requestedDate, modelVersion: 'NBA_GAME_LINES_V1', validationStatus: 'UNVALIDATED',
         ...nbaSession.toolMeta,
         gamesFound: Math.max(nbaSession.toolMeta.gamesFound ?? 0, (nbaSession.modeledGames ?? []).filter(game => (game.quotes?.length ?? 0) > 0).length),

@@ -38,7 +38,7 @@ const hash = (content) => createHash('sha256').update(content).digest('hex');
 export const NFL_NBA_EVIDENCE_BASELINE = '0aa685fcae371a827b1287ea8e1be42d40f03e2c';
 export const NFL_NBA_EVIDENCE_HASHES = Object.freeze(Object.fromEntries(Object.entries({
   'lib/finder/nbaEngine.ts': { baseline: '49b8982cc64445b63308a8ed8580a0cd00ce06e4fd76583fae4fa5b3720cba44', integrated: '3c12bb644a96e9a5d535af8cd72028bf774cf7080d784f3b4768c906cda607fa', archived: '4419c53835d6690cb7940220f8b152df28d6cc904089bdb0a36fe360f71fabf5' },
-  'lib/ai/agent/runner.ts': { baseline: 'd346562ead55c27013ed3e97473775871a12f25abbb2c0e83e8c745654627e19', integrated: 'b52baa1c04bd7045877dc4894c8019351dd5af54c0e04aba8e44fb90a8f536e5', archived: '4eb6d4b010496e43111d7de1727b37fd30fd1f9ca76ab4764623e6ebea0514f4' },
+  'lib/ai/agent/runner.ts': { baseline: 'd346562ead55c27013ed3e97473775871a12f25abbb2c0e83e8c745654627e19', integrated: '050700d4f0c1f8eba3a0d41a78fddcf4322ac6dc8ad427a7d491c7fcc6a86905', archived: '4eb6d4b010496e43111d7de1727b37fd30fd1f9ca76ab4764623e6ebea0514f4' },
   'lib/nfl/participation.ts': { baseline: '94cfc8a60b17b0f99a76e981641d32cbc4e07be8350d46e78fe74765625b29c8', integrated: '85f0c79ff9853f991ebb180970399b5375a4feafafd8545832b5225047837cbd', archived: '94cfc8a60b17b0f99a76e981641d32cbc4e07be8350d46e78fe74765625b29c8' },
   'lib/nfl/officialParticipation.ts': { baseline: null, integrated: 'b5813154cf2df61627f5b3c48828cf7d9321418ae3e5a6129501810633fb200b', archived: null },
   'lib/nba/prediction/gameLines/intelligenceArchive.ts': { baseline: 'aea9c142f636b7cfc9f536f1cc7070b93891a58d0f9c8d2a3485ef3848a6150d', integrated: '1da29c8bea6c89e7c743843257310dc0b19292f422a8eac0a8f9dd5cb24c64d2', archived: null },
