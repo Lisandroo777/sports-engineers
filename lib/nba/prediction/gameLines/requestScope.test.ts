@@ -44,6 +44,13 @@ describe('matchesNBATeams', () => {
     expect(matchesNBATeams(teams, ['Los Angeles Lakers', 'Golden State Warriors'])).toBe(false);
   });
 
+  it('matches each requested matchup when several games are named', () => {
+    const games = ['New York Knicks', 'Boston Celtics', 'Houston Rockets', 'San Antonio Spurs'];
+    expect(matchesNBATeams(games, ['Boston Celtics', 'New York Knicks'])).toBe(true);
+    expect(matchesNBATeams(games, ['San Antonio Spurs', 'Houston Rockets'])).toBe(true);
+    expect(matchesNBATeams(games, ['Boston Celtics', 'Miami Heat'])).toBe(false);
+  });
+
   it('treats an empty request as unrestricted, including an empty slate', () => {
     expect(matchesNBATeams([], ['Los Angeles Lakers', 'Golden State Warriors'])).toBe(true);
     expect(matchesNBATeams([], [])).toBe(true);

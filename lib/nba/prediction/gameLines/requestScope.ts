@@ -12,5 +12,7 @@ export function requestedNBATeams(query: string): string[] {
 
 export function matchesNBATeams(teams: string[], names: Array<string | null | undefined>): boolean {
   const normalized = names.filter((name): name is string => Boolean(name)).map(name => name.toLowerCase());
-  return teams.every(team => normalized.includes(team.toLowerCase()));
+  const requested = teams.map(team => team.toLowerCase());
+  return requested.every(team => normalized.includes(team))
+    || (requested.length > 2 && normalized.length === 2 && normalized.every(name => requested.includes(name)));
 }
