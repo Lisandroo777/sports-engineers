@@ -1,0 +1,55 @@
+name: NBA research tracking (research only)
+
+on:
+  schedule:
+    # Every 30 minutes across typical NBA tipoff hours (UTC); capture runs only for games 60-120 minutes out.
+    - cron: '*/30 15-23 * * *'
+    - cron: '*/30 0-5 * * *'
+    # Settlement after games finish.
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: capture, settle or status
+        default: status
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nba-research-tracking
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      TRACKING_ENABLED: ${{ vars.NBA_TRACKING_ENABLED }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Select mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT";
+          elif [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then echo "mode=settle" >> "$GITHUB_OUTPUT";
+          else echo "mode=capture" >> "$GITHUB_OUTPUT"; fi
+      - name: Require persistent storage
+        run: test -n "$UPSTASH_REDIS_REST_URL" && test -n "$UPSTASH_REDIS_REST_TOKEN"
+      - name: Capture (paid only when NBA_TRACKING_ENABLED is true; 150 credits/day cap)
+        if: steps.mode.outputs.mode == 'capture'
+        run: |
+          if [ "$TRACKING_ENABLED" = "true" ]; then node scripts/nba-v3/track.mjs capture --execute --approved-credits 150;
+          else node scripts/nba-v3/track.mjs capture; fi
+      - name: Settle
+        if: steps.mode.outputs.mode == 'settle'
+        run: node scripts/nba-v3/track.mjs settle
+      - name: Status
+        if: steps.mode.outputs.mode == 'status'
+        run: node scripts/nba-v3/track.mjs status
