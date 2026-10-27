@@ -20,6 +20,8 @@ import { getNFLWeatherContext } from '../../nfl/weather';
 import { searchNBAPlayers } from '../../nba/players';
 import { getNBAPlayerGameLogs } from '../../nba/stats';
 import { classifyNBAMarketIntent, unsupportedNBAGameLineNotice } from '../../nba/prediction/marketIntent';
+import { DEFAULT_NBA_RESEARCH_FILTER } from '../../nba/researchMarkets';
+import { NBA_VERIFIED_RESEARCH_MARKETS } from '../../nba/prediction/researchReceipt';
 import { matchesNBAResearchFilter, type NBAResearchFilter } from '../../nba/researchMarkets';
 import { rankNBARecommendations } from '../../nba/prediction/ranking';
 import { NFL_QB_MARKETS, NFL_RB_MARKETS, NFL_WR_TE_MARKETS, NFL_KICKER_MARKETS, NFL_DEFENSE_MARKETS, NFL_ELITE_MARKETS, type NFLAnalyzableMarketKey } from '../../nfl/oddsTypes';
@@ -262,7 +264,9 @@ async function getSlate(context: AgentContext, args: { sport?: string; date?: st
 
   const nbaMarkets = sport === 'nba' ? classifyNBAMarketIntent(context.pendingQueryIntent) : null;
   if (nbaMarkets?.gameLineMarkets.length) {
-    const summary = await runNBAFinderDeepSearch(resolved.date, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly });
+    const summary = await runNBAFinderDeepSearch(resolved.date, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly,
+      researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS.filter(id => DEFAULT_NBA_RESEARCH_FILTER.marketIds == null
+        || DEFAULT_NBA_RESEARCH_FILTER.marketIds.includes(id)) });
     context.researchSession = buildResearchSessionFromCandidates({ sport: 'nba', date: resolved.date, queryIntent: context.pendingQueryIntent,
       candidates: summary.nbaCandidates.filter(candidate => candidate.playerMatch === 'MATCHED' && candidate.eliteAnalysis != null).map(nbaFinderCandidateToGeneric),
       toolMeta: { gamesFound: summary.gamesAnalyzed, gamesScheduled: summary.gamesScheduled, propsFound: summary.propsAnalyzed,

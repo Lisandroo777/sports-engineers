@@ -245,9 +245,10 @@ describe('NBA matchup scope through real POST and runner', () => {
     const result = await chat(targetQuery);
     expect(getNBASchedule).toHaveBeenCalledExactlyOnceWith(date);
     expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith(date, {
-      gameLines: true, gameLinesOnly: true, validationGameIds: ['target'],
+      gameLines: true, gameLinesOnly: true, researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS, validationGameIds: ['target'],
     });
-    expect(loadCachedNBAEventResearch).toHaveBeenCalledExactlyOnceWith(date);
+    expect(loadCachedNBAEventResearch).toHaveBeenCalledExactlyOnceWith(date, undefined,
+      normalizeNBAResearchFilter(undefined));
     expectScoped(result, 0);
   });
 
@@ -287,7 +288,7 @@ describe('NBA matchup scope through real POST and runner', () => {
     const result = await chat(absentQuery);
     expect(getNBASchedule).toHaveBeenCalledExactlyOnceWith(date);
     expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith(date, {
-      gameLines: true, gameLinesOnly: true, validationGameIds: [],
+      gameLines: true, gameLinesOnly: true, researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS, validationGameIds: [],
     });
     expectAbsent(result);
   });

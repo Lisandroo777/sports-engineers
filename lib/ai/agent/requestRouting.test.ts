@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { crossSportScope, runAgentTurn } from './runner';
 import { executeTool } from './tools';
 import { runNBAFinderDeepSearch } from '../../finder/nbaEngine';
+import { NBA_VERIFIED_RESEARCH_MARKETS } from '../../nba/prediction/researchReceipt';
 
 vi.mock('./tools', async original => ({
   ...await original<typeof import('./tools')>(),
@@ -31,7 +32,7 @@ describe('research routing before provider access', () => {
     const result = await runAgentTurn([{ role: 'user', content: query }], null, null, { sport: 'nfl', date: '2026-10-14' });
     expect(executeTool).toHaveBeenCalledWith('get_sportsbook_candidates', { sport: 'mlb', date: '2026-10-14' }, expect.anything());
     expect(executeTool).toHaveBeenCalledWith('get_sportsbook_candidates', { sport: 'nfl', date: '2026-10-14' }, expect.anything());
-    expect(runNBAFinderDeepSearch).toHaveBeenCalledWith('2026-10-14', expect.objectContaining({ gameLines: true }));
+    expect(runNBAFinderDeepSearch).toHaveBeenCalledWith('2026-10-14', expect.objectContaining({ gameLines: true, researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS }));
     expect(result.meta?.sport).toBe('all');
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -45,7 +46,10 @@ describe('research routing before provider access', () => {
 
   it('routes a whole NBA request only to the NBA engine without game restrictions', async () => {
     await runAgentTurn([{ role: 'user', content: 'Find the best NBA picks on 2026-10-15' }]);
-    expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith('2026-10-15', expect.not.objectContaining({ validationGameIds: expect.anything() }));
+    expect(runNBAFinderDeepSearch).toHaveBeenCalledTimes(1);
+    expect(runNBAFinderDeepSearch).toHaveBeenCalledWith('2026-10-15', expect.objectContaining({
+      gameLines: true, gameLinesOnly: false, researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS }));
+    expect(vi.mocked(runNBAFinderDeepSearch).mock.calls[0][1]).not.toHaveProperty('validationGameIds');
     expect(executeTool).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });

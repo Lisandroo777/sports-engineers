@@ -9,6 +9,7 @@ import { availabilityDependencies, availabilityEvent, availabilityFixture, avail
 import { quote } from './fixtures';
 import { researchNBAGameLines } from './pipeline';
 import type { NBARecommendation } from './recommendations';
+import { NBA_VERIFIED_RESEARCH_MARKETS } from '../researchReceipt';
 
 const sessions = vi.hoisted(() => new Map<string, ResearchSession>());
 vi.mock('../../../ai/agent/sessionStore', () => ({
@@ -115,7 +116,7 @@ afterEach(() => {
 describe('NBA presentation through actual POST and real runner, backend only', () => {
   it('serializes fresh EDGE game cards with exact source odds, probability and EV', async () => {
     const result = await chat('Give me NBA moneylines');
-    expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith(date, { gameLines: true, gameLinesOnly: true });
+      expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith(date, { gameLines: true, gameLinesOnly: true, researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS });
     expect(getResearchSession).toHaveBeenCalledExactlyOnceWith(null);
     expect(saveResearchSession).toHaveBeenCalledTimes(1);
     expect(result.results).toHaveLength(1);
@@ -154,7 +155,7 @@ describe('NBA presentation through actual POST and real runner, backend only', (
   it('publishes both subject kinds while keeping raw props research-only on a fresh mixed search', async () => {
     rawProps = [rawProp()];
     const result = await chat('Give me NBA props and moneylines');
-    expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith(date, { gameLines: true, gameLinesOnly: false });
+      expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith(date, { gameLines: true, gameLinesOnly: false, researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS });
     expect(result.nbaPresentation!.picks).toHaveLength(2);
     expect(new Set(result.nbaPresentation!.picks.map(pick => pick.subject.kind))).toEqual(new Set(['GAME_LINE', 'PLAYER_PROP']));
     expect(result.nbaPresentation!.researchedCandidates[0]).toMatchObject({ candidateId: 'raw-prop',
@@ -205,7 +206,7 @@ describe('NBA presentation through actual POST and real runner, backend only', (
     vi.mocked(runNBAFinderDeepSearch).mockClear();
     missingQuotes = true;
     const result = await chat('Give me NBA moneylines today', first.researchSessionId, '2026-01-20');
-    expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith(date, { gameLines: true, gameLinesOnly: true });
+      expect(runNBAFinderDeepSearch).toHaveBeenCalledExactlyOnceWith(date, { gameLines: true, gameLinesOnly: true, researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS });
     expect(result.meta?.date).toBe(date);
     expect(result.researchSessionId).not.toBe(first.researchSessionId);
     expect(result.results).toEqual([]);

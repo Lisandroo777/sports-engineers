@@ -6,7 +6,7 @@ import { getNBAPlayer, searchNBAPlayers } from '../../players';
 import { getNBASchedule } from '../../schedule';
 import { getNBAPlayerGameLogs } from '../../stats';
 import { getNBATeamStats } from '../../teamStats';
-import { getAuthorizedNBAActivationOdds, getDiscoveredEventPlayerProps, getOddsEventsForSport, isPaidRefreshAllowed } from '../../../odds/client';
+import { getAuthorizedNBAActivationOdds, getDiscoveredEventPlayerProps, getOddsEventsForSport, isPaidRefreshAllowed, withAutomaticOddsRefresh } from '../../../odds/client';
 import type { NormalizedProp } from '../../../odds/types';
 import { adaptNBAAgent2Context, NBA_AGENT2_ADAPTER_VERSION } from '../contextAdapter';
 import { availabilityEvent, availabilityFixture, availabilityGame, availabilityTime } from './availability.fixtures';
@@ -33,6 +33,7 @@ vi.mock('../../../odds/client', async importOriginal => ({
   isPaidRefreshAllowed: vi.fn(() => false),
 }));
 vi.mock('./intelligenceArchive', () => ({ loadNBAGameIntelligence: vi.fn() }));
+vi.mock('../researchAcquisition', () => ({ acquireNBAResearchReceipt: vi.fn() }));
 
 let fixture: ReturnType<typeof availabilityFixture>;
 let blockedFetch: ReturnType<typeof vi.fn>;
@@ -105,14 +106,35 @@ describe('real NBA prop Finder reviewed intelligence archive integration', () =>
   });
   it('loads missing regular-season all-market quotes cache-first using the requested slate', async () => {
     vi.stubEnv('ODDS_AUTO_REFRESH', 'true');
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', 'true');
     vi.mocked(isPaidRefreshAllowed).mockReturnValue(true);
     vi.mocked(loadNBAGameIntelligence).mockResolvedValue(null);
     const game = availabilityGame();
     vi.mocked(getNBASchedule).mockResolvedValue([{ ...game, phase: 'REGULAR' }]);
+    const event = { ...availabilityEvent(), id: '0123456789abcdef0123456789abcdef' };
+    vi.mocked(getOddsEventsForSport).mockResolvedValue([event]);
     vi.stubGlobal('fetch', vi.fn(async () => Response.json([], { headers: { 'x-requests-remaining': '20000' } })));
-    await runNBAFinderDeepSearch('2026-01-21', { gameLines: true });
+    const { acquireNBAResearchReceipt } = await import('../researchAcquisition');
+    await withAutomaticOddsRefresh(() => runNBAFinderDeepSearch('2026-01-21', { gameLines: true }), 'nba');
     expect(getNBASchedule).toHaveBeenCalledWith('2026-01-21');
-    expect(getAuthorizedNBAActivationOdds).toHaveBeenCalledWith(availabilityEvent());
+    const { NBA_VERIFIED_RESEARCH_MARKETS } = await import('../researchReceipt');
+    expect(acquireNBAResearchReceipt).toHaveBeenCalledWith(event, NBA_VERIFIED_RESEARCH_MARKETS);
+    expect(getAuthorizedNBAActivationOdds).not.toHaveBeenCalled();
+  });
+  it('does not start NBA odds acquisition when generic flags are enabled but the NBA opt-in is absent', async () => {
+    vi.stubEnv('ODDS_AUTO_REFRESH', 'true');
+    vi.stubEnv('ODDS_ALLOW_PAID_REFRESH', 'true');
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', '');
+    vi.mocked(loadNBAGameIntelligence).mockResolvedValue(null);
+    const game = availabilityGame();
+    vi.mocked(getNBASchedule).mockResolvedValue([{ ...game, phase: 'REGULAR' }]);
+    vi.mocked(getOddsEventsForSport).mockResolvedValue([{ ...availabilityEvent(), id: '0123456789abcdef0123456789abcdef' }]);
+    vi.mocked(isPaidRefreshAllowed).mockReturnValue(true);
+    const { acquireNBAResearchReceipt } = await import('../researchAcquisition');
+    await runNBAFinderDeepSearch('2026-01-21', { gameLines: true });
+    expect(acquireNBAResearchReceipt).not.toHaveBeenCalled();
+    expect(getAuthorizedNBAActivationOdds).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
   it('retains verified Agent #2 archive identity and evidence through the versioned adapter and real prediction', async () => {
     vi.mocked(loadNBAGameIntelligence).mockResolvedValue(fixture.intelligence);

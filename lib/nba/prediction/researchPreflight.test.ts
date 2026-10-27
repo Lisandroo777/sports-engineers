@@ -34,4 +34,9 @@ describe('whole-search NBA credit preflight', () => {
     expect(plan.expectedCredits).toBe(0);
     expect(plan.games.every(game => game.status === 'CACHE_READY')).toBe(true);
   });
+  it('fails closed with an event-identity reason and zero spend for malformed provider IDs', () => {
+    const plan = planNBAResearch([{ ...event, id: 'odds-fake' }], NBA_VERIFIED_RESEARCH_MARKETS, new Map(), 70, now);
+    expect(plan).toMatchObject({ expectedCredits: 0, reservedPlanCredits: 0, completeWithinBudget: false });
+    expect(plan.games[0]).toMatchObject({ status: 'EVENT_IDENTITY_INVALID', allowed: false, expectedCredits: 0 });
+  });
 });

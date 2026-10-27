@@ -5,6 +5,12 @@ export function planNBAResearch(events: OddsEvent[], selected: string[], receipt
   const markets = NBA_VERIFIED_RESEARCH_MARKETS.filter(id => selected.includes(id));
   let remaining = availableCredits;
   const games = events.map(event => {
+    if (!/^[a-f0-9]{32}$/.test(event.id) || !event.homeTeam || !event.awayTeam || event.homeTeam === event.awayTeam
+      || !Number.isFinite(Date.parse(event.commenceTime)) || Date.parse(event.commenceTime) <= now) {
+      return { eventId: event.id, homeTeam: event.homeTeam, awayTeam: event.awayTeam, markets: markets.map(id => ({ id,
+        state: 'INVALID_EVENT' as const, needsRefresh: false })), refreshMarkets: [], expectedCredits: 0,
+        allowed: false, status: 'EVENT_IDENTITY_INVALID' as const, reason: 'NBA event ID, team binding, or upcoming tipoff is invalid.' };
+    }
     const coverage = nbaResearchMarketCoverage(receipts.get(event.id) ?? null,
       { id: event.id, tipoff: event.commenceTime, homeTeam: event.homeTeam, awayTeam: event.awayTeam }, markets, now);
     const refreshMarkets = coverage.filter(market => market.needsRefresh).map(market => market.id);
@@ -19,6 +25,7 @@ export function planNBAResearch(events: OddsEvent[], selected: string[], receipt
 }
 
 export async function preflightNBAResearch(events: OddsEvent[], selected: string[], availableCredits: number) {
-  const receipts = new Map(await Promise.all(events.map(async event => [event.id, await loadNBAResearchReceipt(event.id)] as const)));
+  const receipts = new Map(await Promise.all(events.map(async event => [event.id,
+    /^[a-f0-9]{32}$/.test(event.id) ? await loadNBAResearchReceipt(event.id).catch(() => null) : null] as const)));
   return planNBAResearch(events, selected, receipts, availableCredits);
 }

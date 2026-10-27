@@ -33,8 +33,9 @@ import { buildNBAResearchPresentation, unclassifiedNBAPropResearch } from '../..
 import { loadCachedNBAEventResearch } from '../../nba/prediction/gameLines/cachedEventResearch';
 import { requestedNBATeams, matchesNBATeams } from '../../nba/prediction/gameLines/requestScope';
 import { getNBASchedule } from '../../nba/schedule';
-import { nbaFilterRankingQuery, nbaMarketAvailability, NBA_RESEARCH_MARKETS, type NBAResearchFilter } from '../../nba/researchMarkets';
+import { DEFAULT_NBA_RESEARCH_FILTER, nbaFilterRankingQuery, nbaMarketAvailability, NBA_RESEARCH_MARKETS, type NBAResearchFilter } from '../../nba/researchMarkets';
 import { nbaResearchMarketIntent, scopeNBAResearchMarkets } from '../../nba/researchMarketScope';
+import { NBA_VERIFIED_RESEARCH_MARKETS } from '../../nba/prediction/researchReceipt';
 import { parseNFLRequestScope } from './nflRequestScope';
 import { isNFLGameResearchPublishable } from '../../nfl/partialCoverage';
 import type { NFLSlateLedger } from '../../nfl/slateLedger';
@@ -424,7 +425,8 @@ export async function runAgentTurn(history: AgentTurnMessage[], researchSessionI
     const date = resolveDateFromText(query)?.resolvedDate ?? uiContext?.date ?? todaySlateDate();
     return withAutomaticOddsRefresh(() => runCrossSportSearch(query, date, sports, async sport => {
       const scopedQuery = `${sport.toUpperCase()} ${query.replace(/\b(?:nba|nfl|mlb|baseball|basketball|football)\b/gi, '')}${sport === 'nba' ? ' across all NBA markets' : ''} ${date}`;
-      const result = await withAutomaticOddsRefresh(() => runScopedAgentTurn([{ role: 'user', content: scopedQuery }], null, null, { sport, date }, true));
+      const result = await withAutomaticOddsRefresh(() => runScopedAgentTurn([{ role: 'user', content: scopedQuery }], null, null,
+        { sport, date, ...(sport === 'nba' ? { nbaResearchFilter: DEFAULT_NBA_RESEARCH_FILTER } : {}) }, true), sport === 'nba' ? 'nba' : undefined);
       return toClientResult(result);
     }));
   }
@@ -441,7 +443,9 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
   const lastUserMessage = [...history].reverse().find((message) => message.role === 'user');
   let query = lastUserMessage?.content ?? '';
   const nbaQuery = (detectSport(query) ?? (requestedNBATeams(query).length ? 'nba' : null) ?? uiContext?.sport ?? storedSession?.sport) === 'nba';
-  const marketFilter = nbaQuery ? uiContext?.nbaResearchFilter : undefined;
+  const marketFilter = nbaQuery ? uiContext?.nbaResearchFilter ?? DEFAULT_NBA_RESEARCH_FILTER : undefined;
+  const unrestrictedMarketScope = marketFilter != null && marketFilter.marketIds == null
+    && (['over', 'under'] as const).every(side => marketFilter.sides.includes(side));
   if (marketFilter) query = nbaFilterRankingQuery(query, marketFilter);
   const selectedMarketEntries = marketFilter ? NBA_RESEARCH_MARKETS.filter(entry => marketFilter.marketIds == null || marketFilter.marketIds.includes(entry.id)) : [];
   if (marketFilter && !selectedMarketEntries.some(entry => entry.candidateKey != null)) return {
@@ -458,12 +462,12 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
     const requestedDate = resolveDateFromText(query)?.resolvedDate ?? uiContext?.date ?? storedSession?.date ?? todaySlateDate();
     const requestedTeams = requestedNBATeams(query);
     let nbaSession = storedSession?.sport === 'nba' && storedSession.date === requestedDate && storedSession.modeledGames != null
-      && (nbaMarkets.gameLinesOnly || storedSession.queryIntent === query) && !marketFilter ? storedSession : null;
+      && (nbaMarkets.gameLinesOnly || storedSession.queryIntent === query) && unrestrictedMarketScope ? storedSession : null;
     if (!nbaSession || /\brefresh\b/i.test(query)) {
       const gameIds = requestedTeams.length ? (await getNBASchedule(requestedDate).catch(() => []))
         .filter(game => matchesNBATeams(requestedTeams, [game.homeTeam.displayName, game.awayTeam.displayName])).map(game => game.id) : null;
       const summary = await withAutomaticOddsRefresh(() => runNBAFinderDeepSearch(requestedDate, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly,
-        ...(marketFilter ? { researchMarkets: selectedMarketEntries.filter(entry => entry.candidateKey != null).map(entry => entry.id) } : {}),
+        researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS.filter(id => marketFilter?.marketIds == null || marketFilter.marketIds.includes(id)),
         ...(gameIds ? { validationGameIds: gameIds } : {}) }));
       nbaSession = buildResearchSessionFromCandidates({ sport: 'nba', date: requestedDate, queryIntent: query,
         candidates: summary.nbaCandidates.filter(candidate => candidate.playerMatch === 'MATCHED' && candidate.eliteAnalysis != null).map(nbaFinderCandidateToGeneric),

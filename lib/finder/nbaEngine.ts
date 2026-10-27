@@ -267,8 +267,7 @@ export async function runNBAFinderDeepSearch(
   const { getRemainingOddsSearchCredits } = await import('../odds/client');
   const researchPreflight = options.gameLines || options.gameLinesOnly ? await preflightNBAResearch(
     games.map(({ event }) => event), options.researchMarkets ?? NBA_VERIFIED_RESEARCH_MARKETS, getRemainingOddsSearchCredits()) : null;
-  if ((options.gameLines || options.gameLinesOnly) && isAutomaticOddsRefreshEnabled(options.researchMarkets ? 'nba' : undefined)
-    && isPaidRefreshAllowed(options.researchMarkets ? 'nba' : undefined)) {
+  if ((options.gameLines || options.gameLinesOnly) && isAutomaticOddsRefreshEnabled('nba') && isPaidRefreshAllowed('nba')) {
     if (games.some(({ game }) => game.phase === 'REGULAR')) {
       try {
         const url = new URL('https://api.the-odds-api.com/v4/sports');
@@ -284,7 +283,12 @@ export async function runNBAFinderDeepSearch(
     for (const { game, event } of games) {
       if (game.phase !== 'REGULAR' || eventSportKeys.get(event.id) !== NBA_ODDS_SPORT_KEY) continue;
       const planned = researchPreflight?.games.find(entry => entry.eventId === event.id);
-      if (planned && !planned.allowed) { refreshFailures.set(game.id, 'SEARCH_BUDGET: selected markets not acquired for this game.'); budgetLimited = true; continue; }
+      if (planned && !planned.allowed) {
+        refreshFailures.set(game.id, planned.status === 'BUDGET_BLOCKED'
+          ? 'SEARCH_BUDGET: selected markets not acquired for this game.' : planned.reason ?? 'Invalid NBA event; selected markets were not acquired.');
+        if (planned.status === 'BUDGET_BLOCKED') budgetLimited = true;
+        continue;
+      }
       try {
         const { acquireNBAResearchReceipt } = await import('../nba/prediction/researchAcquisition');
         await acquireNBAResearchReceipt(event, options.researchMarkets ?? NBA_VERIFIED_RESEARCH_MARKETS);
