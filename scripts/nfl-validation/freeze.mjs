@@ -37,9 +37,18 @@ const INHERITED_COMMUNICATION_DELTAS = ['lib/ai/agent/runner.ts', 'lib/ai/agent/
 const hash = (content) => createHash('sha256').update(content).digest('hex');
 export const NFL_NBA_EVIDENCE_BASELINE = '0aa685fcae371a827b1287ea8e1be42d40f03e2c';
 export const NFL_NBA_EVIDENCE_HASHES = Object.freeze(Object.fromEntries(Object.entries({
-  'lib/ai/agent/tools.ts': { baseline: 'da388c58b2491a34baca568c9b67e3da68a000cc2059d280a252f0d4fb724349', integrated: '98059a04dc205e0ca5ca6e5d3dde482335ca706d2a56c74cc5a5247be08f62b5', archived: 'da40bb39eef1502a1401d779de5547be8a3fe25b25f2a563d1050402c1f46c30' },
-  'lib/finder/nbaEngine.ts': { baseline: '49b8982cc64445b63308a8ed8580a0cd00ce06e4fd76583fae4fa5b3720cba44', integrated: '3c12bb644a96e9a5d535af8cd72028bf774cf7080d784f3b4768c906cda607fa', archived: '4419c53835d6690cb7940220f8b152df28d6cc904089bdb0a36fe360f71fabf5' },
-  'lib/ai/agent/runner.ts': { baseline: 'd346562ead55c27013ed3e97473775871a12f25abbb2c0e83e8c745654627e19', integrated: '050700d4f0c1f8eba3a0d41a78fddcf4322ac6dc8ad427a7d491c7fcc6a86905', archived: '4eb6d4b010496e43111d7de1727b37fd30fd1f9ca76ab4764623e6ebea0514f4' },
+  'lib/odds/client.ts': { baseline: 'c3599291d23323c1ce49b93ad7bce55c3528d959b1c7abd309b4fbe68daa388b', integrated: '1c1fa108bfd062b022abcc37f6876fb01af762d7c45da0d15e1deec81b1f0dc7', archived: '599398c78d3a6eb3d26222c9bb89bbf8fee869a1cf4ad5d9050e50dd7457143e' },
+  'lib/odds/autoRefreshLedger.ts': { baseline: '55722203ddd11f45fa9e15f375e8da8bd271787e7c08bfc9648adf8925339591', integrated: '2619918c730641b582f55a58fed68334eb5b3b899e25afc1105dae4559a94633', archived: null },
+  'lib/ai/agent/session.ts': { baseline: '3bf8a6295e24b78b58596bff63d74a6e6609092b427b431484df8dd3e7371643', integrated: 'bdb16be1270b451410989367434f5901b1e99bbd5579e3c3ae1538418ee7f14d', archived: '0e52d9c8d0e6a7f2fee97a4c1c6700937b903c83fd312dcdec15faf8bc232d73' },
+  'lib/ai/agent/tools.ts': { baseline: 'da388c58b2491a34baca568c9b67e3da68a000cc2059d280a252f0d4fb724349', integrated: 'e813de4c3752db8c6bd65f265e7c14d04c3a8b5c975bef640bd56d029df162bd', archived: 'da40bb39eef1502a1401d779de5547be8a3fe25b25f2a563d1050402c1f46c30' },
+  'lib/nba/researchMarkets.ts': { baseline: null, integrated: '8ab8b606115c0de0343778e6bb8aa2db9c671c5f58b3698ef28d6ca191eb045c', archived: null },
+  'lib/nba/researchHistory.ts': { baseline: null, integrated: '4a76420dbecf417b4dc11a6f50dbf9527403d882c6920285e60d7352ca76dbc7', archived: null },
+  'lib/nba/stats.ts': { baseline: '90fd6fb11c310eed319cbeb2c8d8cea4f70649562fcbe3508067f5369bd68a0e', integrated: 'b0ed5beb101e17c85fdb604fd9e9101cbf896d06cc1f8272e647b0133965e9f5', archived: '6a74ca0f0994ee9df8cd02cd88066229df87856123d4d13ca0ad17b564b1afb0' },
+  'lib/nba/prediction/cachedProps.ts': { baseline: 'e3cc68c5532c20211cc26ee5f055cb66c66a292771369be07b6b5e3b0558f9bf', integrated: '3691b32167b9c418cf01e3a7972e8d337702921e2577cf356e121da20d5af151', archived: null },
+  'lib/nba/prediction/gameLines/cachedEventResearch.ts': { baseline: '2e85c17d46c69e8395cf89791bcf553a1ba07d09ee91a777a1ddf60a191998dd', integrated: '31efee6728b32e0a9824999e37b80cc3757ca473fb38f73c8f6aabb28f9d22bb', archived: null },
+  'lib/nba/researchMarketScope.ts': { baseline: null, integrated: 'ec5152d9f698dad6b242b9773a4cafb04421cebf12e78b02f99813feaa502938', archived: null },
+  'lib/finder/nbaEngine.ts': { baseline: '49b8982cc64445b63308a8ed8580a0cd00ce06e4fd76583fae4fa5b3720cba44', integrated: '440665b60898efada8f1303431eec83d29f8d3f8af111bfd676ae09e35d3fefd', archived: '4419c53835d6690cb7940220f8b152df28d6cc904089bdb0a36fe360f71fabf5' },
+  'lib/ai/agent/runner.ts': { baseline: 'd346562ead55c27013ed3e97473775871a12f25abbb2c0e83e8c745654627e19', integrated: '28018d140a6ed5d41b394cb8ba06eea073ec89f9963b0d516b4dc7c6823e92b1', archived: '4eb6d4b010496e43111d7de1727b37fd30fd1f9ca76ab4764623e6ebea0514f4' },
   'lib/nfl/participation.ts': { baseline: '94cfc8a60b17b0f99a76e981641d32cbc4e07be8350d46e78fe74765625b29c8', integrated: '85f0c79ff9853f991ebb180970399b5375a4feafafd8545832b5225047837cbd', archived: '94cfc8a60b17b0f99a76e981641d32cbc4e07be8350d46e78fe74765625b29c8' },
   'lib/nfl/officialParticipation.ts': { baseline: null, integrated: 'b5813154cf2df61627f5b3c48828cf7d9321418ae3e5a6129501810633fb200b', archived: null },
   'lib/nba/prediction/gameLines/intelligenceArchive.ts': { baseline: 'aea9c142f636b7cfc9f536f1cc7070b93891a58d0f9c8d2a3485ef3848a6150d', integrated: '1da29c8bea6c89e7c743843257310dc0b19292f422a8eac0a8f9dd5cb24c64d2', archived: null },
@@ -76,7 +85,7 @@ export const NFL_NBA_EXECUTION_HASHES = Object.freeze(Object.fromEntries(Object.
   'lib/ai/agent/runner.ts': { baseline: '68f2122f9a008f61af62521775bf336e2e5ea90c742e0d55bef9781d04d2633d', integrated: 'd346562ead55c27013ed3e97473775871a12f25abbb2c0e83e8c745654627e19', archived: '4eb6d4b010496e43111d7de1727b37fd30fd1f9ca76ab4764623e6ebea0514f4' },
   'lib/ai/agent/tools.ts': { baseline: '022de54a121558e10537fe9874fc34f7ab21bddd2f2a7df0c593d2fc3355a671', integrated: 'da388c58b2491a34baca568c9b67e3da68a000cc2059d280a252f0d4fb724349', archived: 'da40bb39eef1502a1401d779de5547be8a3fe25b25f2a563d1050402c1f46c30' },
   'lib/finder/nbaEngine.ts': { baseline: 'bdfd916af24de411dd8f2ee5ceb5d17c051149df4199b6de609465b42981194e', integrated: '49b8982cc64445b63308a8ed8580a0cd00ce06e4fd76583fae4fa5b3720cba44', archived: '4419c53835d6690cb7940220f8b152df28d6cc904089bdb0a36fe360f71fabf5' },
-  'lib/nba/prediction/gameLines/selection.ts': { baseline: 'b474d39d7ccafaab3a0f42ab262f86cd05d9845f8dcfbb6d37edbc1af292ff1a', integrated: '372fa6fdfb58821591311739d00b722503dd765d701e5d656bedf82c2cb4fb68', archived: null },
+  'lib/nba/prediction/gameLines/selection.ts': { baseline: 'b474d39d7ccafaab3a0f42ab262f86cd05d9845f8dcfbb6d37edbc1af292ff1a', integrated: 'c9d40f21539a03940a02f6cc1a3b34088f2444e43c46b02eb1068e2171a29696', archived: null },
   'communication/intent.ts': { baseline: 'd550cd3c5c6b6b434ff994c4a22f49079f9c40ac7ea45423532eb56b8e5e8691', integrated: 'c56664fe70c89f3a8274e5ed9f687a1f0c2d51f67145a99d8617c5df401a3569', archived: '09f7cf2749a45533477325069da0f8a0a7d2062bf234e2de1cf916d988e6258f' },
   'communication/execute.ts': { baseline: 'c1f12828f2477fb7d5f63abbf83d7b11d9aeadc4be934132eea4020ba72b270d', integrated: '39f8d2293c82d94c91ea7633206eee046937b9ebc89b3138ad60bca9521b0f79', archived: 'c1f12828f2477fb7d5f63abbf83d7b11d9aeadc4be934132eea4020ba72b270d' },
 }).map(([path, approval]) => [path, Object.freeze(approval)])));
@@ -341,6 +350,8 @@ export function assertFrozenInventory(current, archive, label, { parentModelVers
   for (const path of Object.keys(archive)) if (!Object.hasOwn(current, path)) throw new Error(`${label} omitted archived source: ${path}`);
   const additions = Object.keys(current).filter((path) => !Object.hasOwn(archive, path));
   const rejected = additions.filter((path) => !NON_MODEL_ADDITION_PREFIXES.some((prefix) => path.startsWith(prefix))
+    && !(Object.hasOwn(NFL_NBA_EVIDENCE_HASHES, path) && NFL_NBA_EVIDENCE_HASHES[path].baseline === null
+      && NFL_NBA_EVIDENCE_HASHES[path].archived === null && hash(current[path]) === NFL_NBA_EVIDENCE_HASHES[path].integrated)
     && !requestRecoverySourceApproved(path, undefined, current[path], parentModelVersion, requestRecovery)
     && !reliabilitySourceApproved(path, undefined, current[path], parentModelVersion, reliability)
     && !(Object.hasOwn(NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES, path) && NFL_PARTIAL_COVERAGE_SOURCE_APPROVED_HASHES[path].archived === null

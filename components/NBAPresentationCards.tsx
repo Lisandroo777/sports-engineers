@@ -1,3 +1,6 @@
+'use client';
+
+import { useRef, useState } from 'react';
 import { PlayerHeadshot } from './PlayerHeadshot';
 import type { PickPresentation, PresentedPick, PresentationTier } from '../lib/nba/presentation';
 
@@ -26,10 +29,10 @@ function marketLabel(pick: PresentedPick): string {
   const line = subject.market.line;
   if (subject.kind === 'PLAYER_PROP') return `${subject.market.label} ${subject.market.side}${line == null ? '' : ` ${line}`}`;
   const team = subject.market.team === 'HOME' ? subject.home.name : subject.market.team === 'AWAY' ? subject.away.name : '';
-  if (subject.market.type === 'MONEYLINE') return `${team || (subject.market.selection === 'HOME' ? subject.home.name : subject.away.name)} moneyline`;
-  if (subject.market.type === 'SPREAD') return `${team || (subject.market.selection === 'HOME' ? subject.home.name : subject.away.name)}${line == null ? '' : ` ${line >= 0 ? '+' : ''}${line}`}`;
+  if (subject.market.type === 'MONEYLINE') return `${subject.market.label} · ${team || (subject.market.selection === 'HOME' ? subject.home.name : subject.away.name)}`;
+  if (subject.market.type === 'SPREAD') return `${subject.market.label} · ${team || (subject.market.selection === 'HOME' ? subject.home.name : subject.away.name)}${line == null ? '' : ` ${line >= 0 ? '+' : ''}${line}`}`;
   if (line == null) return subject.market.label;
-  return `${subject.market.type === 'TEAM_TOTAL' ? `${team} team total` : 'Game total'} ${subject.market.selection.toLowerCase()} ${line}`;
+  return `${subject.market.label}${subject.market.type === 'TEAM_TOTAL' ? ` · ${team}` : ''} ${subject.market.selection.toLowerCase()} ${line}`;
 }
 
 function Card({ pick, recommended }: { pick: PresentedPick; recommended: boolean }) {
@@ -39,7 +42,7 @@ function Card({ pick, recommended }: { pick: PresentedPick; recommended: boolean
   const name = pick.subject.kind === 'PLAYER_PROP' ? pick.subject.player.name : `${pick.subject.away.name} @ ${pick.subject.home.name}`;
   const status = pick.pricing.quoteStatus === 'STALE' ? 'STALE PRICE · RESEARCH ONLY'
     : !priced ? 'UNPRICED · RESEARCH ONLY' : recommended ? 'RECOMMENDED' : pick.disposition === 'PASS' ? 'PASS · NOT A WAGER' : 'RESEARCH ONLY';
-  return <article data-candidate-id={pick.candidateId} data-tier={tier ?? 'RESEARCH_ONLY'} className={`min-w-0 space-y-3 rounded-lg border bg-white/3 p-4 ${tier ? tierStyles[tier] : 'border-white/10 text-slate-300'}`}>
+  return <article data-candidate-id={pick.candidateId} data-market-key={pick.subject.market.key} data-tier={tier ?? 'RESEARCH_ONLY'} className={`min-w-0 space-y-3 rounded-lg border bg-white/3 p-4 ${tier ? tierStyles[tier] : 'border-white/10 text-slate-300'}`}>
     <div className="flex items-center gap-3">
       {pick.subject.kind === 'PLAYER_PROP' ? <PlayerHeadshot sport="NBA" playerId={pick.subject.player.id} playerName={name} size={40} />
         : <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs font-bold">NBA</span>}
@@ -69,6 +72,41 @@ function Card({ pick, recommended }: { pick: PresentedPick; recommended: boolean
   </article>;
 }
 
+export const NBA_CARD_PAGE_SIZE = 20;
+
+function PaginatedCards({ picks, recommended }: { picks: PresentedPick[]; recommended: boolean }) {
+  const [page, setPage] = useState(0);
+  const section = useRef<HTMLDivElement>(null);
+  const lastPage = Math.max(0, Math.ceil(picks.length / NBA_CARD_PAGE_SIZE) - 1);
+  const current = Math.min(page, lastPage);
+  const start = current * NBA_CARD_PAGE_SIZE;
+  const label = recommended ? 'Recommendation pages' : 'Research pages';
+  function go(next: number) {
+    setPage(next);
+    section.current?.scrollIntoView({ block: 'start', behavior: 'instant' });
+  }
+  const navigation = picks.length > NBA_CARD_PAGE_SIZE && <nav aria-label={label} className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-y border-white/10 py-2 text-xs text-slate-300">
+    <span role="status" aria-live="polite">{start + 1}-{Math.min(start + NBA_CARD_PAGE_SIZE, picks.length)} of {picks.length.toLocaleString()} outcomes</span>
+    <div className="flex items-center gap-2">
+      <button type="button" aria-label="Previous page" title="Previous page" disabled={current === 0} onClick={() => go(current - 1)} className="flex h-9 w-9 items-center justify-center rounded-md border border-white/15 text-lg hover:bg-white/10 disabled:opacity-30">&larr;</button>
+      <label className="flex items-center gap-2">Page
+        <input key={current} type="number" min={1} max={lastPage + 1} step={1} defaultValue={current + 1}
+          aria-label={recommended ? 'Recommendation page' : 'Research page'}
+          onBlur={event => { const next = event.currentTarget.valueAsNumber; if (Number.isInteger(next) && next >= 1 && next <= lastPage + 1) go(next - 1); }}
+          onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }}
+          className="h-9 w-16 rounded-md border border-white/15 bg-[#050b18] px-2 text-white" />
+        <span>of {lastPage + 1}</span>
+      </label>
+      <button type="button" aria-label="Next page" title="Next page" disabled={current === lastPage} onClick={() => go(current + 1)} className="flex h-9 w-9 items-center justify-center rounded-md border border-white/15 text-lg hover:bg-white/10 disabled:opacity-30">&rarr;</button>
+    </div>
+  </nav>;
+  return <div ref={section} className="min-w-0 scroll-mt-4 space-y-3">
+    {navigation}
+    <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">{picks.slice(start, start + NBA_CARD_PAGE_SIZE).map(pick => <Card key={pick.candidateId} pick={pick} recommended={recommended} />)}</div>
+    {navigation}
+  </div>;
+}
+
 export function NBAPresentationCards({ presentation }: { presentation: NBAClientPresentation }) {
   const selected = new Set(presentation.recommendedCandidateIds ?? presentation.picks.filter(pick => pick.disposition === 'RECOMMENDED').map(pick => pick.candidateId));
   const recommended = presentation.picks.filter(pick => selected.has(pick.candidateId) && pick.tierDecision != null
@@ -77,9 +115,9 @@ export function NBAPresentationCards({ presentation }: { presentation: NBAClient
   const research = presentation.picks.filter(pick => !ids.has(pick.candidateId));
   return <div className="space-y-6" data-nba-presentation={presentation.schemaVersion}>
     {recommended.length > 0 && <section className="space-y-3"><h2 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Recommendations</h2>
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">{recommended.map(pick => <Card key={pick.candidateId} pick={pick} recommended />)}</div></section>}
+      <PaginatedCards key={`recommended.${presentation.requestedSort}.${recommended[0]?.candidateId}.${recommended.length}`} picks={recommended} recommended /></section>}
     {research.length > 0 && <section className="space-y-3 border-t border-white/10 pt-4"><h2 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Research candidates · Not recommended wagers</h2>
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">{research.map(pick => <Card key={pick.candidateId} pick={pick} recommended={false} />)}</div></section>}
+      <PaginatedCards key={`research.${presentation.requestedSort}.${research[0]?.candidateId}.${research.length}`} picks={research} recommended={false} /></section>}
     {presentation.picks.length === 0 && <p role="status" className="text-sm text-slate-300">No qualified NBA picks or researched candidates are available for this slate.</p>}
   </div>;
 }

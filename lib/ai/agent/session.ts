@@ -152,6 +152,7 @@ export interface ResearchCandidateRecord {
 }
 
 export interface ResearchSessionToolMeta {
+  nbaResearchPreflight?: Awaited<ReturnType<typeof import('../../nba/prediction/researchPreflight').preflightNBAResearch>> | null;
   mlbGameCoverage?: import('../../finder/engine').FinderGameCoverage[];
   nbaGameCoverage?: import('../../finder/nbaEngine').NBAGameCoverage[];
   slateComplete?: boolean;

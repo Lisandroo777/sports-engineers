@@ -33,6 +33,8 @@ import { buildNBAResearchPresentation, unclassifiedNBAPropResearch } from '../..
 import { loadCachedNBAEventResearch } from '../../nba/prediction/gameLines/cachedEventResearch';
 import { requestedNBATeams, matchesNBATeams } from '../../nba/prediction/gameLines/requestScope';
 import { getNBASchedule } from '../../nba/schedule';
+import { nbaFilterRankingQuery, nbaMarketAvailability, NBA_RESEARCH_MARKETS, type NBAResearchFilter } from '../../nba/researchMarkets';
+import { nbaResearchMarketIntent, scopeNBAResearchMarkets } from '../../nba/researchMarketScope';
 import { parseNFLRequestScope } from './nflRequestScope';
 import { isNFLGameResearchPublishable } from '../../nfl/partialCoverage';
 import type { NFLSlateLedger } from '../../nfl/slateLedger';
@@ -414,7 +416,7 @@ function textFrom(output: OpenAIOutputItem[]): string {
   return parts.join('\n').trim();
 }
 
-export async function runAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null = null, refreshApproval: AgentRefreshApproval | null = null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string }): Promise<AgentTurnResult> {
+export async function runAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null = null, refreshApproval: AgentRefreshApproval | null = null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string; nbaResearchFilter?: NBAResearchFilter }): Promise<AgentTurnResult> {
   void refreshApproval;
   const query = [...history].reverse().find(message => message.role === 'user')?.content ?? '';
   const sports = crossSportScope(query);
@@ -426,44 +428,56 @@ export async function runAgentTurn(history: AgentTurnMessage[], researchSessionI
       return toClientResult(result);
     }));
   }
-  return withAutomaticOddsRefresh(() => runScopedAgentTurn(history, researchSessionId, null, uiContext));
+  const resolvedSport = detectSport(query) ?? uiContext?.sport;
+  return withAutomaticOddsRefresh(() => runScopedAgentTurn(history, researchSessionId, null, uiContext), resolvedSport === 'nba' ? 'nba' : undefined);
 }
 
-async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null, refreshApproval: AgentRefreshApproval | null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string }, deterministicMLB = false): Promise<AgentTurnResult> {
+async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId: string | null, refreshApproval: AgentRefreshApproval | null, uiContext?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string; nbaResearchFilter?: NBAResearchFilter }, deterministicMLB = false): Promise<AgentTurnResult> {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   const model = process.env.OPENAI_MODEL?.trim() || DEFAULT_MODEL;
 
   const storedSession = await withResearchStage('session-read', () => getResearchSession(researchSessionId));
   const context = createAgentContext(storedSession ? structuredClone(storedSession) : null, researchSessionId, refreshApproval);
   const lastUserMessage = [...history].reverse().find((message) => message.role === 'user');
-  const query = lastUserMessage?.content ?? '';
+  let query = lastUserMessage?.content ?? '';
   const nbaQuery = (detectSport(query) ?? (requestedNBATeams(query).length ? 'nba' : null) ?? uiContext?.sport ?? storedSession?.sport) === 'nba';
-  let nbaMarkets = nbaQuery ? classifyNBAMarketIntent(query) : null;
-  if (nbaMarkets && !nbaMarkets.gameLineMarkets.length && !nbaMarkets.playerPropsRequested && /\b(?:picks?|plays?)\b/i.test(query)) {
-    nbaMarkets = classifyNBAMarketIntent(`${query} across all NBA markets`);
+  const marketFilter = nbaQuery ? uiContext?.nbaResearchFilter : undefined;
+  if (marketFilter) query = nbaFilterRankingQuery(query, marketFilter);
+  const selectedMarketEntries = marketFilter ? NBA_RESEARCH_MARKETS.filter(entry => marketFilter.marketIds == null || marketFilter.marketIds.includes(entry.id)) : [];
+  if (marketFilter && !selectedMarketEntries.some(entry => entry.candidateKey != null)) return {
+    reply: selectedMarketEntries.length ? 'The selected NBA markets are not connected. No research was performed and no substitute market was used.' : 'No NBA markets selected. No research was performed.',
+    toolTrace: [], results: [], closestMisses: [], researchSessionId,
+    meta: { sport: 'nba', date: uiContext?.date ?? todaySlateDate(), status: 'NO_CANDIDATES', researchComplete: false,
+      marketSelection: selectedMarketEntries, unsupportedMarketNotice: 'No selected market is connected; no market was researched.' },
+  };
+  let nbaMarkets = nbaQuery ? nbaResearchMarketIntent(query, marketFilter) : null;
+  if (nbaMarkets && !nbaMarkets.gameLineMarkets.length && !nbaMarkets.playerPropsRequested && (marketFilter || /\b(?:picks?|plays?)\b/i.test(query))) {
+    nbaMarkets = nbaResearchMarketIntent(`${query} across all NBA markets`, marketFilter);
   }
   if (nbaMarkets && (nbaMarkets.gameLineMarkets.length || nbaMarkets.playerPropsRequested)) {
     const requestedDate = resolveDateFromText(query)?.resolvedDate ?? uiContext?.date ?? storedSession?.date ?? todaySlateDate();
     const requestedTeams = requestedNBATeams(query);
     let nbaSession = storedSession?.sport === 'nba' && storedSession.date === requestedDate && storedSession.modeledGames != null
-      && (nbaMarkets.gameLinesOnly || storedSession.queryIntent === query) ? storedSession : null;
+      && (nbaMarkets.gameLinesOnly || storedSession.queryIntent === query) && !marketFilter ? storedSession : null;
     if (!nbaSession || /\brefresh\b/i.test(query)) {
       const gameIds = requestedTeams.length ? (await getNBASchedule(requestedDate).catch(() => []))
         .filter(game => matchesNBATeams(requestedTeams, [game.homeTeam.displayName, game.awayTeam.displayName])).map(game => game.id) : null;
       const summary = await withAutomaticOddsRefresh(() => runNBAFinderDeepSearch(requestedDate, { gameLines: true, gameLinesOnly: nbaMarkets.gameLinesOnly,
+        ...(marketFilter ? { researchMarkets: selectedMarketEntries.filter(entry => entry.candidateKey != null).map(entry => entry.id) } : {}),
         ...(gameIds ? { validationGameIds: gameIds } : {}) }));
       nbaSession = buildResearchSessionFromCandidates({ sport: 'nba', date: requestedDate, queryIntent: query,
         candidates: summary.nbaCandidates.filter(candidate => candidate.playerMatch === 'MATCHED' && candidate.eliteAnalysis != null).map(nbaFinderCandidateToGeneric),
         toolMeta: { gamesFound: summary.gamesAnalyzed, gamesScheduled: summary.gamesScheduled, propsFound: summary.propsAnalyzed,
           booksFound: summary.booksAnalyzed, candidatesFound: summary.nbaCandidates.length, cached: summary.fromCache,
           dataFreshnessSeconds: summary.cacheAgeMs == null ? null : summary.cacheAgeMs / 1000, budgetLimited: summary.budgetLimited,
-          nbaGameCoverage: summary.nbaGameCoverage, partialCoverage: summary.partialCoverage === true,
+          nbaGameCoverage: summary.nbaGameCoverage, nbaResearchPreflight: summary.nbaResearchPreflight, partialCoverage: summary.partialCoverage === true,
           researchComplete: summary.partialCoverage !== true && (summary.researchComplete ?? !summary.budgetLimited),
           slateComplete: summary.slateComplete, blockReason: summary.blockReason, oddsSpend: summary.oddsSpend } });
       nbaSession.gameCandidates = summary.gameCandidates ?? [];
       nbaSession.modeledGames = summary.modeledGames ?? [];
       nbaSession.nbaPresentationResearch = [...unclassifiedNBAPropResearch(summary.nbaCandidates),
-        ...await loadCachedNBAEventResearch(requestedDate).catch(() => [])];
+        ...await (marketFilter ? loadCachedNBAEventResearch(requestedDate, undefined, marketFilter)
+          : loadCachedNBAEventResearch(requestedDate)).catch(() => [])];
       researchSessionId = await saveResearchSession(nbaSession);
     }
     if (requestedTeams.length) {
@@ -479,7 +493,8 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
           ? matchesNBATeams(requestedTeams, [record.subject.home.name, record.subject.away.name])
           : gameIds.has(record.subject.gameId)) };
     }
-    const results = selectNBAMixedRecommendations(nbaSession, query);
+    if (marketFilter) nbaSession = scopeNBAResearchMarkets(nbaSession, marketFilter);
+    const results = selectNBAMixedRecommendations(nbaSession, query, new Date(), marketFilter);
     const earlySeasonBlocked = results.length === 0 && nbaSession.candidates.length > 0
       && nbaSession.candidates.every(candidate => (candidate.sampleSize ?? 0) < 8);
     const earlySeasonNote = earlySeasonBlocked ? ` ${[`NBA V1 requires 8 current-season games per player market; all ${nbaSession.candidates.length} evaluated props have fewer.`,
@@ -492,9 +507,15 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
       direction: candidate.direction, odds: candidate.odds ?? null, book: candidate.book ?? null, tipoff: tipoffs.get(candidate.gameId ?? '') ?? null })))
       .catch(() => []) : [];
     const candidatesEvaluated = nbaSession.candidates.length + (nbaSession.gameCandidates?.length ?? 0);
-    const verifiedQuotesAvailable = nbaSession.modeledGames?.some(game => game.status === 'QUOTE_AVAILABLE' && (game.quotes?.length ?? 0) > 0) === true;
+    const verifiedQuotesAvailable = nbaSession.modeledGames?.some(game => game.status === 'QUOTE_AVAILABLE' && (game.quotes?.length ?? 0) > 0) === true
+      || nbaSession.nbaPresentationResearch?.some(record => record.quoteStatus === 'CURRENT' && record.americanOdds != null) === true;
     const marketDataAvailable = candidatesEvaluated > 0 || verifiedQuotesAvailable;
-    const partialCoverage = nbaSession.toolMeta.partialCoverage === true;
+    const missingSelectedMarkets = selectedMarketEntries.filter(entry => entry.candidateKey == null
+      || !nbaSession.candidates.some(record => record.marketKey === entry.candidateKey)
+        && !nbaSession.gameCandidates?.some(record => record.marketKey === entry.candidateKey)
+        && !nbaSession.modeledGames?.some(game => game.quotes?.some(quote => quote.market === entry.candidateKey))
+        && !nbaSession.nbaPresentationResearch?.some(record => [entry.id, entry.candidateKey].includes(record.subject.market.key)));
+    const partialCoverage = nbaSession.toolMeta.partialCoverage === true || missingSelectedMarkets.length > 0;
     const researchComplete = !partialCoverage && (nbaSession.toolMeta.researchComplete ?? marketDataAvailable);
     const providerError = (nbaSession.toolMeta.oddsSpend?.providerErrors ?? 0) > 0
       || nbaSession.toolMeta.nbaGameCoverage?.some(game => game.state === 'PROVIDER_ERROR');
@@ -519,6 +540,12 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
             : 'No current sportsbook NBA candidates were available for evaluation. Unpriced or modeled research is shown separately and is not a betting recommendation; it is not an evaluated rejection.';
     const partialNote = partialCoverage && marketDataAvailable ? ' NBA research has partial coverage; available selections were evaluated independently.' : '';
     const unsupported = nbaMarkets.gameLineMarkets.filter(market => market === 'FIRST_HALF' || market === 'FIRST_QUARTER');
+    const plan = nbaSession.toolMeta.nbaResearchPreflight;
+    const planNotice = plan?.games.flatMap(game => {
+      const unavailable = game.markets.filter(market => market.needsRefresh || market.state === 'NOT_POSTED');
+      return unavailable.length ? [`${game.awayTeam} at ${game.homeTeam}: ${game.status === 'BUDGET_BLOCKED' ? 'search budget prevented acquisition' :
+        'selected markets not fully available'} (${unavailable.map(market => `${market.id}: ${market.state.toLowerCase()}`).join(', ')}). ${(game as typeof game & { reason?: string }).reason ?? ''}`] : [];
+    }).join(' ') ?? '';
     return { reply: (results.length ? `Found ${results.length} qualified NBA recommendation${results.length === 1 ? '' : 's'}.`
       : !marketDataAvailable ? emptyReply
         : `No NBA selections passed the existing publication requirements.${verifiedQuotesAvailable ? ` Verified sportsbook quotes are available. ${(nbaSession.modeledGames ?? []).filter(game => game.status === 'QUOTE_AVAILABLE').map(game => `${game.gameId}: ${game.reason}`).join(' ')}` : ' Modeled team research is shown separately and is not a betting recommendation.'}`) + earlySeasonNote + partialNote,
@@ -530,6 +557,11 @@ async function runScopedAgentTurn(history: AgentTurnMessage[], researchSessionId
         gamesFound: Math.max(nbaSession.toolMeta.gamesFound ?? 0, (nbaSession.modeledGames ?? []).filter(game => (game.quotes?.length ?? 0) > 0).length),
         candidatesFound: candidatesEvaluated, marketsEvaluated: marketDataAvailable ? null : 0,
         partialCoverage, researchComplete, status,
+        marketSelection: selectedMarketEntries.map(entry => ({ ...entry, availability: nbaMarketAvailability(entry),
+          researchQuoteCount: nbaSession.nbaPresentationResearch?.filter(record => [entry.id, entry.candidateKey].includes(record.subject.market.key)).length ?? 0,
+          candidateCount: nbaSession.candidates.filter(record => record.marketKey === entry.candidateKey).length
+            + (nbaSession.gameCandidates?.filter(record => record.marketKey === entry.candidateKey).length ?? 0) })),
+        ...((missingSelectedMarkets.length || planNotice) ? { unsupportedMarketNotice: `${planNotice} ${missingSelectedMarkets.length ? `Not researched or no matching connected quotes/candidates: ${missingSelectedMarkets.map(entry => entry.label).join(', ')}. No substitute markets were used.` : ''}`.trim() } : {}),
         budgetLimited: nbaSession.toolMeta.budgetLimited === true, ...(unsupported.length ? { unsupportedMarketNotice: unsupportedNBAGameLineNotice(unsupported) } : {}) } };
   }
   let previous = context.researchSession?.conversation ?? null;

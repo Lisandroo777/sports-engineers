@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { hasDurableKV, kvEval } from '../storage/kv';
 
 export const AUTO_REFRESH_LIMITS = Object.freeze({ perSearchCredits: 50, dailyCredits: 300, minProviderRemaining: 2000 });
-export function getOddsRefreshLimits() {
+export const NBA_SEARCH_CREDIT_LIMIT = 70;
+export function getOddsRefreshLimits(sport?: 'nba') {
   const bounded = (name: string, fallback: number, minimum: number, maximum: number) => {
     const raw = process.env[name];
     if (raw == null || raw === '') return fallback;
@@ -12,7 +13,8 @@ export function getOddsRefreshLimits() {
     return value;
   };
   return Object.freeze({
-    perSearchCredits: bounded('ODDS_REFRESH_MAX_SEARCH_CREDITS', 50, 1, AUTO_REFRESH_LIMITS.perSearchCredits),
+    perSearchCredits: sport === 'nba' ? bounded('ODDS_REFRESH_MAX_NBA_SEARCH_CREDITS', 70, 1, NBA_SEARCH_CREDIT_LIMIT)
+      : bounded('ODDS_REFRESH_MAX_SEARCH_CREDITS', 50, 1, AUTO_REFRESH_LIMITS.perSearchCredits),
     dailyCredits: bounded('ODDS_REFRESH_MAX_DAILY_CREDITS', 300, 1, AUTO_REFRESH_LIMITS.dailyCredits),
     minProviderRemaining: bounded('ODDS_REFRESH_MIN_REMAINING', 2000, AUTO_REFRESH_LIMITS.minProviderRemaining, Number.MAX_SAFE_INTEGER),
     requestsPerMinute: bounded('ODDS_REFRESH_MAX_REQUESTS_PER_MINUTE', 10, 1, 50),
@@ -26,7 +28,9 @@ export class AutoRefreshLedgerError extends Error {
     super(`Automatic odds refresh blocked (${reason}).`);
   }
 }
-export function isAutomaticOddsRefreshEnabled() { return process.env.ODDS_AUTO_REFRESH === 'true'; }
+export function isAutomaticOddsRefreshEnabled(sport?: 'nba') {
+  return process.env.ODDS_AUTO_REFRESH === 'true' && (sport !== 'nba' || process.env.NBA_ODDS_AUTO_REFRESH === 'true');
+}
 export function dailyLedgerKey(now = new Date()) { return `${PREFIX}day:${now.toISOString().slice(0, 10)}`; }
 
 export const RESERVE_SCRIPT = `
@@ -89,8 +93,8 @@ async function execute<T>(script: string, keys: string[], args: Array<string | n
   catch { throw new AutoRefreshLedgerError('STORAGE_UNAVAILABLE'); }
 }
 export interface DailyReservation { dayKey: string; credits: number; id: string }
-export async function reserveDailyCredits(credits: number, now = new Date()): Promise<DailyReservation> {
-  const limits = getOddsRefreshLimits();
+export async function reserveDailyCredits(credits: number, now = new Date(), sport?: 'nba'): Promise<DailyReservation> {
+  const limits = getOddsRefreshLimits(sport);
   if (!Number.isSafeInteger(credits) || credits < 1 || credits > limits.perSearchCredits) throw new AutoRefreshLedgerError('RESERVE');
   const reservation = { dayKey: dailyLedgerKey(now), credits, id: `${PREFIX}reservation:${randomUUID()}` };
   const result = await execute<string>(RESERVE_SCRIPT, [reservation.dayKey, ACCOUNT, reservation.id],

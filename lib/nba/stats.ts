@@ -42,6 +42,14 @@ export async function getNBAPlayerGameLogs(playerId: number | string): Promise<N
           if (!key) return;
           const parsed = parseStat(value, key);
           if (parsed != null) stats[key] = parsed;
+          if (key.includes('-')) {
+            const statNames = key.split('-');
+            const statValues = value.split('-');
+            if (statNames.length === 2 && statValues.length === 2 && statValues.every(part => /^\d+$/.test(part.trim()))) {
+              stats[statNames[0]] = Number(statValues[0]);
+              stats[statNames[1]] = Number(statValues[1]);
+            }
+          }
         });
         statsByEvent.set(event.eventId, stats);
       }

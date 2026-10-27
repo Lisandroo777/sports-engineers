@@ -20,6 +20,7 @@ import { getNFLWeatherContext } from '../../nfl/weather';
 import { searchNBAPlayers } from '../../nba/players';
 import { getNBAPlayerGameLogs } from '../../nba/stats';
 import { classifyNBAMarketIntent, unsupportedNBAGameLineNotice } from '../../nba/prediction/marketIntent';
+import { matchesNBAResearchFilter, type NBAResearchFilter } from '../../nba/researchMarkets';
 import { rankNBARecommendations } from '../../nba/prediction/ranking';
 import { NFL_QB_MARKETS, NFL_RB_MARKETS, NFL_WR_TE_MARKETS, NFL_KICKER_MARKETS, NFL_DEFENSE_MARKETS, NFL_ELITE_MARKETS, type NFLAnalyzableMarketKey } from '../../nfl/oddsTypes';
 import { SPORT_RESEARCH_ADAPTERS, detectSport, normalizeSport, type SupportedSport } from '../sportResearchAdapters';
@@ -709,6 +710,7 @@ type CandidateRankArgs = {
   nflScope?: NFLRequestScope | null;
   resolvedDate?: string;
   requireFreshNFLInjury?: boolean;
+  nbaResearchFilter?: NBAResearchFilter;
 };
 
 const MIN_OFFICIAL_ODDS = -900;
@@ -802,9 +804,15 @@ export function parseCandidateSearchConstraints(query: string, candidates: Resea
 
 export function selectRankedCandidates(candidates: ResearchCandidateRecord[], query: string, args: CandidateRankArgs = {}): { constraints: CandidateSearchConstraints; pool: ResearchCandidateRecord[]; selected: ResearchCandidateRecord[] } {
   const constraints = parseCandidateSearchConstraints(query, candidates, args.sport);
+  if (args.sport === 'nba' && args.nbaResearchFilter) {
+    if (args.nbaResearchFilter.marketIds != null) constraints.market = null;
+    if (args.nbaResearchFilter.sides.length !== 2) constraints.side = null;
+  }
   if (args.resolvedDate && constraints.date) constraints.date = args.resolvedDate;
   const nfl = args.sport === 'nfl' || constraints.sport === 'nfl';
   let pool = candidates.filter((candidate) => candidate.odds != null && candidate.odds >= MIN_OFFICIAL_ODDS);
+  if (args.sport === 'nba' && args.nbaResearchFilter) pool = pool.filter(candidate =>
+    matchesNBAResearchFilter(args.nbaResearchFilter!, candidate.marketKey, candidate.direction));
   if (nfl && args.requireFreshNFLInjury) pool = pool.filter((candidate) => isNFLInjuryContextFresh(candidate.injuryContext as Parameters<typeof isNFLInjuryContextFresh>[0]));
     const playerType = args.playerType ?? null;
   const side = constraints.side ?? (args.side !== 'any' ? args.side : null);

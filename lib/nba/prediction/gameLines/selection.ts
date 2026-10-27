@@ -3,12 +3,15 @@ import { selectRankedCandidates } from '../../../ai/agent/tools';
 import { classifyNBAMarketIntent } from '../marketIntent';
 import { classifyGameRecommendation, type NBARecommendation } from './recommendations';
 import { qualityFloorFromQuery, tierMeetsFloor } from '../../../ai/agent/pickTiers';
+import { nbaResearchMarketIntent } from '../../researchMarketScope';
+import { matchesNBAResearchFilter, type NBAResearchFilter } from '../../researchMarkets';
 
-export function selectNBAMixedRecommendations(session: ResearchSession, query: string, now = new Date()): NBARecommendation[] {
-  const intent = classifyNBAMarketIntent(query);
+export function selectNBAMixedRecommendations(session: ResearchSession, query: string, now = new Date(), filter?: NBAResearchFilter): NBARecommendation[] {
+  const intent = filter ? nbaResearchMarketIntent(query, filter) : classifyNBAMarketIntent(query);
   const qualityQuery = /\bnukes?\b/i.test(query) ? `${query} nukes only` : query;
   const selectedMarkets = new Set(intent.gameLineMarkets.map(market => market === 'FULL_GAME_TOTAL' ? 'TOTAL' : market));
   const games = (session.gameCandidates ?? []).flatMap(record => {
+    if (filter && !matchesNBAResearchFilter(filter, record.marketKey, record.selection)) return [];
     if (intent.playerPropsRequested && !intent.allMarketsRequested && !selectedMarkets.size) return [];
     if (!intent.allMarketsRequested && selectedMarkets.size && !selectedMarkets.has(record.marketKey)) return [];
     const decision = classifyGameRecommendation(record, now);
@@ -17,7 +20,7 @@ export function selectNBAMixedRecommendations(session: ResearchSession, query: s
   const currentProps = session.candidates.filter(record => record.retrievedAt == null
     || Number.isFinite(Date.parse(record.retrievedAt)) && Date.parse(record.retrievedAt) <= now.getTime()
       && now.getTime() - Date.parse(record.retrievedAt) <= 3600000);
-  const props = intent.gameLinesOnly ? [] : selectRankedCandidates(currentProps, qualityQuery, { sport: 'nba' }).selected;
+  const props = intent.gameLinesOnly ? [] : selectRankedCandidates(currentProps, qualityQuery, { sport: 'nba', nbaResearchFilter: filter }).selected;
   const records: NBARecommendation[] = [...props, ...games];
   const valueFirst = /best\s+value|value\s+picks|highest\s+ev/i.test(query);
   const likelyFirst = /most\s+likely|safest|highest\s+probability/i.test(query);

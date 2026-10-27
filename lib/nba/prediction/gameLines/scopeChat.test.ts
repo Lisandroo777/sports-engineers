@@ -10,6 +10,8 @@ import { loadCachedNBAEventResearch } from './cachedEventResearch';
 import { binding, historicalFixture, quote } from './fixtures';
 import { projectNBAGame } from './model';
 import { buildGameRecommendation, type GameRecommendation, type ModeledGameResearch, type NBARecommendation } from './recommendations';
+import { normalizeNBAResearchFilter, type NBAResearchFilter } from '../../researchMarkets';
+import { NBA_VERIFIED_RESEARCH_MARKETS } from '../researchReceipt';
 
 const sessions = vi.hoisted(() => new Map<string, ResearchSession>());
 vi.mock('../../../ai/agent/sessionStore', () => ({
@@ -92,10 +94,10 @@ function summary(includeGames = true): NBAFinderSummary {
     marketSupport: { full: 0, partial: 0, unsupported: includeGames ? 2 : 0 } };
 }
 
-async function chat(query: string, researchSessionId: string | null = null) {
+async function chat(query: string, researchSessionId: string | null = null, nbaResearchFilter?: NBAResearchFilter) {
   const response = await POST(new Request('http://localhost/api/ai/chat', { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-      messages: [{ role: 'user', content: query }], researchSessionId, context: { sport: 'nba', date },
+      messages: [{ role: 'user', content: query }], researchSessionId, context: { sport: 'nba', date, nbaResearchFilter },
     }) }));
   expect(response.status).toBe(200);
   const result = await response.json() as Omit<ReturnType<typeof toClientResult>, 'results'>
@@ -159,6 +161,85 @@ afterEach(() => {
 });
 
 describe('NBA matchup scope through real POST and runner', () => {
+  it('explains budget-blocked selected markets for another game without claiming complete research', async () => {
+    vi.mocked(runNBAFinderDeepSearch).mockResolvedValue({ ...summary(), budgetLimited: true, researchComplete: false, partialCoverage: true,
+      nbaResearchPreflight: { availableCredits: 70, expectedCredits: 104, reservedPlanCredits: 52, completeWithinBudget: false, games: [{
+        eventId: 'blocked', homeTeam: 'Boston Celtics', awayTeam: 'Detroit Pistons', refreshMarkets: ['player_points'],
+        expectedCredits: 52, allowed: false, status: 'BUDGET_BLOCKED', markets: [{ id: 'player_points', state: 'MISSING', needsRefresh: true }],
+      }] } });
+    const result = await chat('Best NBA picks today', null, normalizeNBAResearchFilter({ marketIds: ['player_points'] }));
+    expect(result.meta?.researchComplete).toBe(false);
+    expect(result.meta?.partialCoverage).toBe(true);
+    expect(result.meta?.unsupportedMarketNotice).toContain('search budget prevented acquisition');
+    expect(result.meta?.unsupportedMarketNotice).toContain('player_points: missing');
+    expect(result.meta?.nbaResearchPreflight).toMatchObject({ expectedCredits: 104, completeWithinBudget: false });
+  });
+  it('passes the entire 26-market Research Filter through the real handler without silently truncating scope', async () => {
+    const result = await chat('Best NBA picks today', null, normalizeNBAResearchFilter({
+      marketIds: NBA_VERIFIED_RESEARCH_MARKETS, sides: ['over', 'under'], ranking: 'BEST',
+    }));
+    expect(runNBAFinderDeepSearch).toHaveBeenCalledWith(date, expect.objectContaining({
+      researchMarkets: NBA_VERIFIED_RESEARCH_MARKETS, gameLines: true, gameLinesOnly: false,
+    }));
+    const selection = result.meta?.marketSelection as Array<{ id: string }>;
+    expect(selection).toHaveLength(26);
+    expect(new Set(selection.map(entry => entry.id))).toEqual(new Set(NBA_VERIFIED_RESEARCH_MARKETS));
+    expect(result.nbaPresentation!.picks.length).toBeGreaterThan(0);
+    expect(result.meta?.partialCoverage).toBe(true);
+    expect(result.meta?.researchComplete).toBe(false);
+    expect(result.meta?.unsupportedMarketNotice).toContain('1Q Assists');
+  });
+  it('returns exact Q1 and alternate source identities as research-only without standard recommendations', async () => {
+    const q1 = providerCard(schedule[0], 'PLAYER_PROP');
+    q1.subject.market = { ...q1.subject.market, key: 'player_assists_q1', label: '1Q Assists', line: 1.5 };
+    const alternate = providerCard(schedule[0], 'GAME_LINE');
+    alternate.candidateId = 'verified-alternate';
+    if (alternate.subject.kind === 'GAME_LINE') alternate.subject.market = { ...alternate.subject.market,
+      key: 'alternate_totals', type: 'TOTAL', label: 'Alternate Total', line: 240.5, selection: 'UNDER' };
+    vi.mocked(loadCachedNBAEventResearch).mockResolvedValue([q1, alternate, ...providerCards]);
+    const result = await chat('Best NBA picks today', null, normalizeNBAResearchFilter({ marketIds: ['player_assists_q1', 'alternate_totals'] }));
+    expect(result.results).toEqual([]);
+    expect(result.nbaPresentation!.picks).toHaveLength(2);
+    expect(new Set(result.nbaPresentation!.picks.map(pick => pick.subject.market.key))).toEqual(new Set(['player_assists_q1', 'alternate_totals']));
+    expect(result.nbaPresentation!.recommendedCandidateIds).toEqual([]);
+    expect(result.nbaPresentation!.picks.every(pick => pick.tierDecision == null)).toBe(true);
+  });
+  it('applies structured mixed selections to recommendations and every research card without changing stored research', async () => {
+    const result = await chat('Best NBA picks today', null, normalizeNBAResearchFilter({
+      marketIds: ['h2h', 'player_points', 'player_assists', 'player_points_q1'], sides: ['over', 'under'], ranking: 'BEST_VALUE',
+    }));
+    expect(runNBAFinderDeepSearch).toHaveBeenCalledWith(date, { gameLines: true, gameLinesOnly: false,
+      researchMarkets: ['h2h', 'player_points', 'player_assists', 'player_points_q1'] });
+    expect(result.results).toHaveLength(2);
+    expect(result.nbaPresentation!.picks.some(pick => pick.subject.market.key === 'player_points')).toBe(true);
+    expect(result.nbaPresentation!.picks.every(pick => ['MONEYLINE', 'points', 'player_points'].includes(pick.subject.market.key))).toBe(true);
+    expect(result.meta).toMatchObject({ partialCoverage: true, researchComplete: false });
+    expect(result.meta?.unsupportedMarketNotice).toContain('1Q Points');
+    expect([...sessions.values()][0].nbaPresentationResearch).toEqual(expect.arrayContaining(providerCards));
+    expect([...sessions.values()][0].nbaPresentationResearch).toHaveLength(providerCards.length + schedule.length);
+  });
+
+  it('keeps explicit prop-only requests separate from team recommendations', async () => {
+    const result = await chat('Best NBA picks today', null, normalizeNBAResearchFilter({ marketIds: ['player_assists'], sides: ['under'] }));
+    expect(result.results).toEqual([]);
+    expect(result.nbaPresentation!.picks).toEqual([]);
+    expect(result.meta?.unsupportedMarketNotice).toContain('Assists');
+  });
+
+  it.each([{ marketIds: [] }, { marketIds: ['points_q2'] }, { marketIds: ['dunks'] }])('does no Finder or provider work for disconnected/empty selections $marketIds', async ({ marketIds }) => {
+    const response = await POST(new Request('http://localhost/api/ai/chat', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        messages: [{ role: 'user', content: 'Best NBA picks today' }],
+        context: { sport: 'nba', date, nbaResearchFilter: normalizeNBAResearchFilter({ marketIds }) },
+      }) }));
+    const result = await response.json();
+    expect(result.results).toEqual([]);
+    expect(result.meta.researchComplete).toBe(false);
+    expect(result.reply).toContain('No research was performed');
+    expect(runNBAFinderDeepSearch).not.toHaveBeenCalled();
+    expect(loadCachedNBAEventResearch).not.toHaveBeenCalled();
+  });
+
   it('selects target schedule IDs and postfilters unrelated Finder and cached/provider cards', async () => {
     expect(schedule).toHaveLength(2);
     const result = await chat(targetQuery);

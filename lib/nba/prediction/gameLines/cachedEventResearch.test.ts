@@ -5,6 +5,9 @@ import { NBA_ACTIVATION_MARKETS, nbaActivationCacheKey } from '../activationCach
 import { loadCachedNBAPlayerProps } from '../cachedProps';
 import { loadCachedNBAEventResearch } from './cachedEventResearch';
 import { loadCachedNBAGameQuotes } from './quotes';
+import { searchNBAPlayers } from '../../players';
+import { getNBAPlayerGameLogs } from '../../stats';
+import { normalizeNBAResearchFilter } from '../../researchMarkets';
 
 const mocks = vi.hoisted(() => ({ fresh: vi.fn(), stale: vi.fn(), events: vi.fn(), fetch: vi.fn() }));
 vi.mock('../../../odds/persistentCache', () => ({
@@ -12,6 +15,8 @@ vi.mock('../../../odds/persistentCache', () => ({
   readStalePersistentCache: mocks.stale,
 }));
 vi.mock('../../../odds/client', () => ({ getOddsEventsForSport: mocks.events }));
+vi.mock('../../players', () => ({ searchNBAPlayers: vi.fn() }));
+vi.mock('../../stats', () => ({ getNBAPlayerGameLogs: vi.fn() }));
 
 const date = '2026-01-21';
 const now = '2026-01-21T18:00:00.000Z';
@@ -76,6 +81,46 @@ afterEach(() => {
 });
 
 describe('real cached NBA event research with one retained mixed-market receipt', () => {
+  it('enriches selected mapped props with descriptive and opponent evidence while keeping predictions null', async () => {
+    vi.mocked(searchNBAPlayers).mockResolvedValue([{ id: 10, name: 'Fixture Player', team: { id: 1, name: event.homeTeam, displayName: event.homeTeam, abbreviation: 'BOS', logoUrl: null }, position: null, jersey: null, headshotUrl: null }]);
+    vi.mocked(getNBAPlayerGameLogs).mockResolvedValue([{ gameId: 'prior', date: '2026-01-19T18:00:00Z', season: 2026, phase: 'REGULAR',
+      opponent: event.awayTeam, opponentAbbreviation: 'LAL', homeAway: 'home', result: 'W', stats: { points: 30, totalRebounds: 10, assists: 7 } }]);
+    const inputs = await loadCachedNBAEventResearch(date, [event], normalizeNBAResearchFilter({ marketIds: ['player_points'] }));
+    const points = inputs.filter(input => input.subject.market.key === 'points');
+    expect(points).toHaveLength(2);
+    for (const input of points) {
+      expect(input).toMatchObject({ tierDecision: null, trueProbability: null, modelProbability: null, evPercent: null });
+      expect(input.researchEvidence?.find(evidence => evidence.category === 'OPPONENT_HISTORY')?.detail).toContain(`against ${event.awayTeam}: 1 completed REGULAR games`);
+      expect(input.researchEvidence?.find(evidence => evidence.category === 'DESCRIPTIVE_HISTORY')?.detail).toContain('mean 30.00');
+    }
+    expect(getNBAPlayerGameLogs).toHaveBeenCalledTimes(1);
+    expect(inputs.filter(input => input.subject.market.key === 'assists').every(input => input.researchEvidence?.length === 1)).toBe(true);
+  });
+  it('researches extra real contracts but keeps them out of model candidates and preserves Yes/No semantics', async () => {
+    for (const marketKey of ['player_field_goals', 'player_frees_made', 'player_frees_attempts', 'player_blocks_steals', 'player_double_double', 'player_triple_double', 'player_fantasy_points']) {
+      const binary = ['player_double_double', 'player_triple_double'].includes(marketKey);
+      receipt.data.bookmakers[0].markets.push({ key: marketKey, last_update: updatedAt, outcomes: [
+        { name: binary ? 'Yes' : 'Over', description: 'Fixture Player', ...(binary ? {} : { point: 3.5 }), price: -125 },
+        { name: binary ? 'No' : 'Under', description: 'Fixture Player', ...(binary ? {} : { point: 3.5 }), price: 105 },
+      ] } as typeof receipt.data.bookmakers[0]['markets'][number]);
+    }
+    vi.mocked(searchNBAPlayers).mockResolvedValue([{ id: 10, name: 'Fixture Player', team: { id: 1, name: event.homeTeam, displayName: event.homeTeam, abbreviation: 'BOS', logoUrl: null }, position: null, jersey: null, headshotUrl: null }]);
+    vi.mocked(getNBAPlayerGameLogs).mockResolvedValue([{ gameId: 'prior', date: '2026-01-19T18:00:00Z', season: 2026, phase: 'REGULAR',
+      opponent: 'Fixture', opponentAbbreviation: 'FIX', homeAway: 'home', result: 'W',
+      stats: { fieldGoalsMade: 8, freeThrowsMade: 4, freeThrowsAttempted: 6, points: 20, totalRebounds: 10, assists: 11, blocks: 1, steals: 2 } }]);
+    expect(await loadCachedNBAPlayerProps(eventId, event.commenceTime)).toHaveLength(3);
+    const inputs = await loadCachedNBAEventResearch(date, [event]);
+    expect(inputs).toHaveLength(30);
+    const extra = inputs.filter(input => input.subject.market.key.startsWith('player_'));
+    expect(extra).toHaveLength(14);
+    for (const input of extra) {
+      expect(input).toMatchObject({ tierDecision: null, trueProbability: null, modelProbability: null, evPercent: null });
+      if (input.subject.market.key !== 'player_fantasy_points') expect(input.researchEvidence?.some(evidence => evidence.detail.includes('1 completed REGULAR games'))).toBe(true);
+      else expect(input.missing).toContain('DFS-only quote. Provider-specific fantasy scoring rules are not connected; no fantasy score formula assumed.');
+      if (input.subject.market.key === 'player_double_double') expect(input.subject.market).toMatchObject({ line: 0.5, label: expect.stringContaining('Yes = Over 0.5') });
+    }
+    expect(getNBAPlayerGameLogs).toHaveBeenCalledTimes(1);
+  });
   it('uses the exact lowercase 32-hex event and activation key without rewriting the receipt', async () => {
     expect(eventId).toMatch(/^[a-f0-9]{32}$/);
     expect(key).toBe(`https://api.the-odds-api.com/v4/sports/basketball_nba/events/${eventId}/odds?regions=us&markets=player_points%2Cplayer_rebounds%2Cplayer_assists%2Ch2h%2Cspreads%2Ctotals%2Cteam_totals&oddsFormat=american`);
@@ -83,8 +128,8 @@ describe('real cached NBA event research with one retained mixed-market receipt'
     const original = structuredClone(receipt);
     const inputs = await loadCachedNBAEventResearch(date, [event]);
     expect(inputs).toHaveLength(16);
-    expect(mocks.stale.mock.calls).toEqual([[key], [key]]);
-    expect(mocks.fresh.mock.calls).toEqual([[key], [
+    expect(mocks.stale.mock.calls).toEqual([[`nba:research-receipt:v1:${eventId}:us,us2`], [key], [key]]);
+    expect(mocks.fresh.mock.calls).toEqual([[`nba:research-receipt:v1:${eventId}:us,us2`], [key], [
       `https://api.the-odds-api.com/v4/sports/basketball_nba/events/${eventId}/markets?regions=us`,
     ], [key]]);
     expect(receipt).toEqual(original);
@@ -156,7 +201,7 @@ describe('real cached NBA event research with one retained mixed-market receipt'
   it('uses fresh cache before retained cache and keeps the same current quote semantics', async () => {
     receipt.expiresAt = Date.parse(now) + 60_000;
     expect(await loadCachedNBAEventResearch(date, [event])).toHaveLength(16);
-    expect(mocks.stale).not.toHaveBeenCalled();
+    expect(mocks.stale.mock.calls).toEqual([[`nba:research-receipt:v1:${eventId}:us,us2`]]);
     expect(mocks.fresh).toHaveBeenCalledWith(key);
   });
 
@@ -168,7 +213,7 @@ describe('real cached NBA event research with one retained mixed-market receipt'
   it('fails closed when mocked event discovery rejects', async () => {
     mocks.events.mockRejectedValue(new Error('No cached event listing'));
     expect(await loadCachedNBAEventResearch(date)).toEqual([]);
-    expect(mocks.fresh).not.toHaveBeenCalled();
+    expect(mocks.fresh.mock.calls).toEqual([[`nba:research-events:v1:${date}`]]);
     expect(mocks.stale).not.toHaveBeenCalled();
   });
 

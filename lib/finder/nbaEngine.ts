@@ -9,7 +9,7 @@ import {
   getOddsEventsForSport, getDiscoveredEventPlayerProps, getLastOddsCreditInfo,
   OddsBudgetGuardError, OddsRefreshNotAuthorizedError,
   beginOddsSpendTrackingAsync, getActiveOddsSpendTracker,
-  inspectEventPlayerPropsCacheState, isPaidRefreshAllowed, getAuthorizedNBAActivationOdds,
+  inspectEventPlayerPropsCacheState, isPaidRefreshAllowed,
 } from '../odds/client';
 import { isAutomaticOddsRefreshEnabled, recordProviderRemaining } from '../odds/autoRefreshLedger';
 import { fetchWithReadRetry } from '../reliability/retry';
@@ -105,6 +105,7 @@ export interface NBAGameCoverage {
 }
 
 export interface NBAFinderSummary extends FinderRunSummary {
+  nbaResearchPreflight?: Awaited<ReturnType<typeof import('../nba/prediction/researchPreflight').preflightNBAResearch>> | null;
   nbaGameCoverage?: NBAGameCoverage[];
   partialCoverage?: boolean;
   researchComplete?: boolean;
@@ -184,7 +185,7 @@ export async function matchNBAPlayer(
  */
 export async function runNBAFinderDeepSearch(
   slateDate: string = todaySlateDate(),
-  options: FinderValidationOptions & { gameLines?: boolean; gameLinesOnly?: boolean } = {},
+  options: FinderValidationOptions & { gameLines?: boolean; gameLinesOnly?: boolean; researchMarkets?: string[] } = {},
 ): Promise<NBAFinderSummary> {
   await beginOddsSpendTrackingAsync();
   const contextProvider = createNBAContextProvider({ maxRequests: 100, maxGamesPerTeam: 8 });
@@ -261,7 +262,13 @@ export async function runNBAFinderDeepSearch(
     };
   }
 
-  if ((options.gameLines || options.gameLinesOnly) && isAutomaticOddsRefreshEnabled() && isPaidRefreshAllowed()) {
+  const { NBA_VERIFIED_RESEARCH_MARKETS } = await import('../nba/prediction/researchReceipt');
+  const { preflightNBAResearch } = await import('../nba/prediction/researchPreflight');
+  const { getRemainingOddsSearchCredits } = await import('../odds/client');
+  const researchPreflight = options.gameLines || options.gameLinesOnly ? await preflightNBAResearch(
+    games.map(({ event }) => event), options.researchMarkets ?? NBA_VERIFIED_RESEARCH_MARKETS, getRemainingOddsSearchCredits()) : null;
+  if ((options.gameLines || options.gameLinesOnly) && isAutomaticOddsRefreshEnabled(options.researchMarkets ? 'nba' : undefined)
+    && isPaidRefreshAllowed(options.researchMarkets ? 'nba' : undefined)) {
     if (games.some(({ game }) => game.phase === 'REGULAR')) {
       try {
         const url = new URL('https://api.the-odds-api.com/v4/sports');
@@ -276,8 +283,11 @@ export async function runNBAFinderDeepSearch(
     }
     for (const { game, event } of games) {
       if (game.phase !== 'REGULAR' || eventSportKeys.get(event.id) !== NBA_ODDS_SPORT_KEY) continue;
+      const planned = researchPreflight?.games.find(entry => entry.eventId === event.id);
+      if (planned && !planned.allowed) { refreshFailures.set(game.id, 'SEARCH_BUDGET: selected markets not acquired for this game.'); budgetLimited = true; continue; }
       try {
-        await getAuthorizedNBAActivationOdds(event);
+        const { acquireNBAResearchReceipt } = await import('../nba/prediction/researchAcquisition');
+        await acquireNBAResearchReceipt(event, options.researchMarkets ?? NBA_VERIFIED_RESEARCH_MARKETS);
       } catch (error) {
         const cause = error instanceof Error ? error.cause : null;
         refreshFailures.set(game.id, cause && typeof cause === 'object' && 'reason' in cause
@@ -287,8 +297,27 @@ export async function runNBAFinderDeepSearch(
       }
     }
   }
-  const gameResearch = options.gameLines || options.gameLinesOnly ? await researchNBAGameLines(bettable, oddsEvents) : null;
+  if (researchPreflight) {
+    const { loadNBAResearchReceipt, nbaResearchMarketCoverage } = await import('../nba/prediction/researchReceipt');
+    for (const planned of researchPreflight.games) {
+      const binding = games.find(entry => entry.event.id === planned.eventId);
+      if (!binding) continue;
+      const receipt = await loadNBAResearchReceipt(planned.eventId);
+      planned.markets = nbaResearchMarketCoverage(receipt, { id: planned.eventId, tipoff: binding.event.commenceTime,
+        homeTeam: binding.event.homeTeam, awayTeam: binding.event.awayTeam }, options.researchMarkets ?? NBA_VERIFIED_RESEARCH_MARKETS);
+      const error = refreshFailures.get(binding.game.id);
+      Object.assign(planned, { reason: error ?? (planned.markets.some(market => market.needsRefresh)
+        ? 'Selected quotes are missing or stale; refresh was unavailable or not authorized.' : null),
+        completed: !error && planned.markets.every(market => !market.needsRefresh && market.state !== 'NOT_POSTED') });
+    }
+  }
+  const gameResearch = (options.gameLines || options.gameLinesOnly)
+    && (!options.researchMarkets || options.researchMarkets.some(market => ['h2h', 'spreads', 'totals', 'team_totals'].includes(market)))
+    ? await researchNBAGameLines(bettable, oddsEvents) : null;
   if (options.gameLinesOnly) return {
+    nbaResearchPreflight: researchPreflight,
+    partialCoverage: researchPreflight?.games.some(game => game.markets.some(market => market.needsRefresh || market.state === 'NOT_POSTED')) ?? false,
+    researchComplete: researchPreflight?.games.every(game => game.markets.every(market => !market.needsRefresh && market.state !== 'NOT_POSTED')) ?? false,
     results: [], nbaCandidates: [], gameCandidates: gameResearch?.recommendations ?? [], modeledGames: gameResearch?.modeledGames ?? [],
     playerMatching: { matched: 0, ambiguous: 0, unmatched: 0 }, marketSupport: { full: 0, partial: 0, unsupported: 0 },
     gamesAnalyzed: bettable.length, gamesEligible: bettable.length, gamesScheduled: scheduled.length, slateComplete,
@@ -357,6 +386,7 @@ export async function runNBAFinderDeepSearch(
       const sportKey = eventSportKeys.get(event.id) ?? NBA_ODDS_SPORT_KEY;
       props = options.gameLines && sportKey === NBA_ODDS_SPORT_KEY ? await loadCachedNBAPlayerProps(event.id, event.commenceTime)
         : options.gameLines ? [] : await getDiscoveredEventPlayerProps(event.id, undefined, sportKey, NBA_FALLBACK_MARKETS);
+      if (options.researchMarkets) props = props.filter(prop => prop.sourceMarketKey != null && options.researchMarkets!.includes(prop.sourceMarketKey));
       if (getLastOddsCreditInfo()?.source === 'network') sawNetworkCall = true;
     } catch (error) {
       if (error instanceof OddsBudgetGuardError) { budgetLimited = true; blockReason = 'RESERVE'; }
@@ -602,6 +632,7 @@ export async function runNBAFinderDeepSearch(
     },
     gamesAnalyzed: nbaGameCoverage.filter((entry) => entry.state === 'RESEARCHED').length,
     nbaGameCoverage,
+    nbaResearchPreflight: researchPreflight,
     partialCoverage: !researchComplete,
     researchComplete,
     gamesEligible: bettable.length,

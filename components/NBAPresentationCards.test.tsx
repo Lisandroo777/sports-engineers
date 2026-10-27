@@ -20,6 +20,30 @@ function presentation(picks: PresentedPick[]): NBAClientPresentation {
 }
 
 describe('NBA frontend presentation contract', () => {
+  it.each([
+    ['h2h_q1', '1Q Moneyline', 'MONEYLINE', null], ['spreads_q1', '1Q Spread', 'SPREAD', -2.5],
+    ['totals_q1', '1Q Total', 'TOTAL', 55.5], ['alternate_spreads', 'Alternate Spread', 'SPREAD', 7.5],
+    ['alternate_totals', 'Alternate Total', 'TOTAL', 240.5], ['alternate_team_totals', 'Alternate Team Total', 'TEAM_TOTAL', 115.5],
+  ] as const)('preserves exact %s identity on the visible game contract', (key, label, type, line) => {
+    const record = pick('LEAN'); record.tierDecision = null; record.disposition = 'RESEARCH_ONLY';
+    record.subject = { kind: 'GAME_LINE', gameId: 'fixture', home: { id: 1, name: 'Home' }, away: { id: 2, name: 'Away' },
+      market: { key, label, type, line, selection: type === 'MONEYLINE' || type === 'SPREAD' ? 'HOME' : 'UNDER', team: 'HOME' } };
+    const html = renderToStaticMarkup(<NBAPresentationCards presentation={presentation([record])} />);
+    expect(html).toContain(label);
+    expect(html).toContain(`data-market-key="${key}"`);
+    expect(html).toContain('Fixture Book');
+    if (line != null) expect(html).toContain(String(line));
+    expect(html).not.toContain('63.2%');
+  });
+  it('mounts only 20 research cards from thousands while keeping pagination counts', () => {
+    const records = Array.from({ length: 5989 }, (_, index) => ({ ...pick('LEAN'), candidateId: `research-${index}`,
+      tierDecision: null, disposition: 'RESEARCH_ONLY' as const }));
+    const html = renderToStaticMarkup(<NBAPresentationCards presentation={presentation(records)} />);
+    expect((html.match(/<article /g) ?? []).length).toBe(20);
+    expect(html).toContain('5,989 outcomes');
+    expect(html).toContain('Research page');
+    expect(html).not.toContain('data-candidate-id="research-20"');
+  });
   it('keeps preseason research-only even when an invalid upstream selected tier is supplied', () => {
     const record = pick('EDGE');
     record.season.phase = 'PRESEASON';

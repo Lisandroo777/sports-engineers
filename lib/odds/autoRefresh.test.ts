@@ -53,8 +53,9 @@ vi.mock('./persistentCache', () => ({
   writeCreditStatus: async () => {}, readCreditStatus: async () => ({ remaining: String(store.remaining ?? 20000), used: '0' }),
 }));
 
-import { getEventMarkets, getEventPlayerProps, getOddsEventsForSport, OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withAutomaticOddsRefresh, withOneRunPaidRefresh } from './client';
-import { AUTO_REFRESH_LIMITS, dailyLedgerKey, getOddsRefreshLimits } from './autoRefreshLedger';
+import { getEventMarkets, getEventPlayerProps, getOddsEventsForSport, OddsBudgetGuardError, OddsRefreshNotAuthorizedError, withAutomaticOddsRefresh, withOneRunPaidRefresh, withBoundedOddsRequest } from './client';
+import { AUTO_REFRESH_LIMITS, dailyLedgerKey, getOddsRefreshLimits, isAutomaticOddsRefreshEnabled, reserveDailyCredits } from './autoRefreshLedger';
+import { NBA_VERIFIED_RESEARCH_MARKETS } from '../nba/prediction/researchReceipt';
 
 const today = () => store.days.get(dailyLedgerKey()) ?? { spent: 0, reserved: 0 };
 const respond = (cost: string | null) => vi.fn(async () => Response.json({ id: 'fixture', bookmakers: [] },
@@ -72,6 +73,113 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('controlled automatic odds refresh', () => {
+  it('keeps NBA acquisition disabled by default even when generic production refresh flags are true', async () => {
+    vi.stubEnv('ODDS_AUTO_REFRESH', 'true');
+    vi.stubEnv('ODDS_ALLOW_PAID_REFRESH', 'true');
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', '');
+    expect(process.env.ODDS_AUTO_REFRESH).toBe('true');
+    expect(process.env.ODDS_ALLOW_PAID_REFRESH).toBe('true');
+    const operation = vi.fn(async () => ({ data: 'must not run', credits: '2', remaining: '19000' }));
+    expect(isAutomaticOddsRefreshEnabled('nba')).toBe(false);
+    await expect(withAutomaticOddsRefresh(() => withBoundedOddsRequest('/sports/basketball_nba/events/default-off/odds',
+      { markets: NBA_VERIFIED_RESEARCH_MARKETS.slice(0, 1).join(','), regions: 'us,us2' }, operation), 'nba')).rejects.toThrow('Paid refresh disabled');
+    expect(operation).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('rechecks cache after taking the lock and makes no credit reservation when another writer filled it', async () => {
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', 'true');
+    let reads = 0;
+    const operation = vi.fn(async () => ({ data: 'should not buy', credits: '52', remaining: '19000' }));
+    const result = await withAutomaticOddsRefresh(() => withBoundedOddsRequest('/sports/basketball_nba/events/postlock/odds',
+      { markets: NBA_VERIFIED_RESEARCH_MARKETS.join(','), regions: 'us,us2' }, operation,
+      { read: async () => ++reads === 1 ? null : 'fresh after lock' }), 'nba');
+    expect(result).toBe('fresh after lock');
+    expect(operation).not.toHaveBeenCalled();
+    expect(store.reservations.size).toBe(0);
+    expect(today().spent).toBe(0);
+    expect(store.owners.size).toBe(0);
+  });
+  it.each(['reserve', 'daily', 'storage', 'rate'])('preserves %s protection under the NBA70 policy', async reason => {
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', 'true');
+    if (reason === 'reserve') store.remaining = 2051;
+    if (reason === 'daily') store.days.set(dailyLedgerKey(), { spent: 260, reserved: 0 });
+    if (reason === 'storage') store.durable = false;
+    if (reason === 'rate') { store.rateWindow = Math.floor(Date.now() / 60000); store.rateCount = 50; }
+    const operation = vi.fn(async () => ({ data: 'blocked', credits: '52', remaining: '10000' }));
+    await expect(withAutomaticOddsRefresh(() => withBoundedOddsRequest('/sports/basketball_nba/events/protected/odds',
+      { markets: NBA_VERIFIED_RESEARCH_MARKETS.join(','), regions: 'us,us2' }, operation), 'nba')).rejects.toThrow();
+    expect(operation).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('shares a concurrent request after the event lock and rechecks cache before another reservation', async () => {
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', 'true');
+    let cached: string | null = null;
+    const operation = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      cached = 'shared';
+      return { data: cached, credits: '2', remaining: '19000' };
+    });
+    const request = () => withAutomaticOddsRefresh(() => withBoundedOddsRequest('/sports/basketball_nba/events/shared/odds',
+      { markets: 'player_points', regions: 'us,us2' }, operation, { read: async () => cached, waitForShared: true }), 'nba');
+    expect(await Promise.all([request(), request()])).toEqual(['shared', 'shared']);
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(today().spent).toBe(2);
+    expect(store.pending).toBe(0);
+  });
+  it('allows exactly 70 credits only in a trusted outer NBA scope and tracks the shared daily ledger', async () => {
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', 'true');
+    const operation = vi.fn(async () => ({ data: 'nba', credits: '18', remaining: '19000' }));
+    const result = await withAutomaticOddsRefresh(async () => {
+      await withBoundedOddsRequest('/sports/basketball_nba/events/first/odds',
+        { markets: NBA_VERIFIED_RESEARCH_MARKETS.join(','), regions: 'us,us2' }, async () => ({ data: 'first', credits: '52', remaining: '19500' }));
+      return withBoundedOddsRequest(
+      '/sports/basketball_nba/events/0123456789abcdef0123456789abcdef/odds',
+      { markets: NBA_VERIFIED_RESEARCH_MARKETS.slice(0, 9).join(','), regions: 'us,us2' }, operation);
+    }, 'nba');
+    expect(result).toBe('nba');
+    expect(today().spent).toBe(70);
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(getOddsRefreshLimits('nba').perSearchCredits).toBe(70);
+    expect(getOddsRefreshLimits().perSearchCredits).toBe(50);
+  });
+
+  it('rejects 71 credits, cross-sport endpoints and nested attempts to expand the outer NBA scope', async () => {
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', 'true');
+    expect(() => withOneRunPaidRefresh(async () => undefined, { sport: 'nba', maxCredits: 71 })).toThrow();
+    const operation = vi.fn(async () => ({ data: 'bad', credits: '1', remaining: '19000' }));
+    await expect(withAutomaticOddsRefresh(() => withBoundedOddsRequest('/sports/baseball_mlb/events/fixture/odds',
+      { markets: 'h2h', regions: 'us' }, operation), 'nba')).rejects.toThrow('another sport');
+    await expect(withAutomaticOddsRefresh(async () => {
+      await withBoundedOddsRequest('/sports/basketball_nba/events/one/odds', { markets: NBA_VERIFIED_RESEARCH_MARKETS.slice(0, 10).join(','), regions: 'us,us2' }, operation);
+      return withOneRunPaidRefresh(() => withBoundedOddsRequest('/sports/basketball_nba/events/two/odds',
+        { markets: NBA_VERIFIED_RESEARCH_MARKETS.join(','), regions: 'us,us2' }, operation), { sport: 'nba', maxCredits: 70 });
+    }, 'nba')).rejects.toThrow('ceiling reached');
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+  it('blocks the full 26-market NBA request before any network or ledger spend under the current outer cap', async () => {
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', 'true');
+    const operation = vi.fn(async () => ({ data: {}, credits: '52', remaining: '19000' }));
+    expect(NBA_VERIFIED_RESEARCH_MARKETS).toHaveLength(26);
+    await expect(withAutomaticOddsRefresh(() => withOneRunPaidRefresh(() => withBoundedOddsRequest(
+      '/sports/basketball_nba/events/0123456789abcdef0123456789abcdef/odds',
+      { markets: NBA_VERIFIED_RESEARCH_MARKETS.join(','), regions: 'us,us2', oddsFormat: 'american' }, operation,
+    ), { maxRequests: 1, maxCredits: 52 }))).rejects.toThrow('ceiling reached');
+    expect(operation).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(store.reservations.size).toBe(0);
+    expect(today().spent).toBe(0);
+  });
+
+  it('does not let a standalone authorization or daily reservation bypass the current 50-credit policy', async () => {
+    vi.stubEnv('NBA_ODDS_AUTO_REFRESH', 'true');
+    const operation = vi.fn(async () => undefined);
+    expect(() => withOneRunPaidRefresh(operation, { maxRequests: 1, maxCredits: 52 })).toThrow('limits required');
+    await expect(reserveDailyCredits(52)).rejects.toMatchObject({ reason: 'RESERVE' });
+    vi.stubEnv('ODDS_REFRESH_MAX_SEARCH_CREDITS', '64');
+    expect(() => getOddsRefreshLimits()).toThrow('paid refresh is blocked');
+    expect(operation).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('initializes an unknown provider balance from free events while paid refresh stays disabled', async () => {
     store.remaining = null;
     vi.stubEnv('ODDS_AUTO_REFRESH', 'false');

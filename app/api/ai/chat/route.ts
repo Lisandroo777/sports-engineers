@@ -7,6 +7,7 @@ import { detectSport } from '../../../../lib/ai/sportResearchAdapters';
 import { recordResearchOutcome, type ResearchOutcomeInput, type ResearchOutcomeStatus, type ResearchSport } from '../../../../lib/reliability/monitor';
 import { getResearchFailureDiagnostic, withResearchStage } from '../../../../lib/reliability/researchFailure';
 import { withCachedOddsOnly } from '../../../../lib/odds/client';
+import { normalizeNBAResearchFilter, type NBAResearchFilter } from '../../../../lib/nba/researchMarkets';
 
 export const runtime = 'nodejs';
 
@@ -45,7 +46,7 @@ export async function DELETE(request: Request) {
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
-  let body: { messages?: AgentTurnMessage[]; researchSessionId?: string | null; refreshApproval?: AgentRefreshApproval | null; cacheOnly?: boolean; context?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string } };
+  let body: { messages?: AgentTurnMessage[]; researchSessionId?: string | null; refreshApproval?: AgentRefreshApproval | null; cacheOnly?: boolean; context?: { sport?: 'nfl' | 'nba' | 'mlb'; date?: string; nbaResearchFilter?: NBAResearchFilter } };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -60,7 +61,8 @@ export async function POST(request: Request) {
 
   const query = [...messages].reverse().find((message) => message.role === 'user')?.content ?? '';
   const context = body.context && ['nfl', 'nba', 'mlb'].includes(body.context.sport ?? '') ? { sport: body.context.sport,
-    date: typeof body.context.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.context.date) ? body.context.date : undefined } : undefined;
+    date: typeof body.context.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.context.date) ? body.context.date : undefined,
+    ...(body.context.nbaResearchFilter ? { nbaResearchFilter: normalizeNBAResearchFilter(body.context.nbaResearchFilter) } : {}) } : undefined;
   const requestedSport = (!context && crossSportScope(query).length > 1 ? 'all' : outcomeSport(detectSport(query)))
     ?? outcomeSport(context?.sport) ?? 'unknown';
   try {

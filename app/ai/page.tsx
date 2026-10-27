@@ -4,6 +4,9 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppSidebar } from "../../components/AppSidebar";
+import { NBAResearchMarketFilter } from '../../components/NBAResearchMarketFilter';
+import { NBAHistoricalDemo } from '../../components/NBAHistoricalDemo';
+import { DEFAULT_NBA_RESEARCH_FILTER, normalizeNBAResearchFilter, type NBAResearchFilter } from '../../lib/nba/researchMarkets';
 import { classifyResearchFailure, ResearchStorageUnavailablePanel } from "../../components/aiResearchOutcome";
 import { canReuseResearchEvidence, captureResearchEvidence, classifyEvidenceFreshness, isRecoverableResearchFailure, recoverResearchEvidence, resolveRecoverySessionId, type ResearchScope, type ResearchSnapshot } from "../../components/researchRecovery";
 import { withResponseDisplayRanks } from "../../components/aiRecommendationOrder";
@@ -238,6 +241,7 @@ interface PersistedAIFinderSession {
     finderTeamFilter: string;
     finderGameFilter: string;
     finderMarketFilter: string;
+    nbaResearchFilter?: NBAResearchFilter;
     finderSideFilter: 'All' | 'over' | 'under';
     finderBookFilter: string;
     finderAltFilter: 'All' | 'Standard' | 'Alternate';
@@ -1200,6 +1204,7 @@ function AiFinderPageContent() {
   const [finderTeamFilter, setFinderTeamFilter] = useState('All');
   const [finderGameFilter, setFinderGameFilter] = useState('All');
   const [finderMarketFilter, setFinderMarketFilter] = useState('All');
+  const [nbaResearchFilter, setNbaResearchFilter] = useState<NBAResearchFilter>(DEFAULT_NBA_RESEARCH_FILTER);
   const [finderSideFilter, setFinderSideFilter] = useState<'All' | 'over' | 'under'>('All');
   const [finderBookFilter, setFinderBookFilter] = useState('All');
   const [finderAltFilter, setFinderAltFilter] = useState<'All' | 'Standard' | 'Alternate'>('All');
@@ -1263,6 +1268,7 @@ function AiFinderPageContent() {
         restore(() => setFinderTeamFilter(saved.filters?.finderTeamFilter ?? 'All'));
         restore(() => setFinderGameFilter(saved.filters?.finderGameFilter ?? 'All'));
         restore(() => setFinderMarketFilter(saved.filters?.finderMarketFilter ?? 'All'));
+        restore(() => setNbaResearchFilter(normalizeNBAResearchFilter(saved.filters?.nbaResearchFilter)));
         restore(() => setFinderSideFilter(saved.filters?.finderSideFilter ?? 'All'));
         restore(() => setFinderBookFilter(saved.filters?.finderBookFilter ?? 'All'));
         restore(() => setFinderAltFilter(saved.filters?.finderAltFilter ?? 'All'));
@@ -1305,7 +1311,7 @@ function AiFinderPageContent() {
       deepSummarySport,
       filters: {
         minFinderScore, minEv, minBooks, finderSortBy, finderPlayerFilter, finderTeamFilter,
-        finderGameFilter, finderMarketFilter, finderSideFilter, finderBookFilter, finderAltFilter,
+        finderGameFilter, finderMarketFilter, finderSideFilter, finderBookFilter, finderAltFilter, nbaResearchFilter,
       },
     };
     try {
@@ -1313,7 +1319,7 @@ function AiFinderPageContent() {
     } catch {
       // Session persistence is best-effort and must never block the Finder UI.
     }
-  }, [agentMeta, conversation, criteria, deepSummary, deepSummarySport, finderAltFilter, finderBookFilter, finderDate, finderGameFilter, finderMarketFilter, finderPlayerFilter, finderSideFilter, finderSortBy, finderSport, finderStatus, finderTeamFilter, minBooks, minEv, minFinderScore, mlbGameMarkets, mode, query, researchSessionId, results, selectedIds, sessionRestored, showCount, toolTrace, totalMatched]);
+  }, [agentMeta, conversation, criteria, deepSummary, deepSummarySport, finderAltFilter, finderBookFilter, finderDate, finderGameFilter, finderMarketFilter, finderPlayerFilter, finderSideFilter, finderSortBy, finderSport, finderStatus, finderTeamFilter, minBooks, minEv, minFinderScore, mlbGameMarkets, mode, query, researchSessionId, results, selectedIds, sessionRestored, showCount, toolTrace, totalMatched, nbaResearchFilter]);
 
   useEffect(() => {
     if (!isSearching) return;
@@ -1381,7 +1387,8 @@ function AiFinderPageContent() {
         body: JSON.stringify({
           messages: history.map((entry) => ({ role: entry.role === "ai" ? "assistant" : "user", content: entry.text })),
           researchSessionId: requestSessionId,
-          context: { sport: finderSport.toLowerCase(), date: finderDate },
+          context: { sport: finderSport.toLowerCase(), date: finderDate,
+            ...((detectSport(q) ?? finderSport.toLowerCase()) === 'nba' ? { nbaResearchFilter } : {}) },
         }),
       });
       payload = (await response.json()) as AgentChatResponse;
@@ -1566,6 +1573,7 @@ function AiFinderPageContent() {
     setFinderTeamFilter('All');
     setFinderGameFilter('All');
     setFinderMarketFilter('All');
+    setNbaResearchFilter(DEFAULT_NBA_RESEARCH_FILTER);
     setFinderSideFilter('All');
     setFinderBookFilter('All');
     setFinderAltFilter('All');
@@ -1862,6 +1870,19 @@ function AiFinderPageContent() {
                   )}
                 </div>
               )}
+
+              <details className="min-w-0 border-y border-white/10 py-3">
+                <summary className="cursor-pointer text-left text-sm font-semibold text-slate-200">Research Filter</summary>
+                <div className="mt-3 min-w-0 space-y-3">
+                  <label className="flex items-center gap-3 text-xs text-slate-400">Sport
+                    <select aria-label="Research sport" disabled={isSearching || !sessionRestored} value={finderSport} onChange={event => setFinderSport(event.target.value)} className="min-h-9 rounded-md border border-white/10 bg-[#050b18] px-3 text-white">
+                      <option value="MLB">MLB</option><option value="NBA">NBA</option><option value="NFL">NFL</option>
+                    </select>
+                  </label>
+                  {finderSport === 'NBA' && <NBAResearchMarketFilter value={nbaResearchFilter} onChange={next => { sessionClearedRef.current = false; setNbaResearchFilter(next); }} disabled={isSearching || !sessionRestored} />}
+                  {finderSport === 'NBA' && <NBAHistoricalDemo filter={nbaResearchFilter} />}
+                </div>
+              </details>
 
               {/* ── Loading animation ── */}
               {isSearching && (

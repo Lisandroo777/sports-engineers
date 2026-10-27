@@ -115,7 +115,7 @@ function populatedPresentation() {
     inputs[index + 1].subject = {
       kind: 'GAME_LINE', gameId: `fixture-game-${index}`,
       home: { id: null, name: 'Fixture Home' }, away: { id: null, name: 'Fixture Away' },
-      market: { key: market.type, label: market.type, ...market },
+      market: { key: market.type, label: { MONEYLINE: 'Moneyline', SPREAD: 'Spread', TOTAL: 'Game Total', TEAM_TOTAL: 'Team Total' }[market.type], ...market },
     };
     inputs[index + 1].americanOdds = [-105, 125, -115, 105, -120][index];
   }
@@ -256,7 +256,7 @@ describe.skipIf(process.env.NBA_PRESENTATION_BROWSER !== '1')('NBA presentation 
           expect(await research.locator('article').count()).toBe(3);
           expect(await recommendations.locator('[data-tier="PASS"]').count()).toBe(0);
           expect(await recommendations.locator('article').evaluateAll(elements => elements.map(element => element.getAttribute('data-tier')))).toEqual(tiers.slice(0, 5));
-          const expectedMarkets = ['Points over 24.5', 'Game total over 224.5', 'Fixture Home moneyline', 'Fixture Home -3.5', 'Fixture Away +3.5', 'Fixture Away team total under 108.5'];
+          const expectedMarkets = ['Points over 24.5', 'Game Total over 224.5', 'Moneyline · Fixture Home', 'Spread · Fixture Home -3.5', 'Spread · Fixture Away +3.5', 'Team Total · Fixture Away under 108.5'];
           const expectedOdds = ['-110', '-105', '+125', '-115', '+105', '-120'];
           for (const [index, tier] of tiers.entries()) {
             const card = presentation.locator(`[data-candidate-id="tier-${tier.toLowerCase()}"][data-tier="${tier}"]`);
@@ -314,8 +314,8 @@ describe.skipIf(process.env.NBA_PRESENTATION_BROWSER !== '1')('NBA presentation 
             releaseResponse();
             responseGate = null;
           }
-          await visible(presentation.getByRole('status'));
-          expect(await presentation.getByRole('status').innerText()).toBe('No qualified NBA picks or researched candidates are available for this slate.');
+          await visible(page.getByText('No recommendable plays', { exact: true }));
+          expect(await presentation.count()).toBe(0);
           expect(await page.locator('article').count()).toBe(0);
           expect(await page.getByText('5 recommended plays', { exact: true }).count()).toBe(0);
           await noOverflow(page);
